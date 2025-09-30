@@ -1,6 +1,6 @@
 #!/bin/bash
 
-CUDA_VISIBLE_DEVICES=0,1 accelerate launch --multi_gpu --num_processes=2 finetune_whisper_lora.py \
+CUDA_VISIBLE_DEVICES=0,1 WANDB_API_KEY='2dfc22d8af7805df156e7f31ea3bc090ec99d52e' accelerate launch --multi_gpu --num_processes=2 finetune_whisper_lora.py \
   --train_data ../datasets/train.json \
   --test_data ../datasets/test.json \
   --base_model ../models/whisper-large-v3 \
