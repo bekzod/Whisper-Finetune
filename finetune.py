@@ -117,7 +117,7 @@ add_arg("warmup_ratio", type=float, default=0.05, help="Warmup ratio")
 add_arg("lr_scheduler_type", type=str, default="cosine", help="Scheduler")
 
 # Logging / eval / saving
-add_arg("logging_steps", type=int, default=50, help="Logging steps")
+add_arg("logging_steps", type=int, default=250, help="Logging steps")
 add_arg("eval_steps", type=int, default=1000, help="Eval steps")
 add_arg("save_steps", type=int, default=1000, help="Save steps")
 add_arg("save_total_limit", type=int, default=10, help="Max checkpoints to keep")
