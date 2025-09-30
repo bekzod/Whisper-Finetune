@@ -47,13 +47,13 @@ add_arg(
     "train_data",
     type=str,
     default="../datasets/train.json",
-    help="Path to the training dataset. Multiple datasets can be combined using '+' separator, e.g., '../datasets/train.json+../datasets/cleaned.json'",
+    help="Path to the training dataset. Supports JSON, JSONL, and Parquet formats. Multiple datasets can be combined using '+' separator. Glob patterns are supported for parquet files, e.g., '../datasets/train.json+../datasets/cleaned.json' or '/data/train-*.parquet'",
 )
 add_arg(
     "test_data",
     type=str,
     default="../datasets/test.json",
-    help="Path to the test dataset",
+    help="Path to the test dataset. Supports JSON, JSONL, and Parquet formats. Glob patterns are supported for parquet files.",
 )
 add_arg(
     "base_model",
