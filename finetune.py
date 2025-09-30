@@ -96,7 +96,7 @@ add_arg(
     default="./configs/augmentation.json",
     help="Path to augmentation config (optional)",
 )
-add_arg("num_workers", type=int, default=16, help="Dataloader workers")
+add_arg("num_workers", type=int, default=os.cpu_count(), help="Dataloader workers")
 
 # LoRA / AdaLoRA
 add_arg(
