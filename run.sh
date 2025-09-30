@@ -5,7 +5,7 @@ export CUDA_DEVICE_MAX_CONNECTIONS=1
 export CUDA_VISIBLE_DEVICES=0,1
 export WANDB_API_KEY='2dfc22d8af7805df156e7f31ea3bc090ec99d52e'
 
-accelerate launch --multi_gpu --num_processes=2 finetune_whisper_lora.py \
+accelerate launch --multi_gpu --num_processes=2 --config_fikle ../accelerate_config.yaml finetune_whisper_lora.py \
   --train_data ../datasets/train.json \
   --test_data ../datasets/test.json \
   --base_model ../models/whisper-large-v3 \
