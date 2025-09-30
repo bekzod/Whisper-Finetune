@@ -242,10 +242,18 @@ class CustomDataset(Dataset):
             if "audio" in line and isinstance(line["audio"], dict):
                 # Already in expected format
                 pass
-            elif "audio_path" in line or "path" in line or "file" in line:
+            elif (
+                "audio_path" in line
+                or "path" in line
+                or "file" in line
+                or "file_name" in line
+            ):
                 # Create audio dict from path column
                 audio_path = (
-                    line.get("audio_path") or line.get("path") or line.get("file")
+                    line.get("audio_path")
+                    or line.get("path")
+                    or line.get("file")
+                    or line.get("file_name")
                 )
                 line["audio"] = {"path": audio_path}
                 if "start_time" in line:
