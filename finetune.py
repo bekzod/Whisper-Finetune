@@ -21,7 +21,7 @@ from transformers.trainer_callback import EarlyStoppingCallback, TrainerCallback
 from transformers.trainer_utils import set_seed
 
 # ---- Your project utilities (kept as-is) ----
-from utils.callback import SavePeftModelCallback, WandbPredictionLogger
+from utils.callback import SavePeftModelCallback
 from utils.data_utils import DataCollatorSpeechSeq2SeqWithPadding
 from utils.model_utils import load_from_checkpoint
 from utils.reader import CustomDataset
@@ -96,7 +96,7 @@ add_arg(
     default="./configs/augmentation.json",
     help="Path to augmentation config (optional)",
 )
-add_arg("num_workers", type=int, default=8, help="Dataloader workers")
+add_arg("num_workers", type=int, default=os.cpu_count(), help="Dataloader workers")
 
 # LoRA / AdaLoRA
 add_arg(
@@ -416,16 +416,6 @@ def main():
         SavePeftModelCallback,
         EarlyStoppingCallback(early_stopping_patience=args.early_stopping_patience),
     ]
-    if USE_WANDB:
-        callbacks.append(
-            WandbPredictionLogger(
-                processor,
-                data_collator,
-                eval_dataset,
-                max_rows=args.wandb_table_rows,
-                use_wandb=USE_WANDB,
-            )
-        )
 
     trainer = Seq2SeqTrainer(
         args=training_args,

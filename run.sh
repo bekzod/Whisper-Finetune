@@ -19,7 +19,6 @@ accelerate launch --multi_gpu --num_processes=2 --config_file ./accelerate_confi
   --lora_r 32 \
   --lora_alpha 64 \
   --lora_dropout 0.05 \
-  --num_workers 16 \
   --group_by_length True \
   --eval_steps 3000 \
   --save_steps 6000 \
