@@ -47,7 +47,7 @@ add_arg(
     "train_data",
     type=str,
     default="../datasets/train.json",
-    help="Path to the training dataset",
+    help="Path to the training dataset. Multiple datasets can be combined using '+' separator, e.g., '../datasets/train.json+../datasets/cleaned.json'",
 )
 add_arg(
     "test_data",
@@ -92,7 +92,7 @@ add_arg(
 add_arg(
     "augment_config_path",
     type=str,
-    default=None,
+    default="./config/augmentation.json",
     help="Path to augmentation config (optional)",
 )
 add_arg("num_workers", type=int, default=8, help="Dataloader workers")
@@ -206,8 +206,17 @@ if USE_WANDB:
 # -------------------- Main --------------------
 def main():
     # perf niceties
-    torch.backends.cuda.matmul.allow_tf32 = True
-    torch.backends.cudnn.allow_tf32 = True
+    # torch.backends.cuda.matmul.allow_tf32 = True
+    # torch.backends.cudnn.allow_tf32 = True
+    torch.backends.cuda.enable_flash_sdp(True)
+    torch.backends.cuda.enable_math_sdp(True)
+    torch.backends.cuda.enable_mem_efficient_sdp(True)
+
+    # Optional: nudge PyTorch’s matmul heuristics
+    try:
+        torch.set_float32_matmul_precision("high")
+    except Exception:
+        pass
 
     set_seed(args.seed)
 

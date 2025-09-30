@@ -2,7 +2,7 @@
   {
     "type": "resample",
     "params": {
-      "new_sample_rates": [8000, 32000, 44100]
+      "new_sample_rates": [8000, 10000, 32000]
     },
     "prob": 0.0
   },

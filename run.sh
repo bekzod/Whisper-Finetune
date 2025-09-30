@@ -1,11 +1,16 @@
 #!/bin/bash
+export NVIDIA_TF32_OVERRIDE=0
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export CUDA_DEVICE_MAX_CONNECTIONS=1
+export CUDA_VISIBLE_DEVICES=0,1
+export WANDB_API_KEY='2dfc22d8af7805df156e7f31ea3bc090ec99d52e'
 
-CUDA_VISIBLE_DEVICES=0,1 WANDB_API_KEY='2dfc22d8af7805df156e7f31ea3bc090ec99d52e' accelerate launch --multi_gpu --num_processes=2 finetune_whisper_lora.py \
+accelerate launch --multi_gpu --num_processes=2 finetune_whisper_lora.py \
   --train_data ../datasets/train.json \
   --test_data ../datasets/test.json \
   --base_model ../models/whisper-large-v3 \
   --output_dir ./output/whisper-large-v3-uzbek-2gpu-adalora \
-  --num_train_epochs 4 \
+  --num_train_epochs 6 \
   --per_device_train_batch_size 8 \
   --per_device_eval_batch_size 8 \
   --gradient_accumulation_steps 8 \
