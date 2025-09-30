@@ -5,7 +5,7 @@ export CUDA_DEVICE_MAX_CONNECTIONS=1
 export CUDA_VISIBLE_DEVICES=0,1
 export WANDB_API_KEY='2dfc22d8af7805df156e7f31ea3bc090ec99d52e'
 
-accelerate launch --multi_gpu --num_processes=2 --config_fikle ./accelerate_config.yaml finetune_whisper_lora.py \
+accelerate launch --multi_gpu --num_processes=2 --config_file ./accelerate_config.yaml finetune_whisper_lora.py \
   --base_model ../models/whisper-large-v3 \
   --output_dir ./output/whisper-large-v3-uzbek-2xH100-adalora \
   --num_train_epochs 6 \
