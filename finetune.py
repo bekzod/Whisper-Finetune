@@ -1,179 +1,450 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+#
 import argparse
 import functools
 import os
-import platform
+import sys
+import warnings
+from typing import Any
 
-from peft import LoraConfig, get_peft_model, AdaLoraConfig, PeftModel, prepare_model_for_kbit_training
-from transformers import Seq2SeqTrainer, Seq2SeqTrainingArguments, WhisperForConditionalGeneration, WhisperProcessor
+import numpy as np
+import torch
+from transformers import (
+    Seq2SeqTrainer,
+    Seq2SeqTrainingArguments,
+    WhisperForConditionalGeneration,
+    WhisperProcessor,
+)
+from transformers.trainer_callback import EarlyStoppingCallback, TrainerCallback
+from transformers.trainer_utils import set_seed
 
-from utils.callback import SavePeftModelCallback
+# ---- Your project utilities (kept as-is) ----
+from utils.callback import SavePeftModelCallback, WandbPredictionLogger
 from utils.data_utils import DataCollatorSpeechSeq2SeqWithPadding
 from utils.model_utils import load_from_checkpoint
 from utils.reader import CustomDataset
 from utils.utils import print_arguments, make_inputs_require_grad, add_arguments
 
-parser = argparse.ArgumentParser(description=__doc__)
+# ---- Metrics ----
+import evaluate
+
+# ---- PEFT (LoRA / AdaLoRA) ----
+from peft import (
+    LoraConfig,
+    AdaLoraConfig,
+    get_peft_model,
+    PeftModel,
+)
+
+# -------------------- Argparse --------------------
+parser = argparse.ArgumentParser("Whisper-large-v3 LoRA finetune with W&B (bf16 only)")
+
 add_arg = functools.partial(add_arguments, argparser=parser)
-add_arg("train_data",    type=str, default="dataset/train.json",       help="训练数据集的路径")
-add_arg("test_data",     type=str, default="dataset/test.json",        help="测试数据集的路径")
-add_arg("base_model",    type=str, default="openai/whisper-tiny",      help="Whisper的基础模型")
-add_arg("output_dir",    type=str, default="output/",                  help="训练保存模型的路径")
-add_arg("warmup_steps",  type=int, default=50,      help="训练预热步数")
-add_arg("logging_steps", type=int, default=100,     help="打印日志步数")
-add_arg("eval_steps",    type=int, default=1000,    help="多少步数评估一次")
-add_arg("save_steps",    type=int, default=1000,    help="多少步数保存模型一次")
-add_arg("num_workers",   type=int, default=8,       help="读取数据的线程数量")
-add_arg("learning_rate", type=float, default=1e-3,  help="学习率大小")
-add_arg("min_audio_len", type=float, default=0.5,   help="最小的音频长度，单位秒")
-add_arg("max_audio_len", type=float, default=30,    help="最大的音频长度，单位秒，不能大于30秒")
-add_arg("use_adalora",   type=bool,  default=True,  help="是否使用AdaLora而不是Lora")
-add_arg("fp16",          type=bool,  default=True,  help="是否使用fp16训练模型")
-add_arg("use_8bit",      type=bool,  default=False, help="是否将模型量化为8位")
-add_arg("timestamps",    type=bool,  default=False, help="训练时是否使用时间戳数据")
-add_arg("use_compile",   type=bool, default=False, help="是否使用Pytorch2.0的编译器")
-add_arg("local_files_only", type=bool, default=False, help="是否只在本地加载模型，不尝试下载")
-add_arg("num_train_epochs", type=int, default=3,      help="训练的轮数")
-add_arg("language", type=str, default="Chinese", help="设置语言，可全称也可简写，如果为None则训练的是多语言")
-add_arg("task",     type=str, default="transcribe", choices=['transcribe', 'translate'], help="模型的任务")
-add_arg("augment_config_path",         type=str, default=None, help="数据增强配置文件路径")
-add_arg("resume_from_checkpoint",      type=str, default=None, help="恢复训练的检查点路径")
-add_arg("per_device_train_batch_size", type=int, default=8,    help="训练的batch size")
-add_arg("per_device_eval_batch_size",  type=int, default=8,    help="评估的batch size")
-add_arg("gradient_accumulation_steps", type=int, default=1,    help="梯度累积步数")
-add_arg("push_to_hub",                 type=bool, default=False, help="是否将模型权重推到HuggingFace Hub")
-add_arg("hub_model_id",                type=str,  default=None,  help="HuggingFace Hub上的模型仓库ID")
-add_arg("save_total_limit",            type=int,  default=10,  help="只保存最新检查点的数量")
+
+# Data & model
+add_arg(
+    "train_data",
+    type=str,
+    default="../datasets/train.json",
+    help="Path to the training dataset",
+)
+add_arg(
+    "test_data",
+    type=str,
+    default="../datasets/test.json",
+    help="Path to the test dataset",
+)
+add_arg(
+    "base_model",
+    type=str,
+    default="../models/whisper-large-v3",
+    help="Base Whisper model",
+)
+add_arg("output_dir", type=str, default="output/", help="Path to save checkpoints")
+
+# Task / language
+add_arg(
+    "timestamps", type=bool, default=False, help="Use timestamp tokens during training"
+)
+add_arg(
+    "language",
+    type=str,
+    default="Uzbek",
+    help="Language name or code. If None, train multilingual",
+)
+add_arg(
+    "task",
+    type=str,
+    default="transcribe",
+    choices=["transcribe", "translate"],
+    help="Task type",
+)
+
+# Loader / augmentation
+add_arg("min_audio_len", type=float, default=0.5, help="Min audio length (s)")
+add_arg(
+    "max_audio_len",
+    type=float,
+    default=30.0,
+    help="Max audio length (s, Whisper cap ~30s)",
+)
+add_arg(
+    "augment_config_path",
+    type=str,
+    default=None,
+    help="Path to augmentation config (optional)",
+)
+add_arg("num_workers", type=int, default=8, help="Dataloader workers")
+
+# LoRA / AdaLoRA
+add_arg(
+    "use_adalora", type=bool, default=True, help="Use AdaLoRA instead of standard LoRA"
+)
+add_arg("lora_r", type=int, default=16, help="LoRA rank (typical 8-16 for Whisper v3)")
+add_arg("lora_alpha", type=int, default=32, help="LoRA alpha")
+add_arg("lora_dropout", type=float, default=0.05, help="LoRA dropout")
+
+# Training schedule
+add_arg("num_train_epochs", type=int, default=3, help="Epochs")
+add_arg("per_device_train_batch_size", type=int, default=8, help="Per-GPU train batch")
+add_arg("per_device_eval_batch_size", type=int, default=8, help="Per-GPU eval batch")
+add_arg("gradient_accumulation_steps", type=int, default=4, help="Grad accumulation")
+add_arg("learning_rate", type=float, default=2e-4, help="LR (LoRA typical 5e-5 ~ 5e-4)")
+add_arg("weight_decay", type=float, default=0.01, help="Weight decay")
+add_arg("max_grad_norm", type=float, default=1.0, help="Grad clip")
+add_arg("warmup_ratio", type=float, default=0.05, help="Warmup ratio")
+add_arg("lr_scheduler_type", type=str, default="cosine", help="Scheduler")
+
+# Logging / eval / saving
+add_arg("logging_steps", type=int, default=50, help="Logging steps")
+add_arg("eval_steps", type=int, default=1000, help="Eval steps")
+add_arg("save_steps", type=int, default=1000, help="Save steps")
+add_arg("save_total_limit", type=int, default=10, help="Max checkpoints to keep")
+add_arg(
+    "predict_with_generate", type=bool, default=True, help="Use generate() during eval"
+)
+add_arg(
+    "early_stopping_patience",
+    type=int,
+    default=4,
+    help="Early stopping patience (eval calls)",
+)
+add_arg(
+    "group_by_length",
+    type=bool,
+    default=False,
+    help="Bucket by length to reduce padding",
+)
+add_arg(
+    "length_column_name",
+    type=str,
+    default=None,
+    help="Name of length column for bucketing (optional)",
+)
+add_arg(
+    "generation_max_length",
+    type=int,
+    default=225,
+    help="Max tokens for generation (eval)",
+)
+
+# Infra / misc
+add_arg("seed", type=int, default=42, help="Random seed")
+add_arg("use_compile", type=bool, default=False, help="torch.compile (PyTorch 2.x)")
+add_arg("local_files_only", type=bool, default=True, help="Load only from local cache")
+add_arg(
+    "resume_from_checkpoint", type=str, default=None, help="Path to resume checkpoint"
+)
+add_arg("push_to_hub", type=bool, default=False, help="Push to HF Hub at end")
+add_arg("hub_model_id", type=str, default=None, help="HF Hub repo id")
+
+# Weights & Biases
+add_arg(
+    "wandb_project",
+    type=str,
+    default=None,
+    help="W&B project name (enables W&B if set)",
+)
+add_arg("wandb_entity", type=str, default=None, help="W&B entity/org (optional)")
+add_arg("wandb_run_name", type=str, default=None, help="W&B run name (optional)")
+add_arg("wandb_tags", type=str, default=None, help="Comma-separated tags (optional)")
+add_arg(
+    "wandb_table_rows",
+    type=int,
+    default=6,
+    help="How many eval samples to log as table each eval",
+)
+
 args = parser.parse_args()
+
+# Enforce your precision policy:
+args.bf16 = True
+args.fp16 = False
+
 print_arguments(args)
 
-# 如果是Windows，num_workers设置为0
-if platform.system() == "Windows":
-    args.num_workers = 0
+# -------------------- W&B Setup --------------------
+USE_WANDB = args.wandb_project is not None
+if USE_WANDB:
+    os.environ["WANDB_PROJECT"] = args.wandb_project
+    if args.wandb_entity:
+        os.environ["WANDB_ENTITY"] = args.wandb_entity
+    import wandb
+
+    wandb.init(
+        project=args.wandb_project,
+        entity=args.wandb_entity,
+        name=args.wandb_run_name,
+        tags=[t.strip() for t in args.wandb_tags.split(",")]
+        if args.wandb_tags
+        else None,
+        config={k: v for k, v in vars(args).items()},
+    )
 
 
+# -------------------- Main --------------------
 def main():
-    # 获取Whisper的数据处理器，这个包含了特征提取器、tokenizer
-    processor = WhisperProcessor.from_pretrained(args.base_model,
-                                                 language=args.language,
-                                                 task=args.task,
-                                                 no_timestamps=not args.timestamps,
-                                                 local_files_only=args.local_files_only)
+    # perf niceties
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
 
-    # 读取数据
-    train_dataset = CustomDataset(data_list_path=args.train_data,
-                                  processor=processor,
-                                  language=args.language,
-                                  timestamps=args.timestamps,
-                                  min_duration=args.min_audio_len,
-                                  max_duration=args.max_audio_len,
-                                  augment_config_path=args.augment_config_path)
-    test_dataset = CustomDataset(data_list_path=args.test_data,
-                                 processor=processor,
-                                 language=args.language,
-                                 timestamps=args.timestamps,
-                                 min_duration=args.min_audio_len,
-                                 max_duration=args.max_audio_len)
-    print(f"训练数据：{len(train_dataset)}，测试数据：{len(test_dataset)}")
-    # 数据padding器
+    set_seed(args.seed)
+
+    # ----- Processor (tokenizer + feature extractor) -----
+    processor = WhisperProcessor.from_pretrained(
+        args.base_model,
+        language=args.language,
+        task=args.task,
+        no_timestamps=not args.timestamps,
+        local_files_only=args.local_files_only,
+    )
+
+    # ----- Datasets -----
+    train_dataset = CustomDataset(
+        data_list_path=args.train_data,
+        processor=processor,
+        language=args.language,
+        timestamps=args.timestamps,
+        min_duration=args.min_audio_len,
+        max_duration=args.max_audio_len,
+        augment_config_path=args.augment_config_path,
+    )
+    eval_dataset = CustomDataset(
+        data_list_path=args.test_data,
+        processor=processor,
+        language=args.language,
+        timestamps=args.timestamps,
+        min_duration=args.min_audio_len,
+        max_duration=args.max_audio_len,
+    )
+    print(f"Training data: {len(train_dataset)}, Eval data: {len(eval_dataset)}")
+
     data_collator = DataCollatorSpeechSeq2SeqWithPadding(processor=processor)
 
-    # 获取Whisper模型
-    device_map = "auto"
+    # ----- Device map / DDP -----
+    device_map: Any = "auto"
     world_size = int(os.environ.get("WORLD_SIZE", 1))
     ddp = world_size != 1
     if ddp:
         device_map = {"": int(os.environ.get("LOCAL_RANK") or 0)}
 
-    # 获取模型
-    model = WhisperForConditionalGeneration.from_pretrained(args.base_model,
-                                                            load_in_8bit=args.use_8bit,
-                                                            device_map=device_map,
-                                                            local_files_only=args.local_files_only)
-    model.config.forced_decoder_ids = None
+    # ----- Load model (no quantization) -----
+    model = WhisperForConditionalGeneration.from_pretrained(
+        args.base_model,
+        device_map=device_map,
+        local_files_only=args.local_files_only,
+    )
+    # Whisper generation defaults
     model.config.suppress_tokens = []
-    # 量化模型
-    model = prepare_model_for_kbit_training(model)
-    # 注册forward，否则多卡训练会失败
+
+    # TRAIN: keep decoder prompt free; EVAL/GEN: use processor prompt ids
+    train_forced_decoder_ids = None
+    eval_forced_decoder_ids = processor.get_decoder_prompt_ids(
+        language=args.language, task=args.task
+    )
+
+    # Safer multi-GPU w/ Whisper’s conv1 front-end
     model.model.encoder.conv1.register_forward_hook(make_inputs_require_grad)
 
-    print('加载LoRA模块...')
+    # Gradient checkpointing (big memory saver)
+    model.gradient_checkpointing_enable()
+
+    # ----- LoRA / AdaLoRA -----
+    total_step = args.num_train_epochs * max(1, len(train_dataset))
+    target_modules = ["k_proj", "q_proj", "v_proj", "out_proj", "fc1", "fc2"]
+
     if args.resume_from_checkpoint:
-        # 恢复训练时加载Lora参数
-        print("Loading adapters from checkpoint.")
-        model = PeftModel.from_pretrained(model, args.resume_from_checkpoint, is_trainable=True)
+        print("Loading adapters from checkpoint (resume).")
+        model = PeftModel.from_pretrained(
+            model, args.resume_from_checkpoint, is_trainable=True
+        )
     else:
-        print(f'adding LoRA modules...')
-        target_modules = ["k_proj", "q_proj", "v_proj", "out_proj", "fc1", "fc2"]
-        print(target_modules)
+        print("Adding LoRA/AdaLoRA adapters...")
         if args.use_adalora:
-            total_step = args.num_train_epochs * len(train_dataset)
-            config = AdaLoraConfig(init_r=12, target_r=4, beta1=0.85, beta2=0.85, tinit=200, tfinal=1000, deltaT=10,
-                                   lora_alpha=32, lora_dropout=0.1, orth_reg_weight=0.5, target_modules=target_modules,
-                                   total_step=total_step)
+            config = AdaLoraConfig(
+                init_r=max(8, args.lora_r),
+                target_r=max(4, args.lora_r // 2),
+                beta1=0.85,
+                beta2=0.85,
+                tinit=200,
+                tfinal=1000,
+                deltaT=10,
+                lora_alpha=args.lora_alpha,
+                lora_dropout=args.lora_dropout,
+                orth_reg_weight=0.5,
+                target_modules=target_modules,
+                total_step=total_step,
+            )
         else:
-            config = LoraConfig(r=32, lora_alpha=64, target_modules=target_modules, lora_dropout=0.05, bias="none")
+            config = LoraConfig(
+                r=args.lora_r,
+                lora_alpha=args.lora_alpha,
+                target_modules=target_modules,
+                lora_dropout=args.lora_dropout,
+                bias="none",
+            )
         model = get_peft_model(model, config)
 
-    if args.base_model.endswith("/"):
-        args.base_model = args.base_model[:-1]
-    output_dir = str(os.path.join(args.output_dir, os.path.basename(args.base_model)))
-    # 定义训练参数
-    training_args = \
-        Seq2SeqTrainingArguments(output_dir=output_dir,  # 保存检查点和意志的目录
-                                 per_device_train_batch_size=args.per_device_train_batch_size,  # 训练batch_size大小
-                                 per_device_eval_batch_size=args.per_device_eval_batch_size,  # 评估batch_size大小
-                                 gradient_accumulation_steps=args.gradient_accumulation_steps,  # 训练梯度累计步数
-                                 learning_rate=args.learning_rate,  # 学习率大小
-                                 warmup_steps=args.warmup_steps,  # 预热步数
-                                 num_train_epochs=args.num_train_epochs,  # 微调训练轮数
-                                 save_strategy="steps",  # 指定按照步数保存检查点
-                                 eval_strategy="steps",  # 指定按照步数评估模型
-                                 load_best_model_at_end=True,  # 指定是否在结束时加载最优模型
-                                 fp16=args.fp16,  # 是否使用半精度训练
-                                 report_to=["tensorboard"],  # 指定使用tensorboard保存log
-                                 save_steps=args.save_steps,  # 指定保存检查点的步数
-                                 eval_steps=args.eval_steps,  # 指定评估模型的步数
-                                 torch_compile=args.use_compile,  # 使用Pytorch2.0的编译器
-                                 save_total_limit=args.save_total_limit,  # 只保存最新检查点的数量
-                                 optim='adamw_torch',  # 指定优化方法
-                                 ddp_find_unused_parameters=False if ddp else None,  # 分布式训练设置
-                                 dataloader_num_workers=args.num_workers,  # 设置读取数据的线程数量
-                                 logging_steps=args.logging_steps,  # 指定打印log的步数
-                                 remove_unused_columns=False,  # 删除模型不需要的数据列
-                                 label_names=["labels"],  # 与标签对应的输入字典中的键列表
-                                 push_to_hub=args.push_to_hub, # 是否将模型权重推到HuggingFace Hub
-                                 )
+    # ----- Output dir -----
+    base_name = (
+        args.base_model[:-1] if args.base_model.endswith("/") else args.base_model
+    )
+    output_dir = os.path.join(args.output_dir, os.path.basename(base_name))
 
-    if training_args.local_rank == 0 or training_args.local_rank == -1:
-        print('=' * 90)
-        model.print_trainable_parameters()
-        print('=' * 90)
+    # ----- Training args -----
+    training_args = Seq2SeqTrainingArguments(
+        output_dir=output_dir,
+        num_train_epochs=args.num_train_epochs,
+        per_device_train_batch_size=args.per_device_train_batch_size,
+        per_device_eval_batch_size=args.per_device_eval_batch_size,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
+        learning_rate=args.learning_rate,
+        weight_decay=args.weight_decay,
+        max_grad_norm=args.max_grad_norm,
+        warmup_ratio=args.warmup_ratio,
+        lr_scheduler_type=args.lr_scheduler_type,
+        logging_steps=args.logging_steps,
+        eval_steps=args.eval_steps,
+        save_steps=args.save_steps,
+        save_total_limit=args.save_total_limit,
+        evaluation_strategy="steps",
+        save_strategy="steps",
+        load_best_model_at_end=True,
+        metric_for_best_model="wer",
+        greater_is_better=False,
+        bf16=True,  # enforced
+        fp16=False,  # enforced
+        optim="adamw_torch_fused",
+        torch_compile=args.use_compile,
+        ddp_find_unused_parameters=False if ddp else None,
+        dataloader_num_workers=args.num_workers,
+        dataloader_pin_memory=True,
+        dataloader_persistent_workers=True if args.num_workers > 0 else False,
+        remove_unused_columns=False,
+        label_names=["labels"],
+        report_to=(["tensorboard", "wandb"] if USE_WANDB else ["tensorboard"]),
+        push_to_hub=args.push_to_hub,
+        group_by_length=args.group_by_length,
+        length_column_name=args.length_column_name,
+        predict_with_generate=args.predict_with_generate,
+        generation_max_length=args.generation_max_length,
+    )
 
-    # 定义训练器
-    trainer = Seq2SeqTrainer(args=training_args,
-                             model=model,
-                             train_dataset=train_dataset,
-                             eval_dataset=test_dataset,
-                             data_collator=data_collator,
-                             processing_class=processor.feature_extractor,
-                             callbacks=[SavePeftModelCallback])
+    # ----- Metrics: WER -----
+    wer_metric = evaluate.load("wer")
+
+    def compute_metrics(eval_pred):
+        preds, labels = eval_pred
+        # Replace -100 with pad id for decoding
+        labels = labels.copy()
+        labels[labels == -100] = processor.tokenizer.pad_token_id
+
+        # Ensure eval uses language/task prompt
+        prev_forced = model.config.forced_decoder_ids
+        model.config.forced_decoder_ids = eval_forced_decoder_ids
+
+        # Decode strings
+        pred_str = processor.tokenizer.batch_decode(preds, skip_special_tokens=True)
+        label_str = processor.tokenizer.batch_decode(labels, skip_special_tokens=True)
+
+        # Restore previous forced ids (avoid side-effects)
+        model.config.forced_decoder_ids = prev_forced
+
+        wer = wer_metric.compute(predictions=pred_str, references=label_str)
+        return {"wer": wer}
+
+    # ----- Trainer -----
+    callbacks = [
+        SavePeftModelCallback,
+        EarlyStoppingCallback(early_stopping_patience=args.early_stopping_patience),
+    ]
+    if USE_WANDB:
+        callbacks.append(
+            WandbPredictionLogger(
+                processor,
+                data_collator,
+                eval_dataset,
+                max_rows=args.wandb_table_rows,
+                use_wandb=USE_WANDB,
+            )
+        )
+
+    trainer = Seq2SeqTrainer(
+        args=training_args,
+        model=model,
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
+        data_collator=data_collator,
+        tokenizer=processor.tokenizer,
+        compute_metrics=compute_metrics,
+        callbacks=callbacks,
+    )
     model.config.use_cache = False
     trainer._load_from_checkpoint = load_from_checkpoint
 
-    # 开始训练
+    # ---- Training ----
+    # Keep training free of forced prompt so adapters can learn freely
+    model.config.forced_decoder_ids = train_forced_decoder_ids
     trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
 
-    # 保存最后的模型
+    # ---- Save & Export ----
     trainer.save_state()
-    # 重新启用缓存以更快地推断
     model.config.use_cache = True
-    if training_args.local_rank == 0 or training_args.local_rank == -1:
-        model.save_pretrained(os.path.join(output_dir, "checkpoint-final"))
-    # 是否把模型参数文件推送到huggingface
-    if training_args.push_to_hub:
-        hub_model_id = args.hub_model_id if args.hub_model_id is not None else output_dir
+    # Set eval prompt by default for downstream generation
+    model.config.forced_decoder_ids = eval_forced_decoder_ids
+
+    # Save PEFT adapter
+    if training_args.local_rank in (0, -1):
+        model.save_pretrained(
+            os.path.join(output_dir, "checkpoint-final"), safe_serialization=True
+        )
+
+        # (Optional) merge LoRA into base weights for a single merged model
+        try:
+            if isinstance(model, PeftModel):
+                merged = model.merge_and_unload()
+                merged.save_pretrained(
+                    os.path.join(output_dir, "checkpoint-final-merged"),
+                    safe_serialization=True,
+                )
+        except Exception as e:
+            warnings.warn(f"Merge-and-unload skipped: {e}")
+
+    # Push to Hub (optional)
+    if training_args.push_to_hub and (training_args.local_rank in (0, -1)):
+        hub_model_id = args.hub_model_id if args.hub_model_id else output_dir
         model.push_to_hub(hub_model_id)
 
+    if USE_WANDB:
+        import wandb
 
-if __name__ == '__main__':
-    main()
+        wandb.finish()
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("Interrupted.", file=sys.stderr)
+        sys.exit(1)
