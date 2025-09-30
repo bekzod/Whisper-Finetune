@@ -191,17 +191,10 @@ if USE_WANDB:
     os.environ["WANDB_PROJECT"] = args.wandb_project
     if args.wandb_entity:
         os.environ["WANDB_ENTITY"] = args.wandb_entity
-    import wandb
-
-    wandb.init(
-        project=args.wandb_project,
-        entity=args.wandb_entity,
-        name=args.wandb_run_name,
-        tags=[t.strip() for t in args.wandb_tags.split(",")]
-        if args.wandb_tags
-        else None,
-        config={k: v for k, v in vars(args).items()},
-    )
+    if args.wandb_run_name:
+        os.environ["WANDB_RUN_NAME"] = args.wandb_run_name
+    if args.wandb_tags:
+        os.environ["WANDB_TAGS"] = args.wandb_tags
 
 
 # -------------------- Main --------------------
@@ -463,10 +456,7 @@ def main():
         hub_model_id = args.hub_model_id if args.hub_model_id else output_dir
         model.push_to_hub(hub_model_id)
 
-    if USE_WANDB:
-        import wandb
-
-        wandb.finish()
+    # W&B will be automatically finished by the trainer
 
 
 if __name__ == "__main__":
