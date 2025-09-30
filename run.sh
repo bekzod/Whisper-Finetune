@@ -6,8 +6,6 @@ export CUDA_VISIBLE_DEVICES=0,1
 export WANDB_API_KEY='2dfc22d8af7805df156e7f31ea3bc090ec99d52e'
 
 accelerate launch --multi_gpu --num_processes=2 --config_fikle ./accelerate_config.yaml finetune_whisper_lora.py \
-  --train_data ../datasets/train.json \
-  --test_data ../datasets/test.json \
   --base_model ../models/whisper-large-v3 \
   --output_dir ./output/whisper-large-v3-uzbek-2xH100-adalora \
   --num_train_epochs 6 \
@@ -29,4 +27,6 @@ accelerate launch --multi_gpu --num_processes=2 --config_fikle ./accelerate_conf
   --use_compile True \
   --wandb_project whisper-uzbek \
   --wandb_run_name whisper-v3-uzbek-2xH100-adalora \
-  --wandb_tags uzbek,whisper,adalora,H100
+  --wandb_tags uzbek,whisper,adalora,H100 \
+  --train_data ../datasets/uzbek_voice/train/metadata.csv \
+  # --test_data ../datasets/uzbek_voice/test.json \

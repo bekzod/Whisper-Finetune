@@ -180,6 +180,16 @@ class CustomDataset(Dataset):
                         line = json.loads(line)
                     if not isinstance(line, dict):
                         continue
+
+                    # Handle text/transcription columns - use 'text' as fallback
+                    if "sentence" not in line and "sentences" not in line:
+                        if "text" in line:
+                            line["sentence"] = line["text"]
+                        elif "transcription" in line:
+                            line["sentence"] = line["transcription"]
+                        elif "transcript" in line:
+                            line["sentence"] = line["transcript"]
+
                     # Skip audio that exceeds duration limits
                     if line["duration"] < self.min_duration:
                         continue
@@ -192,10 +202,13 @@ class CustomDataset(Dataset):
                             or len(line["sentence"]) > self.max_sentence
                         ):
                             continue
-                    else:
+                    elif "sentences" in line.keys():
                         sentence_len = 0
                         for s in line["sentences"]:
-                            sentence_len += len(s["text"])
+                            if isinstance(s, dict):
+                                sentence_len += len(s.get("text", ""))
+                            else:
+                                sentence_len += len(str(s))
                         if (
                             sentence_len < self.min_sentence
                             or sentence_len > self.max_sentence
@@ -231,14 +244,21 @@ class CustomDataset(Dataset):
                 if "end_time" in line:
                     line["audio"]["end_time"] = line["end_time"]
 
-            # Handle text/transcription columns
+            # Handle text/transcription columns - prioritize 'text' column
             if "sentence" not in line and "sentences" not in line:
+                # First try 'text' column as primary fallback
                 if "text" in line:
                     line["sentence"] = line["text"]
                 elif "transcription" in line:
                     line["sentence"] = line["transcription"]
                 elif "transcript" in line:
                     line["sentence"] = line["transcript"]
+            # Also handle case where 'sentence' exists but is empty/null
+            elif "sentence" in line and (
+                line["sentence"] is None or line["sentence"] == ""
+            ):
+                if "text" in line and line["text"] is not None and line["text"] != "":
+                    line["sentence"] = line["text"]
 
             # Ensure duration field exists
             if "duration" not in line:
@@ -288,9 +308,14 @@ class CustomDataset(Dataset):
             data_list = self.data_list[idx]
         # Split audio path and labels
         audio_file = data_list["audio"]["path"]
-        transcript = (
-            data_list["sentences"] if self.timestamps else data_list["sentence"]
-        )
+
+        # Handle transcript extraction with fallback to 'text' column
+        if self.timestamps:
+            transcript = data_list.get("sentences", data_list.get("text", ""))
+        else:
+            # Try 'sentence' first, then fall back to 'text'
+            transcript = data_list.get("sentence", data_list.get("text", ""))
+
         language = data_list["language"] if "language" in data_list.keys() else None
 
         if "start_time" not in data_list["audio"].keys():
