@@ -318,7 +318,7 @@ class CustomDataset(Dataset):
             self.data_list.append(dict(line))
 
     def _load_csv_data(self, data_path):
-        """Load data from CSV file. Supports multiple CSV formats."""
+        """Load data from CSV file. Supports multiple CSV formats with proper header mapping."""
         with open(data_path, "r", encoding="utf-8") as f:
             # Try to detect CSV format by reading first few lines
             sample_lines = []
@@ -339,11 +339,13 @@ class CustomDataset(Dataset):
                 keyword in first_line.lower()
                 for keyword in [
                     "filename",
+                    "file_name",
                     "path",
                     "audio",
                     "text",
                     "sentence",
                     "transcript",
+                    "id",
                 ]
             ):
                 has_header = True
@@ -354,25 +356,81 @@ class CustomDataset(Dataset):
 
             reader = csv.reader(f, delimiter=delimiter)
 
-            # Skip header if present
+            # Read and process header if present
+            header_mapping = {}
             if has_header:
                 header = next(reader)
                 print(f"Detected CSV header: {header}")
+
+                # Create mapping from header to column indices
+                for idx, col_name in enumerate(header):
+                    col_name = col_name.strip().lower()
+                    header_mapping[col_name] = idx
+
+                # Define column mappings for different field names
+                audio_path_columns = [
+                    "file_name",
+                    "filename",
+                    "path",
+                    "audio_path",
+                    "audio",
+                    "file",
+                ]
+                text_columns = ["text", "sentence", "transcript", "transcription"]
+
+                # Find the correct columns
+                audio_col_idx = None
+                text_col_idx = None
+
+                for col in audio_path_columns:
+                    if col in header_mapping:
+                        audio_col_idx = header_mapping[col]
+                        break
+
+                for col in text_columns:
+                    if col in header_mapping:
+                        text_col_idx = header_mapping[col]
+                        break
+
+                if audio_col_idx is None or text_col_idx is None:
+                    print(
+                        f"Warning: Could not find required columns in header {header}"
+                    )
+                    print(f"Looking for audio path in: {audio_path_columns}")
+                    print(f"Looking for text in: {text_columns}")
 
             for row in tqdm(reader, desc=f"Reading CSV data from {data_path}"):
                 if len(row) < 2:
                     continue
 
-                # Extract filename and text from row
-                if delimiter == "|":
-                    # LJSpeech format: filename|text
-                    if "|" in row[0] and len(row) == 1:
-                        filename, text = row[0].split("|", 1)
+                # Extract filename and text from row based on header mapping
+                if (
+                    has_header
+                    and audio_col_idx is not None
+                    and text_col_idx is not None
+                ):
+                    # Use header-based mapping
+                    if len(row) > max(audio_col_idx, text_col_idx):
+                        filename = row[audio_col_idx].strip()
+                        text = row[text_col_idx].strip()
                     else:
-                        filename, text = row[0], row[1] if len(row) > 1 else ""
+                        print(f"Warning: Row has insufficient columns: {row}")
+                        continue
                 else:
-                    # Standard CSV format: filename,text or audio_path,transcription
-                    filename, text = row[0], row[1]
+                    # Fallback to old logic for headerless or unrecognized formats
+                    if delimiter == "|":
+                        # LJSpeech format: filename|text
+                        if "|" in row[0] and len(row) == 1:
+                            filename, text = row[0].split("|", 1)
+                        else:
+                            filename, text = row[0], row[1] if len(row) > 1 else ""
+                    else:
+                        # Standard CSV format: filename,text or audio_path,transcription
+                        filename, text = row[0], row[1]
+
+                # Skip empty entries
+                if not filename or not text:
+                    continue
 
                 # Create line dict in expected format
                 line = {"audio": {"path": filename}, "sentence": text.strip()}
