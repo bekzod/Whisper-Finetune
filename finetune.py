@@ -10,6 +10,7 @@ from typing import Any
 
 import numpy as np
 import torch
+from torch.utils.data import random_split
 from transformers import (
     Seq2SeqTrainer,
     Seq2SeqTrainingArguments,
@@ -47,13 +48,13 @@ add_arg(
     "train_data",
     type=str,
     default="../datasets/train.json",
-    help="Path to the training dataset. Supports JSON, JSONL, and Parquet formats. Multiple datasets can be combined using '+' separator. Glob patterns are supported for parquet files, e.g., '../datasets/train.json+../datasets/cleaned.json' or '/data/train-*.parquet'",
+    help="Path to the training dataset. Supports JSON, JSONL, CSV, and Parquet formats. Multiple datasets can be combined using '+' separator. Glob patterns are supported for parquet files, e.g., '../datasets/train.json+../datasets/cleaned.json' or '/data/train-*.parquet'. CSV format supports 'filename,text' or 'filename|text' (LJSpeech) formats.",
 )
 add_arg(
     "test_data",
     type=str,
-    default="../datasets/test.json",
-    help="Path to the test dataset. Supports JSON, JSONL, and Parquet formats. Glob patterns are supported for parquet files.",
+    default=None,
+    help="Path to the test dataset. Supports JSON, JSONL, CSV, and Parquet formats. If not provided, 8% of train data will be used for testing.",
 )
 add_arg(
     "base_model",
@@ -230,23 +231,50 @@ def main():
     )
 
     # ----- Datasets -----
-    train_dataset = CustomDataset(
-        data_list_path=args.train_data,
-        processor=processor,
-        language=args.language,
-        timestamps=args.timestamps,
-        min_duration=args.min_audio_len,
-        max_duration=args.max_audio_len,
-        augment_config_path=args.augment_config_path,
-    )
-    eval_dataset = CustomDataset(
-        data_list_path=args.test_data,
-        processor=processor,
-        language=args.language,
-        timestamps=args.timestamps,
-        min_duration=args.min_audio_len,
-        max_duration=args.max_audio_len,
-    )
+    if args.test_data is None:
+        # If no test data provided, load train data and split it
+        print("No test data provided. Splitting train data: 92% train, 8% test")
+        full_dataset = CustomDataset(
+            data_list_path=args.train_data,
+            processor=processor,
+            language=args.language,
+            timestamps=args.timestamps,
+            min_duration=args.min_audio_len,
+            max_duration=args.max_audio_len,
+            augment_config_path=args.augment_config_path,
+        )
+
+        # Calculate split sizes
+        total_size = len(full_dataset)
+        eval_size = int(0.08 * total_size)
+        train_size = total_size - eval_size
+
+        # Perform random split
+        train_dataset, eval_dataset = random_split(
+            full_dataset,
+            [train_size, eval_size],
+            generator=torch.Generator().manual_seed(args.seed),
+        )
+    else:
+        # Load separate train and test datasets
+        train_dataset = CustomDataset(
+            data_list_path=args.train_data,
+            processor=processor,
+            language=args.language,
+            timestamps=args.timestamps,
+            min_duration=args.min_audio_len,
+            max_duration=args.max_audio_len,
+            augment_config_path=args.augment_config_path,
+        )
+        eval_dataset = CustomDataset(
+            data_list_path=args.test_data,
+            processor=processor,
+            language=args.language,
+            timestamps=args.timestamps,
+            min_duration=args.min_audio_len,
+            max_duration=args.max_audio_len,
+        )
+
     print(f"Training data: {len(train_dataset)}, Eval data: {len(eval_dataset)}")
 
     data_collator = DataCollatorSpeechSeq2SeqWithPadding(processor=processor)

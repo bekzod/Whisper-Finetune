@@ -1,3 +1,4 @@
+import csv
 import json
 import os
 import random
@@ -73,8 +74,13 @@ class CustomDataset(Dataset):
         """
         Args:
             data_list_path: Path to the data list file, or path to the binary list header file.
+                           Supports JSON, JSONL, CSV, and Parquet formats.
                            Multiple paths can be specified separated by '+' to combine datasets,
                            e.g., '../datasets/train.json+../datasets/cleaned.json'
+                           CSV format supports:
+                           - Standard format: filename,text
+                           - LJSpeech format: filename|text
+                           - Header detection for column names like 'filename', 'text', 'audio_path', etc.
             processor: Whisper preprocessing tool, obtained from WhisperProcessor.from_pretrained
             mono: Whether to convert audio to mono channel, this must be True
             language: Language of the fine-tuning data
@@ -171,6 +177,9 @@ class CustomDataset(Dataset):
                 # Load and concatenate all matching parquet files
                 df = pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
                 self._process_dataframe(df, data_path)
+            elif data_path.endswith(".csv"):
+                # Load CSV file
+                self._load_csv_data(data_path)
             else:
                 # Get data list from JSON/JSONL
                 with open(data_path, "r", encoding="utf-8") as f:
@@ -299,6 +308,105 @@ class CustomDataset(Dataset):
                     continue
 
             self.data_list.append(dict(line))
+
+    def _load_csv_data(self, data_path):
+        """Load data from CSV file. Supports multiple CSV formats."""
+        with open(data_path, "r", encoding="utf-8") as f:
+            # Try to detect CSV format by reading first few lines
+            sample_lines = []
+            for i, line in enumerate(f):
+                sample_lines.append(line.strip())
+                if i >= 2:  # Read first 3 lines to detect format
+                    break
+
+        # Reset file pointer
+        with open(data_path, "r", encoding="utf-8") as f:
+            # Detect delimiter and format
+            has_header = False
+            delimiter = ","
+
+            # Check if first line looks like a header
+            first_line = sample_lines[0] if sample_lines else ""
+            if any(
+                keyword in first_line.lower()
+                for keyword in [
+                    "filename",
+                    "path",
+                    "audio",
+                    "text",
+                    "sentence",
+                    "transcript",
+                ]
+            ):
+                has_header = True
+
+            # Check for pipe delimiter (LJSpeech format)
+            if "|" in first_line and "," not in first_line:
+                delimiter = "|"
+
+            reader = csv.reader(f, delimiter=delimiter)
+
+            # Skip header if present
+            if has_header:
+                header = next(reader)
+                print(f"Detected CSV header: {header}")
+
+            for row in tqdm(reader, desc=f"Reading CSV data from {data_path}"):
+                if len(row) < 2:
+                    continue
+
+                # Extract filename and text from row
+                if delimiter == "|":
+                    # LJSpeech format: filename|text
+                    if "|" in row[0] and len(row) == 1:
+                        filename, text = row[0].split("|", 1)
+                    else:
+                        filename, text = row[0], row[1] if len(row) > 1 else ""
+                else:
+                    # Standard CSV format: filename,text or audio_path,transcription
+                    filename, text = row[0], row[1]
+
+                # Create line dict in expected format
+                line = {"audio": {"path": filename}, "sentence": text.strip()}
+
+                # Try to get audio duration if file exists
+                try:
+                    if os.path.isfile(filename):
+                        audio_path = filename
+                    else:
+                        # Try relative to CSV file directory
+                        csv_dir = os.path.dirname(data_path)
+                        audio_path = os.path.join(csv_dir, filename)
+
+                    if os.path.isfile(audio_path):
+                        line["audio"]["path"] = audio_path
+                        sample, sr = soundfile.read(audio_path)
+                        duration = round(sample.shape[-1] / float(sr), 2)
+                        line["duration"] = duration
+                    else:
+                        # Skip if audio file not found
+                        print(f"Warning: Audio file not found: {filename}")
+                        continue
+
+                except Exception as e:
+                    print(f"Warning: Could not read audio file {filename}: {e}")
+                    continue
+
+                # Apply filtering criteria
+                if "duration" in line:
+                    if line["duration"] < self.min_duration:
+                        continue
+                    if self.max_duration != -1 and line["duration"] > self.max_duration:
+                        continue
+
+                # Check sentence length limits
+                if (
+                    len(line["sentence"]) < self.min_sentence
+                    or len(line["sentence"]) > self.max_sentence
+                ):
+                    continue
+
+                self.data_list.append(line)
 
     # Get audio data, sample rate, and text from data list
     def _get_list_data(self, idx):
