@@ -93,7 +93,7 @@ add_arg(
 add_arg(
     "augment_config_path",
     type=str,
-    default="./config/augmentation.json",
+    default="./configs/augmentation.json",
     help="Path to augmentation config (optional)",
 )
 add_arg("num_workers", type=int, default=8, help="Dataloader workers")
