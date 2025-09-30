@@ -22,7 +22,6 @@ accelerate launch --multi_gpu --num_processes=2 --config_file ./accelerate_confi
   --eval_steps 3000 \
   --save_steps 6000 \
   --save_total_limit 5 \
-  --use_compile True \
   --wandb_project whisper-uzbek \
   --wandb_run_name whisper-v3-uzbek-2xH100-adalora \
   --wandb_tags uzbek,whisper,adalora,H100 \
