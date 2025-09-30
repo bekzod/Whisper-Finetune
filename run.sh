@@ -9,7 +9,7 @@ accelerate launch --multi_gpu --num_processes=2 --config_file ./accelerate_confi
   --base_model ../models/whisper-large-v3 \
   --output_dir ./output/whisper-large-v3-uzbek-2xH100-adalora \
   --num_train_epochs 6 \
-  --per_device_train_batch_size 12 \
+  --per_device_train_batch_size 16 \
   --per_device_eval_batch_size 16 \
   --gradient_accumulation_steps 6 \
   --learning_rate 3e-4 \

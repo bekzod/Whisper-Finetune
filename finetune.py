@@ -298,7 +298,9 @@ def main():
     model.model.encoder.conv1.register_forward_hook(make_inputs_require_grad)
 
     # Gradient checkpointing (big memory saver)
-    model.gradient_checkpointing_enable()
+    model.gradient_checkpointing_enable(
+        gradient_checkpointing_kwargs={"use_reentrant": False}
+    )
 
     # ----- LoRA / AdaLoRA -----
     total_step = args.num_train_epochs * max(1, len(train_dataset))
