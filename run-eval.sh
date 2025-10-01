@@ -6,8 +6,8 @@ export CUDA_DEVICE_MAX_CONNECTIONS=1
 export CUDA_VISIBLE_DEVICES=0
 
 python3.11 ./evaluation.py \
-  --test_data ../datasets/uzbek_voice/data/test/metadata.csv \
-  --model_path ../models/output/whisper-large-v3/checkpoint-final-merged \
+  --test_data ../datasets/dataset_for_stt_ttsmodels/metadata.csv \
+  --model_path ../models/output/whisper-large-v3-0/checkpoint-final-merged \
   --batch_size 16 \
   --num_workers 8 \
   --language Uzbek \
