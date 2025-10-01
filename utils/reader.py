@@ -376,7 +376,13 @@ class CustomDataset(Dataset):
                     "audio",
                     "file",
                 ]
-                text_columns = ["text", "sentence", "transcript", "transcription"]
+                text_columns = [
+                    "text",
+                    "sentence",
+                    "transcript",
+                    "transcription",
+                    "text_latin",
+                ]
 
                 # Find the correct columns
                 audio_col_idx = None

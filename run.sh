@@ -30,5 +30,9 @@ accelerate launch --multi_gpu --num_processes=2 --config_file ./configs/accelera
   --wandb_run_name whisper-v3-uzbek-2xH100-adalora \
   --wandb_tags uzbek,whisper,adalora,H100 \
   --output_dir ../models/output \
-  --train_data ../datasets/uzbek_voice/data/train/metadata.csv+../datasets/dataset_for_stt_ttsmodels/metadata.csv \
+  --train_data ../datasets/uzbek_voice/data/train/metadata.csv+\
+    ../datasets/dataset_for_stt_ttsmodels/metadata.csv+\
+    ../datasets/FeruzaSpeech/train.csv+\
+    ../datasets/FeruzaSpeech/dev.csv+\
+    ../datasets/FeruzaSpeech/test.csv
   # --test_data ../datasets/uzbek_voice/test.json \
