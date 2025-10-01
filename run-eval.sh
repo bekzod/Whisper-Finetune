@@ -17,4 +17,4 @@ python3.11 ./evaluation.py \
   --max_audio_len 30 \
   --local_files_only True \
   --task transcribe \
-  --metric cer
+  --metric wer
