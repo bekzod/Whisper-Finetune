@@ -90,7 +90,13 @@ class DataCollatorSpeechSeq2SeqWithPadding:
                 texts,
                 padding=True,  # vectorized padding
                 truncation=True,
-                max_length=getattr(self.processor.tokenizer, "model_max_length", 448),
+                max_length=int(
+                    min(
+                        448,
+                        getattr(self.processor.tokenizer, "model_max_length", 448)
+                        or 448,
+                    )
+                ),
                 return_tensors="pt",
             )
             labels = tok.input_ids
