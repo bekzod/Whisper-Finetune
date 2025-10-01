@@ -584,28 +584,54 @@ class CustomDataset(Dataset):
         try:
             # Get audio data, sample rate, and text from data list
             sample, sample_rate, transcript, language = self._get_list_data(idx=idx)
+
             # Can set language for individual data
             self.processor.tokenizer.set_prefix_tokens(
                 language=language if language is not None else self.language
             )
+
             if len(transcript) > 0:
-                # Load text with timestamps
                 if self.timestamps:
+                    # -------- timestamps training: keep your existing label building --------
                     data = self._load_timestamps_transcript(transcript=transcript)
                     # Calculate log-Mel input features from input audio array
-                    data["input_features"] = self.processor(
+                    feats = self.processor(
                         audio=sample, sampling_rate=self.sample_rate
                     ).input_features
+                    # normalize to single example (drop possible batch dim)
+                    if isinstance(feats, list):
+                        feats = feats[0]
+                    elif (
+                        hasattr(feats, "shape")
+                        and getattr(feats, "shape", [None])[0] == 1
+                    ):
+                        feats = feats[0]
+                    data["input_features"] = feats
                 else:
-                    # Get log-Mel features and label IDs
-                    data = self.processor(
-                        audio=sample, sampling_rate=self.sample_rate, text=transcript
-                    )
+                    # -------- non-timestamps training: return features + RAW TEXT --------
+                    feats = self.processor(
+                        audio=sample, sampling_rate=self.sample_rate
+                    ).input_features
+                    # normalize to single example (drop possible batch dim)
+                    if isinstance(feats, list):
+                        feats = feats[0]
+                    elif (
+                        hasattr(feats, "shape")
+                        and getattr(feats, "shape", [None])[0] == 1
+                    ):
+                        feats = feats[0]
+
+                    data = {
+                        "input_features": feats,  # (80, T) or torch tensor of same
+                        "text": transcript,  # <-- collator will batch-tokenize
+                    }
             else:
-                # If there's no text, use <|nospeech|> token
+                # If there's no text, use <|nospeech|> token (kept as IDs; collator pads)
                 data = self.processor(audio=sample, sampling_rate=self.sample_rate)
                 data["labels"] = [self.startoftranscript, self.nospeech, self.endoftext]
+
             return data
+
         except Exception as e:
             print(
                 f"Error reading data, index: {idx}, error message: {e}", file=sys.stderr
