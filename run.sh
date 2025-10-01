@@ -5,6 +5,8 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 export CUDA_VISIBLE_DEVICES=0,1
 export WANDB_API_KEY='2dfc22d8af7805df156e7f31ea3bc090ec99d52e'
+export RAYON_NUM_THREADS=1
+export TOKENIZERS_PARALLELISM=false
 
 accelerate launch --multi_gpu --num_processes=2 --config_file ./configs/accelerate.yaml finetune.py \
   --base_model ../models/whisper-large-v3 \
