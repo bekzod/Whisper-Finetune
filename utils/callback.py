@@ -15,7 +15,7 @@ from transformers import WhisperProcessor
 from .data_utils import DataCollatorSpeechSeq2SeqWithPadding
 
 
-# 保存模型时的回调函数
+# Callback invoked when saving the model
 class SavePeftModelCallback(TrainerCallback):
     def on_save(
         self,
@@ -25,11 +25,11 @@ class SavePeftModelCallback(TrainerCallback):
         **kwargs,
     ):
         if args.local_rank == 0 or args.local_rank == -1:
-            # 保存效果最好的模型
+            # Save the best-performing checkpoint
             best_checkpoint_folder = os.path.join(
                 args.output_dir, f"{PREFIX_CHECKPOINT_DIR}-best"
             )
-            # 因为只保存最新5个检查点，所以要确保不是之前的检查点
+            # Since only the latest 5 checkpoints are kept, ensure it's not an older checkpoint
             if state.best_model_checkpoint is not None and os.path.exists(
                 state.best_model_checkpoint
             ):
@@ -37,7 +37,7 @@ class SavePeftModelCallback(TrainerCallback):
                     shutil.rmtree(best_checkpoint_folder)
                 shutil.copytree(state.best_model_checkpoint, best_checkpoint_folder)
             print(
-                f"效果最好的检查点为：{state.best_model_checkpoint}，评估结果为：{state.best_metric}"
+                f"Best checkpoint: {state.best_model_checkpoint}, eval metric: {state.best_metric}"
             )
         return control
 
