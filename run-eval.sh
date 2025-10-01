@@ -5,7 +5,7 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 export CUDA_VISIBLE_DEVICES=0
 
-python evaluation.py \
+python3.11 ./evaluation.py \
   --test_data ../datasets/uzbek_voice/data/test/metadata.csv \
   --model_path ./output/output/whisper-large-v3-uzbek-2xH100-adalora/whisper-large-v3/checkpoint-final-merged \
   --batch_size 16 \
