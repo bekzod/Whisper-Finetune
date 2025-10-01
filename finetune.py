@@ -223,6 +223,22 @@ def main():
         local_files_only=args.local_files_only,
     )
 
+    # ---------- Save processor configs ----------
+    # Ensure output dir exists and save processor there for training artifacts
+    base_name = (
+        args.base_model[:-1] if args.base_model.endswith("/") else args.base_model
+    )
+    output_dir = os.path.join(args.output_dir, os.path.basename(base_name))
+    os.makedirs(output_dir, exist_ok=True)
+
+    # 1) Save into the training output root (for convenience / reuse)
+    processor.save_pretrained(output_dir)
+    print(f"✅ Saved processor files (incl. preprocessor_config.json) to: {output_dir}")
+
+    # (Optional) also keep a copy next to the base model (comment out if undesired)
+    # processor.save_pretrained(args.base_model)
+    # print(f"✅ Saved processor files next to base model: {args.base_model}")
+
     # ----- Datasets -----
     if args.test_data is None:
         # If no test data provided, load train data and split it
@@ -338,12 +354,6 @@ def main():
             )
         model = get_peft_model(model, config)
 
-    # ----- Output dir -----
-    base_name = (
-        args.base_model[:-1] if args.base_model.endswith("/") else args.base_model
-    )
-    output_dir = os.path.join(args.output_dir, os.path.basename(base_name))
-
     # ----- Training args -----
     training_args = Seq2SeqTrainingArguments(
         output_dir=output_dir,
@@ -428,7 +438,7 @@ def main():
 
     # ---- Training ----
     # Keep training free of forced prompt so adapters can learn freely
-    model.config.forced_decoder_ids = train_forced_decoder_ids
+    model.config.forced_decoder_ids = None
     trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
 
     # ---- Save & Export ----
@@ -439,19 +449,24 @@ def main():
 
     # Save PEFT adapter
     if training_args.local_rank in (0, -1):
-        model.save_pretrained(
-            os.path.join(output_dir, "checkpoint-final"), safe_serialization=True
-        )
+        final_dir = os.path.join(output_dir, "checkpoint-final")
+        os.makedirs(final_dir, exist_ok=True)
+
+        model.save_pretrained(final_dir, safe_serialization=True)
+        # 2) Save processor next to the final adapter checkpoint
+        processor.save_pretrained(final_dir)
+        print(f"✅ Saved processor files to: {final_dir}")
 
         # (Optional) merge LoRA into base weights for a single merged model
         try:
             if isinstance(model, PeftModel):
                 merged = model.merge_and_unload()
-                # merged = merged.to(torch.bfloat16)
-                merged.save_pretrained(
-                    os.path.join(output_dir, "checkpoint-final-merged"),
-                    safe_serialization=True,
-                )
+                merged_dir = os.path.join(output_dir, "checkpoint-final-merged")
+                os.makedirs(merged_dir, exist_ok=True)
+                merged.save_pretrained(merged_dir, safe_serialization=True)
+                # 3) Save processor next to the merged weights
+                processor.save_pretrained(merged_dir)
+                print(f"✅ Saved processor files to: {merged_dir}")
         except Exception as e:
             warnings.warn(f"Merge-and-unload skipped: {e}")
 
@@ -459,6 +474,11 @@ def main():
     if training_args.push_to_hub and (training_args.local_rank in (0, -1)):
         hub_model_id = args.hub_model_id if args.hub_model_id else output_dir
         model.push_to_hub(hub_model_id)
+        # When pushing to hub, processors are auto-handled if you call processor.push_to_hub
+        try:
+            processor.push_to_hub(hub_model_id)
+        except Exception as e:
+            warnings.warn(f"Pushing processor to Hub skipped: {e}")
 
     # W&B will be automatically finished by the trainer
 
