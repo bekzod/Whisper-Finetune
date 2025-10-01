@@ -1,6 +1,6 @@
 import re
 from dataclasses import dataclass
-from typing import Any, List, Dict, Union
+from typing import Any, List, Dict, Optional
 
 import torch
 from zhconv import convert
