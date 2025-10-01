@@ -447,6 +447,7 @@ def main():
         try:
             if isinstance(model, PeftModel):
                 merged = model.merge_and_unload()
+                # merged = merged.to(torch.bfloat16)
                 merged.save_pretrained(
                     os.path.join(output_dir, "checkpoint-final-merged"),
                     safe_serialization=True,
