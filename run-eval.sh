@@ -7,12 +7,11 @@ export CUDA_VISIBLE_DEVICES=0
 
 python3.11 ./evaluation.py \
   --test_data ../datasets/uzbek_voice/data/test/metadata.csv \
-  --model_path ./output/whisper-large-v3-uzbek-2xH100-adalora/whisper-large-v3/checkpoint-final-merged \
+  --model_path ../models/output/whisper-large-v3-uzbek-2xH100-adalora/whisper-large-v3/checkpoint-final-merged \
   --batch_size 16 \
   --num_workers 8 \
   --language Uzbek \
   --remove_pun True \
-  --to_simple False \
   --timestamps False \
   --min_audio_len 0.5 \
   --max_audio_len 30 \
