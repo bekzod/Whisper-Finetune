@@ -20,8 +20,8 @@ accelerate launch --multi_gpu --num_processes=2 --config_file ./configs/accelera
   --lora_r 32 \
   --lora_alpha 64 \
   --lora_dropout 0.05 \
-  --logging_steps 250 \
-  --eval_steps 250 \
+  --logging_steps 200 \
+  --eval_steps 200 \
   --save_steps 600 \
   --save_total_limit 5 \
   --wandb_project whisper-uzbek \
