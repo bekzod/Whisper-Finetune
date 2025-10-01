@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing import Any, List, Dict, Optional
 
 import torch
+import numpy as np
 from zhconv import convert
 
 
@@ -47,11 +48,29 @@ class DataCollatorSpeechSeq2SeqWithPadding:
         # Accept either precomputed "input_features" or raw "audio" dicts
         if "input_features" in features[0]:
             input_features = [f["input_features"] for f in features]
-            batch = {
-                "input_features": torch.tensor(input_features, dtype=torch.float32)
-                if not torch.is_tensor(input_features[0])
-                else torch.stack(input_features, dim=0)
-            }
+            # Avoid slow torch.tensor(list_of_ndarrays); use NumPy stacking or torch.stack directly
+            first = input_features[0]
+            if torch.is_tensor(first):
+                batch = {"input_features": torch.stack(input_features, dim=0)}
+            else:
+                try:
+                    if hasattr(first, "shape"):
+                        # numpy-like arrays
+                        np_batch = np.stack(input_features, axis=0).astype(
+                            np.float32, copy=False
+                        )
+                    else:
+                        # lists/tuples of floats
+                        np_batch = np.asarray(input_features, dtype=np.float32)
+                        if np_batch.dtype == object:
+                            raise ValueError(
+                                "Ragged input_features detected (dtype=object). Ensure equal shapes or provide raw 'audio' for vectorized padding."
+                            )
+                    batch = {"input_features": torch.from_numpy(np_batch)}
+                except Exception as e:
+                    raise ValueError(
+                        f"Failed to batch input_features; ensure all feature arrays share the same shape. Original error: {e}"
+                    )
         else:
             # Expect something like {"audio": {"array": np.ndarray, "sampling_rate": 16000}}
             audio_inputs = [f["audio"] for f in features]
