@@ -10,11 +10,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import WhisperForConditionalGeneration, WhisperProcessor
 
-from utils.data_utils import (
-    DataCollatorSpeechSeq2SeqWithPadding,
-    remove_punctuation,
-    to_simple,
-)
+from utils.data_utils import DataCollatorSpeechSeq2SeqWithPadding, remove_punctuation
 from utils.reader import CustomDataset
 from utils.utils import print_arguments, add_arguments
 
@@ -34,16 +30,10 @@ add_arg("num_workers", type=int, default=8, help="Number of threads for data loa
 add_arg(
     "language",
     type=str,
-    default="Chinese",
+    default="Uzbek",
     help="Set language, can be full name or abbreviation, if None then evaluates multilingual",
 )
 add_arg("remove_pun", type=bool, default=True, help="Whether to remove punctuation")
-add_arg(
-    "to_simple",
-    type=bool,
-    default=True,
-    help="Whether to convert to simplified Chinese",
-)
 add_arg(
     "timestamps",
     type=bool,
@@ -148,10 +138,7 @@ def main():
                 if args.remove_pun:
                     decoded_preds = remove_punctuation(decoded_preds)
                     decoded_labels = remove_punctuation(decoded_labels)
-                # Convert traditional Chinese to simplified Chinese
-                if args.to_simple:
-                    decoded_preds = to_simple(decoded_preds)
-                    decoded_labels = to_simple(decoded_labels)
+
                 metric.add_batch(predictions=decoded_preds, references=decoded_labels)
         # Delete computation records
         del generated_tokens, labels, batch
