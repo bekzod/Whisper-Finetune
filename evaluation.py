@@ -2,7 +2,6 @@ import argparse
 import functools
 import gc
 import os
-import platform
 
 import evaluate
 import numpy as np
