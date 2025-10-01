@@ -16,7 +16,6 @@ accelerate launch --multi_gpu --num_processes=2 --config_file ./configs/accelera
   --learning_rate 2e-4 \
   --warmup_ratio 0.15 \
   --lr_scheduler_type cosine \
-  --label_smoothing_factor 0.12 \
   --use_adalora True \
   --lora_r 32 \
   --lora_alpha 64 \
