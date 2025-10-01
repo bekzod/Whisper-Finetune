@@ -10,8 +10,8 @@ accelerate launch --multi_gpu --num_processes=2 --config_file ./configs/accelera
   --base_model ../models/whisper-large-v3 \
   --output_dir ./output/whisper-large-v3-uzbek-2xH100-adalora \
   --num_train_epochs 6 \
-  --per_device_train_batch_size 8 \
-  --per_device_eval_batch_size 8 \
+  --per_device_train_batch_size 10 \
+  --per_device_eval_batch_size 10 \
   --gradient_accumulation_steps 4 \
   --learning_rate 2e-4 \
   --warmup_ratio 0.1 \
@@ -20,8 +20,9 @@ accelerate launch --multi_gpu --num_processes=2 --config_file ./configs/accelera
   --lora_r 32 \
   --lora_alpha 64 \
   --lora_dropout 0.05 \
-  --eval_steps 500 \
-  --save_steps 2000 \
+  --logging_steps 250 \
+  --eval_steps 250 \
+  --save_steps 600 \
   --save_total_limit 5 \
   --wandb_project whisper-uzbek \
   --wandb_run_name whisper-v3-uzbek-2xH100-adalora \
