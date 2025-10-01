@@ -106,6 +106,8 @@ add_arg("lora_r", type=int, default=16, help="LoRA rank (typical 8-16 for Whispe
 add_arg("lora_alpha", type=int, default=32, help="LoRA alpha")
 add_arg("lora_dropout", type=float, default=0.05, help="LoRA dropout")
 
+# AdaLoRA schedule is inlined in code (no extra CLI controls)
+
 # Training schedule
 add_arg("num_train_epochs", type=int, default=3, help="Epochs")
 add_arg("per_device_train_batch_size", type=int, default=8, help="Per-GPU train batch")
@@ -331,16 +333,16 @@ def main():
         print("Adding LoRA/AdaLoRA adapters...")
         if args.use_adalora:
             config = AdaLoraConfig(
-                init_r=max(8, args.lora_r),
-                target_r=max(4, args.lora_r // 2),
-                beta1=0.85,
-                beta2=0.85,
-                tinit=200,
-                tfinal=1000,
-                deltaT=10,
+                init_r=64,
+                target_r=8,
+                beta1=0.6,
+                beta2=0.6,
+                tinit=50,
+                tfinal=400,
+                deltaT=5,
                 lora_alpha=args.lora_alpha,
                 lora_dropout=args.lora_dropout,
-                orth_reg_weight=0.5,
+                orth_reg_weight=0.75,
                 target_modules=target_modules,
                 total_step=total_step,
             )
