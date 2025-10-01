@@ -8,7 +8,7 @@ export WANDB_API_KEY='2dfc22d8af7805df156e7f31ea3bc090ec99d52e'
 
 accelerate launch --multi_gpu --num_processes=2 --config_file ./configs/accelerate.yaml finetune.py \
   --base_model ../models/whisper-large-v3 \
-  --output_dir ./output/whisper-large-v3-uzbek-2xH100-adalora \
+  --output_dir ../models/output \
   --num_train_epochs 6 \
   --per_device_train_batch_size 12 \
   --per_device_eval_batch_size 12 \
