@@ -24,7 +24,7 @@ accelerate launch --multi_gpu --num_processes=2 --config_file ./configs/accelera
   --lora_dropout 0.02 \
   --logging_steps 200 \
   --eval_steps 200 \
-  --save_steps 600 \
+  --save_steps 400 \
   --save_total_limit 5 \
   --wandb_project whisper-uzbek \
   --wandb_run_name whisper-v3-uzbek-2xH100-adalora \
