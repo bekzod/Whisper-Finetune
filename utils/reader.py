@@ -446,8 +446,9 @@ class CustomDataset(Dataset):
 
                     if os.path.isfile(audio_path):
                         line["audio"]["path"] = audio_path
-                        sample, sr = soundfile.read(audio_path)
-                        duration = round(sample.shape[-1] / float(sr), 2)
+                        # FAST: use soundfile.info (no full decode)
+                        info = soundfile.info(audio_path)
+                        duration = round(info.frames / float(info.samplerate), 2)
                         line["duration"] = duration
                     else:
                         # Skip if audio file not found
@@ -492,26 +493,39 @@ class CustomDataset(Dataset):
 
         language = data_list["language"] if "language" in data_list.keys() else None
 
+        # --------- FAST IO + CHEAP MONO ----------
         if "start_time" not in data_list["audio"].keys():
-            sample, sample_rate = soundfile.read(audio_file, dtype="float32")
+            # Read as (frames, channels) without decoding twice
+            sample, sample_rate = soundfile.read(
+                audio_file, dtype="float32", always_2d=True
+            )  # shape: (N, C)
         else:
             start_time, end_time = (
                 data_list["audio"]["start_time"],
                 data_list["audio"]["end_time"],
             )
-            # Split and read audio
+            # Split and read audio (ensure 2D)
             sample, sample_rate = self.slice_from_file(
                 audio_file, start=start_time, end=end_time
-            )
-        sample = sample.T
+            )  # shape: (N, C)
 
-        # Convert to mono channel
+        # Convert to mono channel cheaply
+        # sample shape is (N, C). If mono requested and C>1, average channels.
         if self.mono:
-            sample = librosa.to_mono(sample)
+            if sample.ndim == 2:
+                if sample.shape[1] > 1:
+                    sample = sample.mean(axis=1).astype(np.float32)
+                else:
+                    sample = sample[:, 0].astype(np.float32)
+            else:
+                sample = sample.astype(np.float32)
+        else:
+            # keep multi-channel by flattening last dim if needed
+            if sample.ndim == 2 and sample.shape[1] == 1:
+                sample = sample[:, 0].astype(np.float32)
 
         # ------------------------------
         # Example A: remove silence for non-timestamp training
-        # (We avoid changing time alignment when timestamps=True)
         # ------------------------------
         if not self.timestamps:
             sample = remove_silence_librosa(
@@ -534,6 +548,7 @@ class CustomDataset(Dataset):
             sample = self.resample(
                 sample, orig_sr=sample_rate, target_sr=self.sample_rate
             )
+            sample_rate = self.sample_rate
 
         return sample, sample_rate, transcript, language
 
@@ -628,7 +643,10 @@ class CustomDataset(Dataset):
         start_frame = int(start * sample_rate)
         end_frame = int(end * sample_rate)
         sndfile.seek(start_frame)
-        sample = sndfile.read(frames=end_frame - start_frame, dtype="float32")
+        # ensure always_2d for consistent downstream handling
+        sample = sndfile.read(
+            frames=end_frame - start_frame, dtype="float32", always_2d=True
+        )
         return sample, sample_rate
 
     # Data augmentation
@@ -723,34 +741,69 @@ class CustomDataset(Dataset):
         sample *= 10.0 ** (gain / 20.0)
         return sample
 
-    # Audio resampling
+    # Audio resampling (fast polyphase with safe fallback)
     @staticmethod
     def resample(sample, orig_sr, target_sr):
-        sample = librosa.resample(sample, orig_sr=orig_sr, target_sr=target_sr)
-        return sample
+        sample = np.asarray(sample, dtype=np.float32)
+        if orig_sr == target_sr:
+            return sample
+        try:
+            from math import gcd
+            from scipy.signal import resample_poly
 
-    # Add noise
+            g = gcd(int(orig_sr), int(target_sr))
+            up = target_sr // g
+            down = orig_sr // g
+            # sample expected to be 1D; ensure it
+            if sample.ndim > 1:
+                sample = sample.reshape(-1)
+            out = resample_poly(sample, up, down)
+            return out.astype(np.float32, copy=False)
+        except Exception:
+            # Fallback to librosa if SciPy isn't available
+            return librosa.resample(
+                sample, orig_sr=orig_sr, target_sr=target_sr
+            ).astype(np.float32, copy=False)
+
+    # Add noise (fast: soundfile + cheap mono + our resampler)
     def add_noise(self, sample, sample_rate, noise_path, snr_dB, max_gain_db=300.0):
-        noise_sample, sr = librosa.load(noise_path, sr=sample_rate)
+        # sample is 1D float32 mono
+        noise, sr = soundfile.read(noise_path, dtype="float32", always_2d=True)
+        # Cheap mono
+        if noise.ndim == 2:
+            if noise.shape[1] > 1:
+                noise = noise.mean(axis=1).astype(np.float32)
+            else:
+                noise = noise[:, 0].astype(np.float32)
+        else:
+            noise = noise.astype(np.float32)
+
+        # Resample noise if needed (use fast polyphase)
+        if sr != sample_rate:
+            noise = self.resample(noise, orig_sr=sr, target_sr=sample_rate)
+
         # Normalize audio volume to ensure noise is not too loud
         target_db = -20
         gain = min(max_gain_db, target_db - self.rms_db(sample))
-        sample *= 10.0 ** (gain / 20.0)
+        sample = (sample * (10.0 ** (gain / 20.0))).astype(np.float32)
+
         # Specify noise volume
-        sample_rms_db, noise_rms_db = self.rms_db(sample), self.rms_db(noise_sample)
+        sample_rms_db, noise_rms_db = self.rms_db(sample), self.rms_db(noise)
         noise_gain_db = min(sample_rms_db - noise_rms_db - snr_dB, max_gain_db)
-        noise_sample *= 10.0 ** (noise_gain_db / 20.0)
+        noise = (noise * (10.0 ** (noise_gain_db / 20.0))).astype(np.float32)
+
         # Fix noise length
-        if noise_sample.shape[0] < sample.shape[0]:
-            diff_duration = sample.shape[0] - noise_sample.shape[0]
-            noise_sample = np.pad(noise_sample, (0, diff_duration), "wrap")
-        elif noise_sample.shape[0] > sample.shape[0]:
-            start_frame = random.randint(0, noise_sample.shape[0] - sample.shape[0])
-            noise_sample = noise_sample[start_frame : sample.shape[0] + start_frame]
-        sample += noise_sample
+        if noise.shape[0] < sample.shape[0]:
+            rep = int(np.ceil(sample.shape[0] / noise.shape[0]))
+            noise = np.tile(noise, rep)[: sample.shape[0]]
+        elif noise.shape[0] > sample.shape[0]:
+            start_frame = random.randint(0, noise.shape[0] - sample.shape[0])
+            noise = noise[start_frame : start_frame + sample.shape[0]]
+
+        sample = (sample + noise).astype(np.float32)
         return sample
 
     @staticmethod
     def rms_db(sample):
-        mean_square = np.mean(sample**2)
+        mean_square = np.mean(sample**2) + 1e-12  # numerical safety
         return 10 * np.log10(mean_square)
