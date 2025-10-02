@@ -10,7 +10,7 @@ export TOKENIZERS_PARALLELISM=false
 
 accelerate launch --multi_gpu --num_processes=2 --config_file ./configs/accelerate.yaml finetune.py \
   --base_model ../models/whisper-large-v3 \
-  --output_dir ../models/output-2 \
+  --output_dir ../models/output \
   --num_train_epochs 8 \
   --per_device_train_batch_size 32 \
   --per_device_eval_batch_size 32 \
