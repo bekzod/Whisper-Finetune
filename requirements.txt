@@ -20,3 +20,4 @@ starlette>=0.26.1
 tensorboardX>=2.6.2.2
 click~=8.1.8
 wandb==0.20.1
+evaluate
