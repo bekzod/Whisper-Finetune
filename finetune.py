@@ -100,6 +100,12 @@ add_arg("num_workers", type=int, default=os.cpu_count(), help="Dataloader worker
 
 # LoRA / AdaLoRA
 add_arg(
+    "use_lora",
+    type=bool,
+    default=True,
+    help="Enable LoRA/AdaLoRA (False for full fine-tuning)",
+)
+add_arg(
     "use_adalora", type=bool, default=True, help="Use AdaLoRA instead of standard LoRA"
 )
 add_arg("lora_r", type=int, default=16, help="LoRA rank (typical 8-16 for Whisper v3)")
@@ -324,37 +330,41 @@ def main():
     total_step = args.num_train_epochs * max(1, len(train_dataset))
     target_modules = ["k_proj", "q_proj", "v_proj", "out_proj", "fc1", "fc2"]
 
-    if args.resume_from_checkpoint:
-        print("Loading adapters from checkpoint (resume).")
-        model = PeftModel.from_pretrained(
-            model, args.resume_from_checkpoint, is_trainable=True
-        )
-    else:
-        print("Adding LoRA/AdaLoRA adapters...")
-        if args.use_adalora:
-            config = AdaLoraConfig(
-                init_r=64,
-                target_r=8,
-                beta1=0.6,
-                beta2=0.6,
-                tinit=50,
-                tfinal=400,
-                deltaT=5,
-                lora_alpha=args.lora_alpha,
-                lora_dropout=args.lora_dropout,
-                orth_reg_weight=0.75,
-                target_modules=target_modules,
-                total_step=total_step,
+    if args.use_lora:
+        if args.resume_from_checkpoint:
+            print("Loading adapters from checkpoint (resume).")
+            model = PeftModel.from_pretrained(
+                model, args.resume_from_checkpoint, is_trainable=True
             )
         else:
-            config = LoraConfig(
-                r=args.lora_r,
-                lora_alpha=args.lora_alpha,
-                target_modules=target_modules,
-                lora_dropout=args.lora_dropout,
-                bias="none",
-            )
-        model = get_peft_model(model, config)
+            print("Adding LoRA/AdaLoRA adapters...")
+            if args.use_adalora:
+                config = AdaLoraConfig(
+                    init_r=64,
+                    target_r=8,
+                    beta1=0.6,
+                    beta2=0.6,
+                    tinit=50,
+                    tfinal=400,
+                    deltaT=5,
+                    lora_alpha=args.lora_alpha,
+                    lora_dropout=args.lora_dropout,
+                    orth_reg_weight=0.75,
+                    target_modules=target_modules,
+                    total_step=total_step,
+                )
+            else:
+                config = LoraConfig(
+                    r=args.lora_r,
+                    lora_alpha=args.lora_alpha,
+                    target_modules=target_modules,
+                    lora_dropout=args.lora_dropout,
+                    bias="none",
+                )
+            model = get_peft_model(model, config)
+    else:
+        print("Using full fine-tuning (no LoRA)...")
+        # No PEFT adapters - model remains as is for full fine-tuning
 
     # ----- Training args -----
     training_args = Seq2SeqTrainingArguments(
