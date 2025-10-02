@@ -23,7 +23,13 @@ add_arg(
     "model_path",
     type=str,
     default="models/whisper-tiny-finetune",
-    help="Path to the merged model, or the model name on huggingface",
+    help="Path to the base or merged model, or the model name on huggingface",
+)
+add_arg(
+    "adapter_path",
+    type=str,
+    default=None,
+    help="Optional path or Hub ID of a PEFT adapter to merge into the base model before evaluation",
 )
 add_arg("batch_size", type=int, default=16, help="Batch size for evaluation")
 add_arg("num_workers", type=int, default=8, help="Number of threads for data loading")
@@ -69,6 +75,11 @@ assert "openai" == os.path.dirname(args.model_path) or os.path.exists(
 ), (
     f"Model file {args.model_path} does not exist, please check if the model has been successfully merged, or if it's an existing model on huggingface"
 )
+# If adapter is provided and we're restricted to local files, ensure it exists
+if args.adapter_path and args.local_files_only:
+    assert os.path.exists(args.adapter_path), (
+        f"Adapter path {args.adapter_path} does not exist; set local_files_only=False to allow downloading from the Hub"
+    )
 
 
 def main():
@@ -84,6 +95,22 @@ def main():
     model = WhisperForConditionalGeneration.from_pretrained(
         args.model_path, device_map="auto", local_files_only=args.local_files_only
     )
+    # If a PEFT adapter is provided, merge it into the base model
+    if args.adapter_path:
+        try:
+            from peft import PeftModel
+        except Exception as e:
+            raise RuntimeError(
+                "You provided adapter_path, but the 'peft' package is not installed. Please install peft to use adapters."
+            ) from e
+        model = PeftModel.from_pretrained(
+            model,
+            args.adapter_path,
+            local_files_only=args.local_files_only,
+        )
+        # Merge LoRA/PEFT weights into the base model for efficient inference
+        if hasattr(model, "merge_and_unload"):
+            model = model.merge_and_unload()
     model.generation_config.language = args.language.lower()
     model.generation_config.forced_decoder_ids = None
     model.eval()

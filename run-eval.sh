@@ -7,7 +7,8 @@ export CUDA_VISIBLE_DEVICES=0
 
 python3.11 ./evaluation.py \
   --test_data ../datasets/dataset_for_stt_ttsmodels/metadata.csv \
-  --model_path ../models/output/whisper-large-v3-0/checkpoint-final-merged \
+  --model_path ../models/whisper-large-v3 \
+  --adapter_path ../models/output/whisper-large-v3-1/checkpoint-best \
   --batch_size 16 \
   --num_workers 8 \
   --language Uzbek \
