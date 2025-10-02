@@ -376,7 +376,13 @@ class CustomDataset(Dataset):
                     "audio",
                     "file",
                 ]
-                text_columns = ["text", "sentence", "transcript", "transcription"]
+                text_columns = [
+                    "text",
+                    "sentence",
+                    "transcript",
+                    "transcription",
+                    "text_latin",
+                ]
 
                 # Find the correct columns
                 audio_col_idx = None
@@ -557,9 +563,8 @@ class CustomDataset(Dataset):
             f"transcript should be list, current type: {type(transcript)}"
         )
         data = dict()
-        # === UPDATED: always start with current prefix (SOT + lang + task), WITHOUT <|notimestamps|> in timestamp mode
-        # We'll ensure tokenizer is set appropriately before calling this.
-        labels = list(self.processor.tokenizer.prefix_tokens)
+        labels = self.processor.tokenizer.get_vocab()
+        labels = self.processor.tokenizer.prefix_tokens[:3]
         for t in transcript:
             # Encode target text as label IDs
             start = (
@@ -574,16 +579,10 @@ class CustomDataset(Dataset):
                 end = self.vocab[f"<|{end:.2f}|>"]
             else:
                 end = self.timestamp_begin + round(end * 100) // 2
-
-            # === UPDATED: don't add BOS/EOS from text pieces; ask for raw text ids
-            text_ids = self.processor.tokenizer(
-                t["text"], add_special_tokens=False
-            ).input_ids
-
+            label = self.processor(text=t["text"]).input_ids[4:-1]
             labels.extend([start])
-            labels.extend(text_ids)
+            labels.extend(label)
             labels.extend([end])
-
         data["labels"] = labels + [self.endoftext]
         return data
 
@@ -592,65 +591,50 @@ class CustomDataset(Dataset):
             # Get audio data, sample rate, and text from data list
             sample, sample_rate, transcript, language = self._get_list_data(idx=idx)
 
-            # === UPDATED: set prefix tokens consistently for this example
-            # task="transcribe"; include <|notimestamps|> only if self.timestamps is False
+            # Can set language for individual data
             self.processor.tokenizer.set_prefix_tokens(
-                language=language if language is not None else self.language,
-                task="transcribe",
-                no_timestamps=not self.timestamps,
+                language=language if language is not None else self.language
             )
 
             if len(transcript) > 0:
-                # Calculate log-Mel input features from input audio array
-                feats = self.processor(
-                    audio=sample, sampling_rate=self.sample_rate
-                ).input_features
-                # normalize to single example (drop possible batch dim)
-                if isinstance(feats, list):
-                    feats = feats[0]
-                elif (
-                    hasattr(feats, "shape") and getattr(feats, "shape", [None])[0] == 1
-                ):
-                    feats = feats[0]
-
                 if self.timestamps:
-                    # -------- timestamps training: build labels with alternating ts/text --------
+                    # -------- timestamps training: keep your existing label building --------
                     data = self._load_timestamps_transcript(transcript=transcript)
+                    # Calculate log-Mel input features from input audio array
+                    feats = self.processor(
+                        audio=sample, sampling_rate=self.sample_rate
+                    ).input_features
+                    # normalize to single example (drop possible batch dim)
+                    if isinstance(feats, list):
+                        feats = feats[0]
+                    elif (
+                        hasattr(feats, "shape")
+                        and getattr(feats, "shape", [None])[0] == 1
+                    ):
+                        feats = feats[0]
                     data["input_features"] = feats
                 else:
-                    # -------- non-timestamps training: prefix + raw text + <|endoftext|> --------
-                    # Use tokenizer to get text ids WITHOUT BOS/EOS, we already manage them
-                    text_ids = self.processor.tokenizer(
-                        transcript, add_special_tokens=False
-                    ).input_ids
-
-                    # prefix_tokens contains: <|startoftranscript|><|lang|><|transcribe|><|notimestamps|>
-                    prefix = list(self.processor.tokenizer.prefix_tokens)
-
-                    labels = prefix + text_ids + [self.endoftext]
+                    # -------- non-timestamps training: return features + RAW TEXT --------
+                    feats = self.processor(
+                        audio=sample, sampling_rate=self.sample_rate
+                    ).input_features
+                    # normalize to single example (drop possible batch dim)
+                    if isinstance(feats, list):
+                        feats = feats[0]
+                    elif (
+                        hasattr(feats, "shape")
+                        and getattr(feats, "shape", [None])[0] == 1
+                    ):
+                        feats = feats[0]
 
                     data = {
-                        "input_features": feats,
-                        "labels": labels,
+                        "input_features": feats,  # (80, T) or torch tensor of same
+                        "text": transcript,  # <-- collator will batch-tokenize
                     }
             else:
-                # If there's no text, use prefix + <|nospeech|> + <|endoftext|>
-                feats = self.processor(
-                    audio=sample, sampling_rate=self.sample_rate
-                ).input_features
-                if isinstance(feats, list):
-                    feats = feats[0]
-                elif (
-                    hasattr(feats, "shape") and getattr(feats, "shape", [None])[0] == 1
-                ):
-                    feats = feats[0]
-
-                # === UPDATED: full prefix for no-speech cases
-                prefix = list(self.processor.tokenizer.prefix_tokens)
-                data = {
-                    "input_features": feats,
-                    "labels": prefix + [self.nospeech, self.endoftext],
-                }
+                # If there's no text, use <|nospeech|> token (kept as IDs; collator pads)
+                data = self.processor(audio=sample, sampling_rate=self.sample_rate)
+                data["labels"] = [self.startoftranscript, self.nospeech, self.endoftext]
 
             return data
 
