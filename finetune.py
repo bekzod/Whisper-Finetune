@@ -461,13 +461,56 @@ def main():
         # (Optional) merge LoRA into base weights for a single merged model
         try:
             if isinstance(model, PeftModel):
-                merged = model.merge_and_unload()
-                merged_dir = os.path.join(output_dir, "checkpoint-final-merged")
-                os.makedirs(merged_dir, exist_ok=True)
-                merged.save_pretrained(merged_dir, safe_serialization=True)
-                # 3) Save processor next to the merged weights
-                processor.save_pretrained(merged_dir)
-                print(f"✅ Saved processor files to: {merged_dir}")
+                # Read optional knobs (fallback to sensible defaults if not provided via CLI)
+                skip_merge = getattr(args, "skip_merge", False)
+                merge_on_cpu = getattr(args, "merge_on_cpu", True)
+                merge_bf16 = getattr(args, "merge_bf16", True)
+                save_sharded = getattr(args, "save_sharded", True)
+                merge_max_shard_size = getattr(args, "merge_max_shard_size", "2000MB")
+
+                if skip_merge:
+                    print("⏭️ Skipping merge_and_unload because skip_merge=True")
+                else:
+                    print(
+                        "🔄 Starting merge_and_unload of LoRA adapters into base model..."
+                    )
+                    if merge_on_cpu:
+                        try:
+                            print(
+                                "↪️ Moving model to CPU for merging to reduce GPU memory usage..."
+                            )
+                            model = model.to("cpu")
+                        except Exception as move_e:
+                            warnings.warn(
+                                f"Failed to move model to CPU for merge: {move_e}"
+                            )
+                    merged = model.merge_and_unload()
+
+                    if merge_bf16:
+                        try:
+                            print("🧪 Casting merged model to bfloat16 before save...")
+                            merged = merged.to(torch.bfloat16)
+                        except Exception as cast_e:
+                            warnings.warn(
+                                f"bf16 cast failed, saving in original dtype: {cast_e}"
+                            )
+
+                    merged_dir = os.path.join(output_dir, "checkpoint-final-merged")
+                    os.makedirs(merged_dir, exist_ok=True)
+                    print(
+                        f"💾 Saving merged model to: {merged_dir} (sharded={save_sharded}, max_shard_size={merge_max_shard_size})"
+                    )
+
+                    save_kwargs = {"safe_serialization": True}
+                    if save_sharded:
+                        save_kwargs["max_shard_size"] = merge_max_shard_size
+                    merged.save_pretrained(merged_dir, **save_kwargs)
+
+                    # 3) Save processor next to the merged weights
+                    processor.save_pretrained(merged_dir)
+                    print(f"✅ Saved processor files to: {merged_dir}")
+            else:
+                print("ℹ️ Model is not a PeftModel; skipping merge.")
         except Exception as e:
             warnings.warn(f"Merge-and-unload skipped: {e}")
 
