@@ -1,22 +1,22 @@
 #!/bin/bash
-
 export NVIDIA_TF32_OVERRIDE=0
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-unset  CUDA_DEVICE_MAX_CONNECTIONS
 export CUDA_VISIBLE_DEVICES=0,1
-export RAYON_NUM_THREADS=1
 export TOKENIZERS_PARALLELISM=false
+export RAYON_NUM_THREADS=1
 
 # Diagnostics / stability
-export NCCL_DEBUG=INFO
-export NCCL_DEBUG_SUBSYS=INIT,COLL
-export NCCL_ASYNC_ERROR_HANDLING=1
+export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 export TORCH_NCCL_BLOCKING_WAIT=1
 export NCCL_TIMEOUT=600
-export TORCH_NCCL_TRACE_BUFFER_SIZE=$((16*1024*1024))
-export NCCL_IB_DISABLE=1
-# If you still see weirdness on H100: try disabling NVLS
-# export NCCL_NVLS_ENABLE=0
+export NCCL_IB_DISABLE=1             # single-node hygiene
+
+# EITHER: disable W&B to test
+# export WANDB_DISABLED=true
+
+# OR: pre-login headlessly (preferred long-term)
+# export WANDB_API_KEY="<NEW_KEY>"
+# python -c "import os,wandb; wandb.login(key=os.environ['WANDB_API_KEY'])"
 
 accelerate launch --multi_gpu --num_processes=2 --config_file ./configs/accelerate.yaml finetune.py \
   --base_model ../models/whisper-large-v3 \
@@ -39,10 +39,5 @@ accelerate launch --multi_gpu --num_processes=2 --config_file ./configs/accelera
   --wandb_project whisper-uzbek \
   --wandb_run_name whisper-v3-uzbek-2xH100-adalora \
   --wandb_tags uzbek,whisper,adalora,H100 \
-  --output_dir ../models/output \
-  --train_data ../datasets/uzbek_voice/data/train/metadata.csv\
-    # ../datasets/dataset_for_stt_ttsmodels/metadata.csv+\
-    # ../datasets/FeruzaSpeech/train.csv+\
-    # ../datasets/FeruzaSpeech/dev.csv+\
-    # ../datasets/FeruzaSpeech/test.csv
-  # --test_data ../datasets/uzbek_voice/test.json \
+  --report_to wandb     # change to 'none' if WANDB_DISABLED=true \
+  --train_data ../datasets/uzbek_voice/data/train/metadata.csv
