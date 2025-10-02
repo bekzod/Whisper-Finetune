@@ -2,11 +2,21 @@
 
 export NVIDIA_TF32_OVERRIDE=0
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-export CUDA_DEVICE_MAX_CONNECTIONS=1
+unset  CUDA_DEVICE_MAX_CONNECTIONS
 export CUDA_VISIBLE_DEVICES=0,1
-export WANDB_API_KEY='2dfc22d8af7805df156e7f31ea3bc090ec99d52e'
 export RAYON_NUM_THREADS=1
 export TOKENIZERS_PARALLELISM=false
+
+# Diagnostics / stability
+export NCCL_DEBUG=INFO
+export NCCL_DEBUG_SUBSYS=INIT,COLL
+export NCCL_ASYNC_ERROR_HANDLING=1
+export TORCH_NCCL_BLOCKING_WAIT=1
+export NCCL_TIMEOUT=600
+export TORCH_NCCL_TRACE_BUFFER_SIZE=$((16*1024*1024))
+export NCCL_IB_DISABLE=1
+# If you still see weirdness on H100: try disabling NVLS
+# export NCCL_NVLS_ENABLE=0
 
 accelerate launch --multi_gpu --num_processes=2 --config_file ./configs/accelerate.yaml finetune.py \
   --base_model ../models/whisper-large-v3 \
