@@ -12,9 +12,9 @@ accelerate launch --multi_gpu --num_processes=2 --config_file ./configs/accelera
   --base_model ../models/whisper-large-v3 \
   --output_dir ../models/output-full-finetune \
   --num_train_epochs 8 \
-  --per_device_train_batch_size 8 \
-  --per_device_eval_batch_size 8 \
-  --gradient_accumulation_steps 8 \
+  --per_device_train_batch_size 16 \
+  --per_device_eval_batch_size 16 \
+  --gradient_accumulation_steps 4 \
   --learning_rate 1e-5 \
   --warmup_ratio 0.1 \
   --lr_scheduler_type cosine \
