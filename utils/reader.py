@@ -4,11 +4,10 @@ import os
 import random
 import sys
 from typing import List
-import glob
 
 import librosa
 import numpy as np
-import pandas as pd
+
 import soundfile
 from torch.utils.data import Dataset
 from tqdm import tqdm
@@ -74,7 +73,7 @@ class CustomDataset(Dataset):
         """
         Args:
             data_list_path: Path to the data list file, or path to the binary list header file.
-                           Supports JSON, JSONL, CSV, and Parquet formats.
+                           Supports JSON, JSONL, and CSV formats.
                            Multiple paths can be specified separated by '+' to combine datasets,
                            e.g., '../datasets/train.json+../datasets/cleaned.json'
                            CSV format supports:
@@ -164,19 +163,6 @@ class CustomDataset(Dataset):
                 )
                 current_data_list = dataset_reader.get_keys()
                 self.data_list.extend(current_data_list)
-            elif data_path.endswith(".parquet"):
-                # Load single parquet file
-                df = pd.read_parquet(data_path)
-                self._process_dataframe(df, data_path)
-            elif "*" in data_path and "parquet" in data_path:
-                # Load multiple parquet files using glob pattern
-                files = glob.glob(data_path)
-                if not files:
-                    print(f"Warning: No files found matching pattern {data_path}")
-                    continue
-                # Load and concatenate all matching parquet files
-                df = pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
-                self._process_dataframe(df, data_path)
             elif data_path.endswith(".csv"):
                 # Load CSV file
                 self._load_csv_data(data_path)
@@ -224,98 +210,6 @@ class CustomDataset(Dataset):
                         ):
                             continue
                     self.data_list.append(dict(line))
-
-    def _process_dataframe(self, df, data_path):
-        """Process a pandas DataFrame loaded from parquet file(s)."""
-        for _, row in tqdm(
-            df.iterrows(),
-            total=len(df),
-            desc=f"Processing parquet data from {data_path}",
-        ):
-            # Convert row to dictionary
-            line = row.to_dict()
-
-            # Handle different possible column names and structures
-            # Common parquet dataset formats may have different column names
-
-            # Map common column names to expected format
-            if "audio" in line and isinstance(line["audio"], dict):
-                # Already in expected format
-                pass
-            elif (
-                "audio_path" in line
-                or "path" in line
-                or "file" in line
-                or "file_name" in line
-            ):
-                # Create audio dict from path column
-                audio_path = (
-                    line.get("audio_path")
-                    or line.get("path")
-                    or line.get("file")
-                    or line.get("file_name")
-                )
-                line["audio"] = {"path": audio_path}
-                if "start_time" in line:
-                    line["audio"]["start_time"] = line["start_time"]
-                if "end_time" in line:
-                    line["audio"]["end_time"] = line["end_time"]
-
-            # Handle text/transcription columns - prioritize 'text' column
-            if "sentence" not in line and "sentences" not in line:
-                # First try 'text' column as primary fallback
-                if "text" in line:
-                    line["sentence"] = line["text"]
-                elif "transcription" in line:
-                    line["sentence"] = line["transcription"]
-                elif "transcript" in line:
-                    line["sentence"] = line["transcript"]
-            # Also handle case where 'sentence' exists but is empty/null
-            elif "sentence" in line and (
-                line["sentence"] is None or line["sentence"] == ""
-            ):
-                if "text" in line and line["text"] is not None and line["text"] != "":
-                    line["sentence"] = line["text"]
-
-            # Ensure duration field exists
-            if "duration" not in line:
-                # If duration is missing, try to infer from start/end times or set a default
-                if (
-                    "audio" in line
-                    and "start_time" in line["audio"]
-                    and "end_time" in line["audio"]
-                ):
-                    line["duration"] = (
-                        line["audio"]["end_time"] - line["audio"]["start_time"]
-                    )
-                else:
-                    # Skip if we can't determine duration
-                    continue
-
-            # Apply filtering criteria
-            if line["duration"] < self.min_duration:
-                continue
-            if self.max_duration != -1 and line["duration"] > self.max_duration:
-                continue
-
-            # Check sentence length limits
-            if "sentence" in line.keys():
-                if (
-                    len(line["sentence"]) < self.min_sentence
-                    or len(line["sentence"]) > self.max_sentence
-                ):
-                    continue
-            elif "sentences" in line.keys():
-                sentence_len = 0
-                for s in line["sentences"]:
-                    if isinstance(s, dict):
-                        sentence_len += len(s.get("text", ""))
-                    else:
-                        sentence_len += len(str(s))
-                if sentence_len < self.min_sentence or sentence_len > self.max_sentence:
-                    continue
-
-            self.data_list.append(dict(line))
 
     def _load_csv_data(self, data_path):
         """Load data from CSV file. Supports multiple CSV formats with proper header mapping."""

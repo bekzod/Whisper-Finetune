@@ -48,13 +48,13 @@ add_arg(
     "train_data",
     type=str,
     default="../datasets/train.json",
-    help="Path to the training dataset. Supports JSON, JSONL, CSV, and Parquet formats. Multiple datasets can be combined using '+' separator. Glob patterns are supported for parquet files, e.g., '../datasets/train.json+../datasets/cleaned.json' or '/data/train-*.parquet'. CSV format supports 'filename,text' or 'filename|text' (LJSpeech) formats.",
+    help="Path to the training dataset. Supports JSON, JSONL, and CSV formats. Multiple datasets can be combined using '+' separator, e.g., '../datasets/train.json+../datasets/cleaned.json'. CSV format supports 'filename,text' or 'filename|text' (LJSpeech) formats.",
 )
 add_arg(
     "test_data",
     type=str,
     default=None,
-    help="Path to the test dataset. Supports JSON, JSONL, CSV, and Parquet formats. If not provided, 8% of train data will be used for testing.",
+    help="Path to the test dataset. Supports JSON, JSONL, and CSV formats. If not provided, 8% of train data will be used for testing.",
 )
 add_arg(
     "base_model",
