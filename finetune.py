@@ -117,8 +117,6 @@ add_arg("lora_r", type=int, default=16, help="LoRA rank (typical 8-16 for Whispe
 add_arg("lora_alpha", type=int, default=32, help="LoRA alpha")
 add_arg("lora_dropout", type=float, default=0.05, help="LoRA dropout")
 
-# AdaLoRA schedule is inlined in code (no extra CLI controls)
-
 # Training schedule
 add_arg("num_train_epochs", type=int, default=3, help="Epochs")
 add_arg("per_device_train_batch_size", type=int, default=8, help="Per-GPU train batch")
@@ -219,49 +217,32 @@ USE_WANDB = args.wandb_project is not None
 # compute base output_dir early with date-time suffix
 from datetime import datetime
 
-# Create date-time suffix (YYYYMMDD-HHMM format)
 dt_suffix = datetime.now().strftime("%Y%m%d-%H%M")
 base_name = args.base_model[:-1] if args.base_model.endswith("/") else args.base_model
 base_model_name = os.path.basename(base_name)
 
-# Create unique identifier for both output dir and wandb
 user_name = args.wandb_run_name or base_model_name
 unique_name = f"{user_name}-{dt_suffix}"
 
-# Output directory: args.output_dir/base_model_name-YYYYMMDD-HHMM
 output_dir = os.path.join(args.output_dir, f"{base_model_name}-{dt_suffix}")
 os.makedirs(output_dir, exist_ok=True)
 
 if USE_WANDB:
-    # Use the same unique name for WandB run
     os.environ["WANDB_RUN_NAME"] = unique_name
-
-    # 2) project/entity (keep your values)
     os.environ["WANDB_PROJECT"] = args.wandb_project
     if args.wandb_entity:
         os.environ["WANDB_ENTITY"] = args.wandb_entity
     if args.wandb_tags:
         os.environ["WANDB_TAGS"] = args.wandb_tags
-
-    # 3) direct W&B to write inside the run's output dir (prevents ./wandb collisions)
-    #    this will create output_dir/wandb instead of ./wandb
     os.environ["WANDB_DIR"] = os.path.join(output_dir, "wandb")
-
-    # 4) ensure wandb doesn't try to resume an earlier run by accident
-    #    If you intentionally want to resume set WANDB_RESUME or WANDB_RUN_ID explicitly.
     os.environ["WANDB_RESUME"] = "never"
 
 
 # -------------------- Main --------------------
 def main():
-    # perf niceties
-    # torch.backends.cuda.matmul.allow_tf32 = True
-    # torch.backends.cudnn.allow_tf32 = True
     torch.backends.cuda.enable_flash_sdp(True)
     torch.backends.cuda.enable_math_sdp(True)
     torch.backends.cuda.enable_mem_efficient_sdp(True)
-
-    # Optional: nudge PyTorch’s matmul heuristics
     try:
         torch.set_float32_matmul_precision("high")
     except Exception:
@@ -278,15 +259,11 @@ def main():
         local_files_only=args.local_files_only,
     )
 
-    # ---------- Save processor configs ----------
-    # output_dir is already created above with unique date-time suffix
-    # Just save the processor there
-    processor.save_pretrained(output_dir)
-    print(f"✅ Saved processor files (incl. preprocessor_config.json) to: {output_dir}")
-
-    # (Optional) also keep a copy next to the base model (comment out if undesired)
-    # processor.save_pretrained(args.base_model)
-    # print(f"✅ Saved processor files next to base model: {args.base_model}")
+    # ----------------- SPECIAL-TOKEN ALIGNMENT (Tokenizer) -----------------
+    # Whisper commonly uses eos as pad. Ensure tokenizer has pad set; we'll mirror to model in a moment.
+    tok = processor.tokenizer
+    if tok.pad_token is None:
+        tok.pad_token = tok.eos_token  # typical Whisper setup
 
     # ----- Dataset Filters -----
     datasets_info = [
@@ -314,7 +291,6 @@ def main():
 
     # ----- Datasets -----
     if args.test_data is None:
-        # If no test data provided, load train data and split it
         print("No test data provided. Splitting train data: 92% train, 8% test")
         full_dataset = CustomDataset(
             data_list_path=args.train_data,
@@ -326,20 +302,15 @@ def main():
             augment_config_path=args.augment_config_path,
             dataset_filters=datasets_info,
         )
-
-        # Calculate split sizes
         total_size = len(full_dataset)
         eval_size = int(0.08 * total_size)
         train_size = total_size - eval_size
-
-        # Perform random split
         train_dataset, eval_dataset = random_split(
             full_dataset,
             [train_size, eval_size],
             generator=torch.Generator().manual_seed(args.seed),
         )
     else:
-        # Load separate train and test datasets
         train_dataset = CustomDataset(
             data_list_path=args.train_data,
             processor=processor,
@@ -377,8 +348,26 @@ def main():
         device_map=device_map,
         local_files_only=args.local_files_only,
     )
-    # Whisper generation defaults
     model.config.suppress_tokens = []
+
+    # ----------------- SPECIAL-TOKEN ALIGNMENT (Model & Generation) -----------------
+    # Mirror tokenizer ids into model.config and generation_config.
+    model.config.pad_token_id = tok.pad_token_id
+    model.config.eos_token_id = tok.eos_token_id
+    model.config.bos_token_id = tok.bos_token_id
+
+    # Whisper uses <|startoftranscript|> as decoder start (not bos)
+    start_id = tok.convert_tokens_to_ids("<|startoftranscript|>")
+    if start_id is not None:
+        model.config.decoder_start_token_id = start_id
+
+    # Keep generate() quiet and consistent
+    model.generation_config.pad_token_id = tok.pad_token_id
+    model.generation_config.eos_token_id = tok.eos_token_id
+
+    # Save processor (now that pad token is set) into the unique run directory
+    processor.save_pretrained(output_dir)
+    print(f"✅ Saved processor files (incl. tokenizer with PAD) to: {output_dir}")
 
     # TRAIN: keep decoder prompt free; EVAL/GEN: use processor prompt ids
     train_forced_decoder_ids = None
@@ -395,25 +384,20 @@ def main():
     )
 
     # ----- Calculate steps for logging and eval -----
-    # Calculate steps per epoch based on batch size and gradient accumulation
     world_size = int(os.environ.get("WORLD_SIZE", 1))
     effective_batch_size = (
         args.per_device_train_batch_size * args.gradient_accumulation_steps * world_size
     )
-    steps_per_epoch = len(train_dataset) // effective_batch_size
+    steps_per_epoch = len(train_dataset) // max(1, effective_batch_size)
 
-    # Set logging_steps to half an epoch if not specified
     if args.logging_steps is None:
         args.logging_steps = max(1, steps_per_epoch // 2)
         print(f"Setting logging_steps to {args.logging_steps} (half epoch)")
 
-    # Set save_steps to half an epoch if not specified
     if args.save_steps is None:
         args.save_steps = max(1, steps_per_epoch // 2)
         print(f"Setting save_steps to {args.save_steps} (half epoch)")
 
-    # Set eval strategy based on whether eval_steps is provided
-    # Decide eval strategy and align save strategy for compatibility with load_best_model_at_end
     if args.eval_steps is None:
         eval_strategy = "epoch"
         save_strategy = "epoch"
@@ -465,7 +449,6 @@ def main():
             model = get_peft_model(model, config)
     else:
         print("Using full fine-tuning (no LoRA)...")
-        # No PEFT adapters - model remains as is for full fine-tuning
 
     # ----- Training args -----
     training_args_dict = {
@@ -487,8 +470,8 @@ def main():
         "load_best_model_at_end": True,
         "metric_for_best_model": "wer",
         "greater_is_better": False,
-        "bf16": True,  # enforced
-        "fp16": False,  # enforced
+        "bf16": True,
+        "fp16": False,
         "optim": "adamw_torch_fused",
         "torch_compile": args.use_compile,
         "ddp_find_unused_parameters": False if ddp else None,
@@ -504,8 +487,6 @@ def main():
         "predict_with_generate": args.predict_with_generate,
         "generation_max_length": args.generation_max_length,
     }
-
-    # Add eval_steps only if using steps strategy
     if eval_strategy == "steps":
         training_args_dict["eval_steps"] = eval_steps
 
@@ -516,7 +497,6 @@ def main():
 
     def compute_metrics(eval_pred):
         preds, labels = eval_pred
-        # Replace -100 with pad id for decoding
         labels = labels.copy()
         labels[labels == -100] = processor.tokenizer.pad_token_id
 
@@ -524,13 +504,10 @@ def main():
         prev_forced = model.config.forced_decoder_ids
         model.config.forced_decoder_ids = eval_forced_decoder_ids
 
-        # Decode strings
         pred_str = processor.tokenizer.batch_decode(preds, skip_special_tokens=True)
         label_str = processor.tokenizer.batch_decode(labels, skip_special_tokens=True)
 
-        # Restore previous forced ids (avoid side-effects)
         model.config.forced_decoder_ids = prev_forced
-
         wer = wer_metric.compute(predictions=pred_str, references=label_str)
         return {"wer": wer}
 
@@ -554,14 +531,12 @@ def main():
     trainer._load_from_checkpoint = load_from_checkpoint
 
     # ---- Training ----
-    # Keep training free of forced prompt so adapters can learn freely
-    model.config.forced_decoder_ids = None
+    model.config.forced_decoder_ids = None  # keep training prompt-free
     trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
 
     # ---- Save & Export ----
     trainer.save_state()
     model.config.use_cache = True
-    # Set eval prompt by default for downstream generation
     model.config.forced_decoder_ids = eval_forced_decoder_ids
 
     # Save PEFT adapter
@@ -570,14 +545,12 @@ def main():
         os.makedirs(final_dir, exist_ok=True)
 
         model.save_pretrained(final_dir, safe_serialization=True)
-        # 2) Save processor next to the final adapter checkpoint
         processor.save_pretrained(final_dir)
         print(f"✅ Saved processor files to: {final_dir}")
 
-        # (Optional) merge LoRA into base weights for a single merged model
+        # (Optional) merge LoRA into base weights
         try:
             if isinstance(model, PeftModel):
-                # Read optional knobs (fallback to sensible defaults if not provided via CLI)
                 skip_merge = getattr(args, "skip_merge", False)
                 merge_on_cpu = getattr(args, "merge_on_cpu", True)
                 merge_bf16 = getattr(args, "merge_bf16", True)
@@ -622,7 +595,6 @@ def main():
                         save_kwargs["max_shard_size"] = merge_max_shard_size
                     merged.save_pretrained(merged_dir, **save_kwargs)
 
-                    # 3) Save processor next to the merged weights
                     processor.save_pretrained(merged_dir)
                     print(f"✅ Saved processor files to: {merged_dir}")
             else:
@@ -630,17 +602,13 @@ def main():
         except Exception as e:
             warnings.warn(f"Merge-and-unload skipped: {e}")
 
-    # Push to Hub (optional)
     if training_args.push_to_hub and (training_args.local_rank in (0, -1)):
         hub_model_id = args.hub_model_id if args.hub_model_id else output_dir
         model.push_to_hub(hub_model_id)
-        # When pushing to hub, processors are auto-handled if you call processor.push_to_hub
         try:
             processor.push_to_hub(hub_model_id)
         except Exception as e:
             warnings.warn(f"Pushing processor to Hub skipped: {e}")
-
-    # W&B will be automatically finished by the trainer
 
 
 if __name__ == "__main__":
