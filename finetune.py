@@ -217,21 +217,25 @@ print_arguments(args)
 # -------------------- W&B Setup (robust for parallel runs) --------------------
 USE_WANDB = args.wandb_project is not None
 
-# compute base output_dir early (you already do this later; keep consistent)
+# compute base output_dir early with date-time suffix
+from datetime import datetime
+
+# Create date-time suffix (YYYYMMDD-HHMM format)
+dt_suffix = datetime.now().strftime("%Y%m%d-%H%M")
 base_name = args.base_model[:-1] if args.base_model.endswith("/") else args.base_model
-output_dir = os.path.join(args.output_dir, os.path.basename(base_name))
+base_model_name = os.path.basename(base_name)
+
+# Create unique identifier for both output dir and wandb
+user_name = args.wandb_run_name or base_model_name
+unique_name = f"{user_name}-{dt_suffix}"
+
+# Output directory: args.output_dir/base_model_name-YYYYMMDD-HHMM
+output_dir = os.path.join(args.output_dir, f"{base_model_name}-{dt_suffix}")
 os.makedirs(output_dir, exist_ok=True)
 
 if USE_WANDB:
-    import time, uuid
-
-    # 1) unique run name: prefer user-provided name but append timestamp/pid/uuid
-    timestamp = int(time.time())
-    short_uuid = uuid.uuid4().hex[:6]
-    pid = os.getpid()
-    user_name = args.wandb_run_name or "run"
-    unique_run_name = f"{user_name}-{timestamp}-{pid}-{short_uuid}"
-    os.environ["WANDB_RUN_NAME"] = unique_run_name
+    # Use the same unique name for WandB run
+    os.environ["WANDB_RUN_NAME"] = unique_name
 
     # 2) project/entity (keep your values)
     os.environ["WANDB_PROJECT"] = args.wandb_project
@@ -276,14 +280,8 @@ def main():
     )
 
     # ---------- Save processor configs ----------
-    # Ensure output dir exists and save processor there for training artifacts
-    base_name = (
-        args.base_model[:-1] if args.base_model.endswith("/") else args.base_model
-    )
-    output_dir = os.path.join(args.output_dir, os.path.basename(base_name))
-    os.makedirs(output_dir, exist_ok=True)
-
-    # 1) Save into the training output root (for convenience / reuse)
+    # output_dir is already created above with unique date-time suffix
+    # Just save the processor there
     processor.save_pretrained(output_dir)
     print(f"✅ Saved processor files (incl. preprocessor_config.json) to: {output_dir}")
 
