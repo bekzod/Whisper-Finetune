@@ -25,7 +25,7 @@ accelerate launch --multi_gpu --num_processes=2 --config_file ./configs/accelera
   --lr_scheduler_type cosine \
   --use_lora False \
   --weight_decay 0.005 \
-  --save_total_limit 5 \
+  --save_total_limit 4 \
   --wandb_project whisper-uzbek \
   --wandb_run_name whisper-v3-uzbek \
   --wandb_tags uzbek,whisper,full-finetune,H100 \
