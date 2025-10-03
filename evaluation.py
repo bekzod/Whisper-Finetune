@@ -343,7 +343,7 @@ def main():
                 )
             )
 
-    # logits_processor = LogitsProcessorList(processors) if processors else None
+    logits_processor = LogitsProcessorList(processors) if processors else None
 
     # Prepare dataset and dataloader
     test_dataset = CustomDataset(
@@ -380,16 +380,16 @@ def main():
                     if torch.cuda.is_available()
                     else batch["labels"][:, :4]
                 )
-                generated_tokens = (
-                    model.generate(
-                        input_features=input_feats,
-                        decoder_input_ids=decoder_start,
-                        max_new_tokens=255,
-                        # logits_processor=logits_processor,
-                    )
-                    .cpu()
-                    .numpy()
-                )
+                # Only pass logits_processor if there are processors
+                generate_kwargs = {
+                    "input_features": input_feats,
+                    "decoder_input_ids": decoder_start,
+                    "max_new_tokens": 255,
+                }
+                if logits_processor is not None:
+                    generate_kwargs["logits_processor"] = logits_processor
+
+                generated_tokens = model.generate(**generate_kwargs).cpu().numpy()
 
                 labels = batch["labels"].cpu().numpy()
                 labels = np.where(
