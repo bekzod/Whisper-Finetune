@@ -19,6 +19,6 @@ python ./evaluation.py \
   --local_files_only True \
   --task transcribe \
   --metric wer \
-  --kenlm_path /path/to/your/kenlm_model.arpa \
+  --kenlm_path /workspace/uzbek.o5.arpa \
   --kenlm_alpha 0.6 \
   --kenlm_top_k 200
