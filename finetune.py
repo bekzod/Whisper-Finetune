@@ -241,7 +241,7 @@ if USE_WANDB:
 
     # 4) ensure wandb doesn't try to resume an earlier run by accident
     #    If you intentionally want to resume set WANDB_RESUME or WANDB_RUN_ID explicitly.
-    os.environ["WANDB_RESUME"] = "false"
+    os.environ["WANDB_RESUME"] = "never"
 
 
 # -------------------- Main --------------------
@@ -552,7 +552,7 @@ def main():
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         data_collator=data_collator,
-        tokenizer=processor.tokenizer,
+        processing_class=processor,
         compute_metrics=compute_metrics,
         callbacks=callbacks,
     )
