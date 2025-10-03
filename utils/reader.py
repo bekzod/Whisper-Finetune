@@ -3,10 +3,11 @@ import json
 import os
 import random
 import sys
-from typing import List
+from typing import List, Optional
 
 import librosa
 import numpy as np
+from datasets import load_from_disk, DatasetDict
 
 import soundfile
 from torch.utils.data import Dataset
@@ -69,17 +70,20 @@ class CustomDataset(Dataset):
         silence_top_db: int = 40,
         silence_min_gap_ms: int = 200,
         silence_pad_ms: int = 50,
+        # --- Hugging Face dataset support ---
+        dataset_subset: Optional[str] = None,
     ):
         """
         Args:
-            data_list_path: Path to the data list file, or path to the binary list header file.
-                           Supports JSON, JSONL, and CSV formats.
+            data_list_path: Path to the data list file, or path to the binary list header file, or Hugging Face dataset folder.
+                           Supports JSON, JSONL, CSV formats, and Hugging Face dataset directories.
                            Multiple paths can be specified separated by '+' to combine datasets,
                            e.g., '../datasets/train.json+../datasets/cleaned.json'
                            CSV format supports:
                            - Standard format: filename,text
                            - LJSpeech format: filename|text
                            - Header detection for column names like 'filename', 'text', 'audio_path', etc.
+                           Hugging Face dataset folders should contain arrow/parquet files
             processor: Whisper preprocessing tool, obtained from WhisperProcessor.from_pretrained
             mono: Whether to convert audio to mono channel, this must be True
             language: Language of the fine-tuning data
@@ -95,6 +99,9 @@ class CustomDataset(Dataset):
             silence_top_db: energy threshold for librosa.effects.split (smaller = more aggressive)
             silence_min_gap_ms: merge gaps shorter than this between voiced islands
             silence_pad_ms: pad each kept island to avoid cutting phones
+
+            Hugging Face dataset params:
+            dataset_subset: Subset name for Hugging Face datasets (e.g., 'train', 'validation', 'test')
         """
         super(CustomDataset, self).__init__()
         assert min_duration >= 0.5, (
@@ -119,6 +126,7 @@ class CustomDataset(Dataset):
         self.max_duration = max_duration
         self.min_sentence = min_sentence
         self.max_sentence = max_sentence
+        self.dataset_subset = dataset_subset
 
         # Example A config
         self.silence_top_db = silence_top_db
@@ -154,7 +162,11 @@ class CustomDataset(Dataset):
 
         for data_path in data_paths:
             data_path = data_path.strip()  # Remove any whitespace
-            if data_path.endswith(".header"):
+
+            # Check if it's a Hugging Face dataset folder
+            if os.path.isdir(data_path) and self._is_huggingface_dataset(data_path):
+                self._load_huggingface_dataset(data_path)
+            elif data_path.endswith(".header"):
                 # Get binary data list
                 dataset_reader = DatasetReader(
                     data_header_path=data_path,
@@ -210,6 +222,159 @@ class CustomDataset(Dataset):
                         ):
                             continue
                     self.data_list.append(dict(line))
+
+    def _is_huggingface_dataset(self, path):
+        """Check if a directory contains a Hugging Face dataset."""
+        # Check for common Hugging Face dataset indicators
+        indicators = ["dataset_dict.json", "dataset_info.json", "state.json"]
+
+        for indicator in indicators:
+            if os.path.exists(os.path.join(path, indicator)):
+                return True
+
+        # Check for arrow or parquet files in subdirectories
+        for root, dirs, files in os.walk(path):
+            for file in files:
+                if file.endswith((".arrow", ".parquet")):
+                    return True
+
+        return False
+
+    def _load_huggingface_dataset(self, data_path):
+        """Load data from a Hugging Face dataset folder."""
+        print(f"Loading Hugging Face dataset from {data_path}")
+
+        try:
+            # Load the dataset
+            dataset = load_from_disk(data_path)
+
+            # Handle DatasetDict vs Dataset
+            if isinstance(dataset, DatasetDict):
+                if self.dataset_subset:
+                    if self.dataset_subset not in dataset:
+                        available_subsets = list(dataset.keys())
+                        raise ValueError(
+                            f"Subset '{self.dataset_subset}' not found in dataset. "
+                            f"Available subsets: {available_subsets}"
+                        )
+                    dataset = dataset[self.dataset_subset]
+                else:
+                    # If no subset specified, try common defaults
+                    for default_subset in ["train", "training", "default"]:
+                        if default_subset in dataset:
+                            dataset = dataset[default_subset]
+                            print(f"Using subset '{default_subset}' from dataset")
+                            break
+                    else:
+                        # Use the first available subset
+                        first_subset = list(dataset.keys())[0]
+                        dataset = dataset[first_subset]
+                        print(f"No subset specified, using '{first_subset}'")
+
+            # Process the dataset entries
+            for idx, item in enumerate(
+                tqdm(dataset, desc=f"Processing HF dataset {data_path}")
+            ):
+                try:
+                    # Create a compatible data entry
+                    data_entry = {}
+
+                    # Handle audio data - HF datasets often have 'audio' column with dict
+                    if "audio" in item:
+                        audio_data = item["audio"]
+                        if isinstance(audio_data, dict):
+                            # Standard HF audio format
+                            if "path" in audio_data:
+                                data_entry["wav"] = audio_data["path"]
+                            elif "filename" in audio_data:
+                                data_entry["wav"] = audio_data["filename"]
+
+                            # Get sample rate if available
+                            if "sampling_rate" in audio_data:
+                                sr = audio_data["sampling_rate"]
+                                # We might need to resample if it's not 16kHz
+
+                            # Get audio array if available
+                            if "array" in audio_data:
+                                # Store the array for direct use
+                                data_entry["audio_array"] = audio_data["array"]
+                                if "sampling_rate" in audio_data:
+                                    data_entry["sampling_rate"] = audio_data[
+                                        "sampling_rate"
+                                    ]
+                        else:
+                            # Audio might be a path string
+                            data_entry["wav"] = str(audio_data)
+
+                    # Alternative audio column names
+                    elif "audio_path" in item:
+                        data_entry["wav"] = item["audio_path"]
+                    elif "file" in item:
+                        data_entry["wav"] = item["file"]
+                    elif "filename" in item:
+                        data_entry["wav"] = item["filename"]
+                    elif "path" in item:
+                        data_entry["wav"] = item["path"]
+
+                    # Handle transcription/text
+                    text = None
+                    for text_key in [
+                        "transcription",
+                        "text",
+                        "sentence",
+                        "transcript",
+                        "label",
+                    ]:
+                        if text_key in item:
+                            text = item[text_key]
+                            break
+
+                    if text:
+                        data_entry["sentence"] = text
+
+                    # Get or compute duration if possible
+                    if "duration" in item:
+                        data_entry["duration"] = item["duration"]
+                    elif "audio_array" in data_entry and "sampling_rate" in data_entry:
+                        # Compute duration from array length
+                        data_entry["duration"] = (
+                            len(data_entry["audio_array"]) / data_entry["sampling_rate"]
+                        )
+                    else:
+                        # We'll compute it later when loading the audio
+                        data_entry["duration"] = -1  # Flag to compute later
+
+                    # Skip if we don't have both audio and text
+                    if "wav" not in data_entry and "audio_array" not in data_entry:
+                        continue
+                    if "sentence" not in data_entry:
+                        continue
+
+                    # Apply duration filters if duration is known
+                    if data_entry["duration"] != -1:
+                        if data_entry["duration"] < self.min_duration:
+                            continue
+                        if (
+                            self.max_duration != -1
+                            and data_entry["duration"] > self.max_duration
+                        ):
+                            continue
+
+                    # Apply sentence length filters
+                    if len(data_entry["sentence"]) < self.min_sentence:
+                        continue
+                    if len(data_entry["sentence"]) > self.max_sentence:
+                        continue
+
+                    self.data_list.append(data_entry)
+
+                except Exception as e:
+                    print(f"Error processing item {idx} in HF dataset: {e}")
+                    continue
+
+        except Exception as e:
+            print(f"Error loading Hugging Face dataset from {data_path}: {e}")
+            raise
 
     def _load_csv_data(self, data_path):
         """Load data from CSV file. Supports multiple CSV formats with proper header mapping."""
