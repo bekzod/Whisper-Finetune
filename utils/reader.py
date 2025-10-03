@@ -70,8 +70,6 @@ class CustomDataset(Dataset):
         silence_top_db: int = 40,
         silence_min_gap_ms: int = 200,
         silence_pad_ms: int = 50,
-        # --- Hugging Face dataset support ---
-        dataset_subset: Optional[str] = None,
     ):
         """
         Args:
@@ -79,6 +77,9 @@ class CustomDataset(Dataset):
                            Supports JSON, JSONL, CSV formats, and Hugging Face dataset directories.
                            Multiple paths can be specified separated by '+' to combine datasets,
                            e.g., '../datasets/train.json+../datasets/cleaned.json'
+                           For Hugging Face datasets, use 'path:subset' format to specify a subset,
+                           e.g., '../dataset:train' or '../dataset:validation'
+                           If no subset is specified for HF dataset, all available data will be used.
                            CSV format supports:
                            - Standard format: filename,text
                            - LJSpeech format: filename|text
@@ -99,9 +100,6 @@ class CustomDataset(Dataset):
             silence_top_db: energy threshold for librosa.effects.split (smaller = more aggressive)
             silence_min_gap_ms: merge gaps shorter than this between voiced islands
             silence_pad_ms: pad each kept island to avoid cutting phones
-
-            Hugging Face dataset params:
-            dataset_subset: Subset name for Hugging Face datasets (e.g., 'train', 'validation', 'test')
         """
         super(CustomDataset, self).__init__()
         assert min_duration >= 0.5, (
@@ -126,7 +124,6 @@ class CustomDataset(Dataset):
         self.max_duration = max_duration
         self.min_sentence = min_sentence
         self.max_sentence = max_sentence
-        self.dataset_subset = dataset_subset
 
         # Example A config
         self.silence_top_db = silence_top_db
@@ -163,9 +160,21 @@ class CustomDataset(Dataset):
         for data_path in data_paths:
             data_path = data_path.strip()  # Remove any whitespace
 
+            # Parse path:subset format for HuggingFace datasets
+            dataset_subset = None
+            if ":" in data_path and not data_path.startswith("http"):
+                # Check if this is a path:subset format (not a URL or Windows drive)
+                parts = data_path.rsplit(":", 1)
+                if len(parts) == 2 and not parts[1].startswith("//"):
+                    potential_path, potential_subset = parts
+                    # Verify the path exists before treating it as path:subset
+                    if os.path.exists(potential_path):
+                        data_path = potential_path
+                        dataset_subset = potential_subset
+
             # Check if it's a Hugging Face dataset folder
             if os.path.isdir(data_path) and self._is_huggingface_dataset(data_path):
-                self._load_huggingface_dataset(data_path)
+                self._load_huggingface_dataset(data_path, dataset_subset)
             elif data_path.endswith(".header"):
                 # Get binary data list
                 dataset_reader = DatasetReader(
@@ -240,9 +249,12 @@ class CustomDataset(Dataset):
 
         return False
 
-    def _load_huggingface_dataset(self, data_path):
+    def _load_huggingface_dataset(self, data_path, dataset_subset=None):
         """Load data from a Hugging Face dataset folder."""
-        print(f"Loading Hugging Face dataset from {data_path}")
+        print(
+            f"Loading Hugging Face dataset from {data_path}"
+            + (f" (subset: {dataset_subset})" if dataset_subset else "")
+        )
 
         try:
             # Load the dataset
@@ -250,26 +262,28 @@ class CustomDataset(Dataset):
 
             # Handle DatasetDict vs Dataset
             if isinstance(dataset, DatasetDict):
-                if self.dataset_subset:
-                    if self.dataset_subset not in dataset:
+                if dataset_subset:
+                    if dataset_subset not in dataset:
                         available_subsets = list(dataset.keys())
                         raise ValueError(
-                            f"Subset '{self.dataset_subset}' not found in dataset. "
+                            f"Subset '{dataset_subset}' not found in dataset. "
                             f"Available subsets: {available_subsets}"
                         )
-                    dataset = dataset[self.dataset_subset]
+                    dataset = dataset[dataset_subset]
                 else:
-                    # If no subset specified, try common defaults
-                    for default_subset in ["train", "training", "default"]:
-                        if default_subset in dataset:
-                            dataset = dataset[default_subset]
-                            print(f"Using subset '{default_subset}' from dataset")
-                            break
-                    else:
-                        # Use the first available subset
-                        first_subset = list(dataset.keys())[0]
-                        dataset = dataset[first_subset]
-                        print(f"No subset specified, using '{first_subset}'")
+                    # If no subset specified, use all available data
+                    print(
+                        f"No subset specified, using all available subsets: {list(dataset.keys())}"
+                    )
+                    all_data = []
+                    for subset_name in dataset.keys():
+                        print(f"  Loading subset '{subset_name}'...")
+                        all_data.append(dataset[subset_name])
+
+                    # Concatenate all subsets
+                    from datasets import concatenate_datasets
+
+                    dataset = concatenate_datasets(all_data)
 
             # Process the dataset entries
             for idx, item in enumerate(

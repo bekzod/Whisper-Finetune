@@ -48,25 +48,13 @@ add_arg(
     "train_data",
     type=str,
     default="../datasets/train.json",
-    help="Path to the training dataset. Supports JSON, JSONL, CSV formats, and Hugging Face dataset folders. Multiple datasets can be combined using '+' separator, e.g., '../datasets/train.json+../datasets/cleaned.json'. CSV format supports 'filename,text' or 'filename|text' (LJSpeech) formats.",
+    help="Path to the training dataset. Supports JSON, JSONL, CSV formats, and Hugging Face dataset folders. Multiple datasets can be combined using '+' separator. For HF datasets, use 'path:subset' format (e.g., '../dataset:train'). CSV format supports 'filename,text' or 'filename|text' (LJSpeech) formats.",
 )
 add_arg(
     "test_data",
     type=str,
     default=None,
-    help="Path to the test dataset. Supports JSON, JSONL, CSV formats, and Hugging Face dataset folders. If not provided, 8% of train data will be used for testing.",
-)
-add_arg(
-    "train_subset",
-    type=str,
-    default=None,
-    help="Subset name for Hugging Face training dataset (e.g., 'train', 'validation'). Used when train_data points to a HF dataset folder.",
-)
-add_arg(
-    "eval_subset",
-    type=str,
-    default=None,
-    help="Subset name for Hugging Face evaluation dataset (e.g., 'validation', 'test'). Used when test_data points to a HF dataset folder.",
+    help="Path to the test dataset. Supports JSON, JSONL, CSV formats, and Hugging Face dataset folders. If not provided, 8% of train data will be used for testing. For HF datasets, use 'path:subset' format (e.g., '../dataset:train').",
 )
 add_arg(
     "base_model",
@@ -271,7 +259,6 @@ def main():
             min_duration=args.min_audio_len,
             max_duration=args.max_audio_len,
             augment_config_path=args.augment_config_path,
-            dataset_subset=args.train_subset,
         )
 
         # Calculate split sizes
@@ -295,7 +282,6 @@ def main():
             min_duration=args.min_audio_len,
             max_duration=args.max_audio_len,
             augment_config_path=args.augment_config_path,
-            dataset_subset=args.train_subset,
         )
         eval_dataset = CustomDataset(
             data_list_path=args.test_data,
@@ -304,7 +290,6 @@ def main():
             timestamps=args.timestamps,
             min_duration=args.min_audio_len,
             max_duration=args.max_audio_len,
-            dataset_subset=args.eval_subset,
         )
 
     print(f"Training data: {len(train_dataset)}, Eval data: {len(eval_dataset)}")
