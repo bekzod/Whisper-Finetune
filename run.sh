@@ -24,7 +24,7 @@ accelerate launch --multi_gpu --num_processes=2 --config_file ./configs/accelera
   --output_dir ../models/output \
   --num_train_epochs 8 \
   --per_device_train_batch_size 64 \
-  --per_device_eval_batch_size 160 \
+  --per_device_eval_batch_size 128 \
   --gradient_accumulation_steps 1 \
   --learning_rate 4e-4 \
   --warmup_ratio 0.15 \
