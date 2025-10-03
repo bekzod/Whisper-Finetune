@@ -8,7 +8,12 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from transformers import WhisperForConditionalGeneration, WhisperProcessor
+from transformers import (
+    WhisperForConditionalGeneration,
+    WhisperProcessor,
+    LogitsProcessor,
+    LogitsProcessorList,
+)
 
 from utils.data_utils import DataCollatorSpeechSeq2SeqWithPadding, remove_punctuation
 from utils.reader import CustomDataset
@@ -66,6 +71,24 @@ add_arg(
 add_arg(
     "metric", type=str, default="cer", choices=["cer", "wer"], help="Evaluation method"
 )
+add_arg(
+    "kenlm_path",
+    type=str,
+    default=None,
+    help="Optional path to a KenLM n-gram model (ARPA or binary) to bias decoding",
+)
+add_arg(
+    "kenlm_alpha",
+    type=float,
+    default=0.5,
+    help="KenLM weight to add to model logits (applied to LM log-prob deltas)",
+)
+add_arg(
+    "kenlm_top_k",
+    type=int,
+    default=50,
+    help="Rescore only the top-k tokens at each step with KenLM to reduce overhead",
+)
 args = parser.parse_args()
 print_arguments(args)
 
@@ -80,6 +103,67 @@ if args.adapter_path and args.local_files_only:
     assert os.path.exists(args.adapter_path), (
         f"Adapter path {args.adapter_path} does not exist; set local_files_only=False to allow downloading from the Hub"
     )
+
+
+class KenLMBiasLogitsProcessor(LogitsProcessor):
+    """
+    A simple KenLM-based logits processor that rescales the logits for the top-k
+    candidate tokens at each step using an n-gram language model.
+
+    For each hypothesis in the batch, we:
+      - Decode the current prefix to text with the tokenizer.
+      - For the top-k candidate next tokens, decode each token piece to text,
+        compute LM score for the new text and subtract the LM score of the prefix
+        to obtain an incremental LM log-probability.
+      - Add alpha * delta to the token's logit.
+
+    Notes:
+      - This operates on decoded text pieces; with subword/byte-level tokens the LM
+        will see partial words. Despite being approximate, it often provides useful bias.
+      - Use a moderate top_k to balance speed/quality.
+    """
+
+    def __init__(self, kenlm_model, tokenizer, alpha: float = 0.5, top_k: int = 50):
+        self.lm = kenlm_model
+        self.tokenizer = tokenizer
+        self.alpha = float(alpha)
+        self.top_k = int(top_k)
+        self._cache = {}  # cache for prefix and extended text LM scores
+
+    def _lm_score(self, text: str) -> float:
+        if text in self._cache:
+            return self._cache[text]
+        # KenLM scores are log probabilities; exact base is not critical since alpha scales it.
+        score = self.lm.score(text.strip(), bos=False, eos=False)
+        self._cache[text] = score
+        return score
+
+    def __call__(
+        self, input_ids: torch.LongTensor, scores: torch.FloatTensor
+    ) -> torch.FloatTensor:
+        # Decode current prefixes
+        prefixes = self.tokenizer.batch_decode(input_ids, skip_special_tokens=True)
+        vocab_size = scores.shape[-1]
+        for i, prefix in enumerate(prefixes):
+            base = self._lm_score(prefix)
+            k = min(self.top_k, vocab_size)
+            topk = torch.topk(scores[i], k)
+            idxs = topk.indices
+            # Compute deltas for top-k candidates
+            deltas = []
+            for tid in idxs.tolist():
+                token_piece = self.tokenizer.decode([tid], skip_special_tokens=True)
+                if not token_piece:
+                    deltas.append(0.0)
+                    continue
+                new_text = prefix + token_piece
+                delta = self._lm_score(new_text) - base
+                deltas.append(self.alpha * float(delta))
+            if deltas:
+                scores[i, idxs] = scores[i, idxs] + torch.tensor(
+                    deltas, device=scores.device, dtype=scores.dtype
+                )
+        return scores
 
 
 def main():
@@ -115,6 +199,29 @@ def main():
     model.generation_config.forced_decoder_ids = None
     model.eval()
 
+    # Optional: build KenLM logits processor
+    logits_processor = None
+    if args.kenlm_path:
+        try:
+            import kenlm  # pip install kenlm
+        except Exception as e:
+            raise RuntimeError(
+                "You provided kenlm_path, but the 'kenlm' package is not installed. Please install kenlm to enable KenLM biasing."
+            ) from e
+        if not os.path.exists(args.kenlm_path):
+            raise FileNotFoundError(f"KenLM model file {args.kenlm_path} not found")
+        lm = kenlm.Model(args.kenlm_path)
+        logits_processor = LogitsProcessorList(
+            [
+                KenLMBiasLogitsProcessor(
+                    kenlm_model=lm,
+                    tokenizer=processor.tokenizer,
+                    alpha=args.kenlm_alpha,
+                    top_k=args.kenlm_top_k,
+                )
+            ]
+        )
+
     # Get test data
     test_dataset = CustomDataset(
         data_list_path=args.test_data,
@@ -146,6 +253,7 @@ def main():
                         input_features=batch["input_features"].cuda(),
                         decoder_input_ids=batch["labels"][:, :4].cuda(),
                         max_new_tokens=255,
+                        logits_processor=logits_processor,
                     )
                     .cpu()
                     .numpy()
