@@ -343,7 +343,7 @@ def main():
                 )
             )
 
-    logits_processor = LogitsProcessorList(processors) if processors else None
+    # logits_processor = LogitsProcessorList(processors) if processors else None
 
     # Prepare dataset and dataloader
     test_dataset = CustomDataset(
@@ -385,7 +385,7 @@ def main():
                         input_features=input_feats,
                         decoder_input_ids=decoder_start,
                         max_new_tokens=255,
-                        logits_processor=logits_processor,
+                        # logits_processor=logits_processor,
                     )
                     .cpu()
                     .numpy()
