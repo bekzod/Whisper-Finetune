@@ -25,9 +25,10 @@ accelerate launch --multi_gpu --num_processes=2 --config_file ./configs/accelera
   --warmup_ratio 0.1 \
   --lr_scheduler_type cosine \
   --use_lora False \
+  --weight_decay 0.005 \
   --save_total_limit 5 \
   --wandb_project whisper-uzbek \
   --wandb_run_name whisper-v3-uzbek \
   --wandb_tags uzbek,whisper,full-finetune,H100 \
-  --train_data ../datasets/uzbek_voice/data/train/metadata.csv
-  # --test_data ../datasets/uzbek_voice/test.json \
+  --train_data ../datasets/uzbek_voice+../datasets/FeruzaSpeech:train+../datasets/FeruzaSpeech:dev+../datasets/dataset_for_stt_ttsmodels+../datasets/fleurs_uz_uz:train+../datasets/fleurs_uz_uz:dev+../datasets/uzbek_voice_2:train+../datasets/uzbek_voice_2:dev+../datasets/uzbek_voice_2:validated+../datasets/uzbek_voice_3+../datasets/uzbek_voice_4+../datasets/uzbekvoice_filtered:train \
+  --test_data ../datasets/FeruzaSpeech:test+../datasets/fleurs_uz_uz:test+../datasets/uzbek_voice_2:test+ ../datasets/uzbekvoice_filtered:validate
