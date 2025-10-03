@@ -366,6 +366,7 @@ def main():
     metric = evaluate.load(f"metrics/{args.metric}.py")
 
     # Evaluation loop
+    first_batch_logged = False
     for step, batch in enumerate(tqdm(eval_dataloader)):
         with torch.autocast(device_type="cuda"):
             with torch.no_grad():
@@ -406,6 +407,21 @@ def main():
                 if args.remove_pun:
                     decoded_preds = remove_punctuation(decoded_preds)
                     decoded_labels = remove_punctuation(decoded_labels)
+
+                # Log first batch for debugging
+                if not first_batch_logged:
+                    first_batch_logged = True
+                    print("\n" + "=" * 80)
+                    print("FIRST BATCH TRANSCRIPTIONS (for debugging)")
+                    print("=" * 80)
+                    for i in range(
+                        min(3, len(decoded_preds))
+                    ):  # Log up to first 3 examples
+                        print(f"\nExample {i + 1}:")
+                        print(f"  Ground Truth: {decoded_labels[i]}")
+                        print(f"  Prediction:   {decoded_preds[i]}")
+                        print(f"  Match: {decoded_preds[i] == decoded_labels[i]}")
+                    print("=" * 80 + "\n")
 
                 metric.add_batch(predictions=decoded_preds, references=decoded_labels)
 
