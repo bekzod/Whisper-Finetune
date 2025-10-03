@@ -1,34 +1,32 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-#
+
 import argparse
 import functools
+import math
 import os
 import sys
 import warnings
 from typing import Any
 
-import numpy as np
 import torch
-from torch.utils.data import random_split
+from torch.utils.data import DataLoader, random_split
+import evaluate
 from transformers import (
     Seq2SeqTrainer,
     Seq2SeqTrainingArguments,
     WhisperForConditionalGeneration,
     WhisperProcessor,
 )
-from transformers.trainer_callback import EarlyStoppingCallback, TrainerCallback
+from transformers.trainer_callback import EarlyStoppingCallback
 from transformers.trainer_utils import set_seed
 
-# ---- Your project utilities (kept as-is) ----
+# ---- Project utilities ----
 from utils.callback import SavePeftModelCallback
 from utils.data_utils import DataCollatorSpeechSeq2SeqWithPadding
 from utils.model_utils import load_from_checkpoint
 from utils.reader import CustomDataset
 from utils.utils import print_arguments, make_inputs_require_grad, add_arguments
-
-# ---- Metrics ----
-import evaluate
 
 # ---- PEFT (LoRA / AdaLoRA) ----
 from peft import (
@@ -40,187 +38,86 @@ from peft import (
 
 # -------------------- Argparse --------------------
 parser = argparse.ArgumentParser("Whisper-large-v3 LoRA finetune with W&B (bf16 only)")
-
 add_arg = functools.partial(add_arguments, argparser=parser)
 
 # Data & model
-add_arg(
-    "train_data",
-    type=str,
-    default="../datasets/train.json",
-    help="Path to the training dataset. Supports JSON, JSONL, CSV formats, and Hugging Face dataset folders. Multiple datasets can be combined using '+' separator. For HF datasets, use 'path:subset' format (e.g., '../dataset:train'). CSV format supports 'filename,text' or 'filename|text' (LJSpeech) formats.",
-)
-add_arg(
-    "test_data",
-    type=str,
-    default=None,
-    help="Path to the test dataset. Supports JSON, JSONL, CSV formats, and Hugging Face dataset folders. If not provided, 8% of train data will be used for testing. For HF datasets, use 'path:subset' format (e.g., '../dataset:train').",
-)
-add_arg(
-    "base_model",
-    type=str,
-    default="../models/whisper-large-v3",
-    help="Base Whisper model",
-)
-add_arg("output_dir", type=str, default="output/", help="Path to save checkpoints")
+add_arg("train_data", type=str, default="../datasets/train.json")
+add_arg("test_data", type=str, default=None)
+add_arg("base_model", type=str, default="../models/whisper-large-v3")
+add_arg("output_dir", type=str, default="output/")
 
 # Task / language
-add_arg(
-    "timestamps", type=bool, default=False, help="Use timestamp tokens during training"
-)
-add_arg(
-    "language",
-    type=str,
-    default="Uzbek",
-    help="Language name or code. If None, train multilingual",
-)
-add_arg(
-    "task",
-    type=str,
-    default="transcribe",
-    choices=["transcribe", "translate"],
-    help="Task type",
-)
+add_arg("timestamps", type=bool, default=False)
+add_arg("language", type=str, default="Uzbek")
+add_arg("task", type=str, default="transcribe", choices=["transcribe", "translate"])
 
 # Loader / augmentation
-add_arg("min_audio_len", type=float, default=0.5, help="Min audio length (s)")
-add_arg(
-    "max_audio_len",
-    type=float,
-    default=30.0,
-    help="Max audio length (s, Whisper cap ~30s)",
-)
-add_arg(
-    "augment_config_path",
-    type=str,
-    default="./configs/augmentation.json",
-    help="Path to augmentation config (optional)",
-)
-add_arg(
-    "num_workers",
-    type=int,
-    default=min(10, os.cpu_count() or 1),
-    help="Dataloader workers",
-)
+add_arg("min_audio_len", type=float, default=0.5)
+add_arg("max_audio_len", type=float, default=30.0)
+add_arg("augment_config_path", type=str, default="./configs/augmentation.json")
+add_arg("num_workers", type=int, default=min(10, os.cpu_count() or 1))
 
 # LoRA / AdaLoRA
-add_arg(
-    "use_lora",
-    type=bool,
-    default=True,
-    help="Enable LoRA/AdaLoRA (False for full fine-tuning)",
-)
-add_arg(
-    "use_adalora", type=bool, default=True, help="Use AdaLoRA instead of standard LoRA"
-)
-add_arg("lora_r", type=int, default=16, help="LoRA rank (typical 8-16 for Whisper v3)")
-add_arg("lora_alpha", type=int, default=32, help="LoRA alpha")
-add_arg("lora_dropout", type=float, default=0.05, help="LoRA dropout")
+add_arg("use_lora", type=bool, default=True)
+add_arg("use_adalora", type=bool, default=True)
+add_arg("lora_r", type=int, default=16)
+add_arg("lora_alpha", type=int, default=32)
+add_arg("lora_dropout", type=float, default=0.05)
 
 # Training schedule
-add_arg("num_train_epochs", type=int, default=3, help="Epochs")
-add_arg("per_device_train_batch_size", type=int, default=8, help="Per-GPU train batch")
-add_arg("per_device_eval_batch_size", type=int, default=8, help="Per-GPU eval batch")
-add_arg("gradient_accumulation_steps", type=int, default=4, help="Grad accumulation")
-add_arg("learning_rate", type=float, default=2e-4, help="LR (LoRA typical 5e-5 ~ 5e-4)")
-add_arg("weight_decay", type=float, default=0.01, help="Weight decay")
-add_arg("max_grad_norm", type=float, default=1.0, help="Grad clip")
-add_arg("warmup_ratio", type=float, default=0.05, help="Warmup ratio")
-add_arg("lr_scheduler_type", type=str, default="cosine", help="Scheduler")
+add_arg("num_train_epochs", type=int, default=3)
+add_arg("per_device_train_batch_size", type=int, default=8)
+add_arg("per_device_eval_batch_size", type=int, default=8)
+add_arg("gradient_accumulation_steps", type=int, default=4)
+add_arg("learning_rate", type=float, default=2e-4)
+add_arg("weight_decay", type=float, default=0.01)
+add_arg("max_grad_norm", type=float, default=1.0)
+add_arg("warmup_ratio", type=float, default=0.05)
+add_arg("lr_scheduler_type", type=str, default="cosine")
 
 # Logging / eval / saving
-add_arg(
-    "logging_steps",
-    type=int,
-    default=None,
-    help="Logging steps (if None, logs every half epoch)",
-)
-add_arg(
-    "eval_steps",
-    type=int,
-    default=None,
-    help="Eval steps (if None, evaluates every epoch)",
-)
-add_arg(
-    "save_steps",
-    type=int,
-    default=None,
-    help="Save steps (if None, saves every half epoch)",
-)
-add_arg("save_total_limit", type=int, default=10, help="Max checkpoints to keep")
-add_arg(
-    "predict_with_generate", type=bool, default=True, help="Use generate() during eval"
-)
-add_arg(
-    "early_stopping_patience",
-    type=int,
-    default=4,
-    help="Early stopping patience (eval calls)",
-)
-add_arg(
-    "group_by_length",
-    type=bool,
-    default=False,
-    help="Bucket by length to reduce padding",
-)
-add_arg(
-    "length_column_name",
-    type=str,
-    default=None,
-    help="Name of length column for bucketing (optional)",
-)
-add_arg(
-    "generation_max_length",
-    type=int,
-    default=225,
-    help="Max tokens for generation (eval)",
-)
+add_arg("logging_steps", type=int, default=None)
+add_arg("eval_steps", type=int, default=None)
+add_arg("save_steps", type=int, default=None)
+add_arg("save_total_limit", type=int, default=10)
+add_arg("predict_with_generate", type=bool, default=True)
+add_arg("early_stopping_patience", type=int, default=4)
+add_arg("group_by_length", type=bool, default=False)
+add_arg("length_column_name", type=str, default=None)
+add_arg("generation_max_length", type=int, default=225)
 
 # Infra / misc
-add_arg("seed", type=int, default=42, help="Random seed")
-add_arg("use_compile", type=bool, default=False, help="torch.compile (PyTorch 2.x)")
-add_arg("local_files_only", type=bool, default=True, help="Load only from local cache")
-add_arg(
-    "resume_from_checkpoint", type=str, default=None, help="Path to resume checkpoint"
-)
-add_arg("push_to_hub", type=bool, default=False, help="Push to HF Hub at end")
-add_arg("hub_model_id", type=str, default=None, help="HF Hub repo id")
+add_arg("seed", type=int, default=42)
+add_arg("use_compile", type=bool, default=False)
+add_arg("local_files_only", type=bool, default=True)
+add_arg("resume_from_checkpoint", type=str, default=None)
+add_arg("push_to_hub", type=bool, default=False)
+add_arg("hub_model_id", type=str, default=None)
 
-# Weights & Biases
-add_arg(
-    "wandb_project",
-    type=str,
-    default=None,
-    help="W&B project name (enables W&B if set)",
-)
-add_arg("wandb_entity", type=str, default=None, help="W&B entity/org (optional)")
-add_arg("wandb_run_name", type=str, default=None, help="W&B run name (optional)")
-add_arg("wandb_tags", type=str, default=None, help="Comma-separated tags (optional)")
-add_arg(
-    "wandb_table_rows",
-    type=int,
-    default=6,
-    help="How many eval samples to log as table each eval",
-)
+# W&B
+add_arg("wandb_project", type=str, default=None)
+add_arg("wandb_entity", type=str, default=None)
+add_arg("wandb_run_name", type=str, default=None)
+add_arg("wandb_tags", type=str, default=None)
+add_arg("wandb_table_rows", type=int, default=6)
+
+# Debugging
+add_arg("check_label_keep_ratio", type=bool, default=False)
 
 args = parser.parse_args()
 
-# Enforce your precision policy:
+# enforce precision policy
 args.bf16 = True
 args.fp16 = False
-
 print_arguments(args)
 
-# -------------------- W&B Setup (robust for parallel runs) --------------------
+# -------------------- W&B Setup --------------------
 USE_WANDB = args.wandb_project is not None
-
-# compute base output_dir early with date-time suffix
 from datetime import datetime
 
 dt_suffix = datetime.now().strftime("%Y%m%d-%H%M")
 base_name = args.base_model[:-1] if args.base_model.endswith("/") else args.base_model
 base_model_name = os.path.basename(base_name)
-
 user_name = args.wandb_run_name or base_model_name
 unique_name = f"{user_name}-{dt_suffix}"
 
@@ -238,11 +135,14 @@ if USE_WANDB:
     os.environ["WANDB_RESUME"] = "never"
 
 
-# -------------------- Main --------------------
 def main():
-    torch.backends.cuda.enable_flash_sdp(True)
-    torch.backends.cuda.enable_math_sdp(True)
-    torch.backends.cuda.enable_mem_efficient_sdp(True)
+    # PyTorch perf knobs
+    try:
+        torch.backends.cuda.enable_flash_sdp(True)
+        torch.backends.cuda.enable_math_sdp(True)
+        torch.backends.cuda.enable_mem_efficient_sdp(True)
+    except Exception:
+        pass
     try:
         torch.set_float32_matmul_precision("high")
     except Exception:
@@ -259,13 +159,12 @@ def main():
         local_files_only=args.local_files_only,
     )
 
-    # ----------------- SPECIAL-TOKEN ALIGNMENT (Tokenizer) -----------------
-    # Whisper commonly uses eos as pad. Ensure tokenizer has pad set; we'll mirror to model in a moment.
+    # Ensure pad token exists & align ids
     tok = processor.tokenizer
     if tok.pad_token is None:
-        tok.pad_token = tok.eos_token  # typical Whisper setup
+        tok.pad_token = tok.eos_token  # standard Whisper choice
 
-    # ----- Dataset Filters -----
+    # ----- Datasets -----
     datasets_info = [
         {
             "name": "uzbekvoice-filtered",
@@ -286,10 +185,9 @@ def main():
                 ]
             ),
         },
-        {"name": "uzbek_voice", "filter_fn": lambda ex: (ex.get("is_correct") == True)},
+        {"name": "uzbek_voice", "filter_fn": lambda ex: (ex.get("is_correct") is True)},
     ]
 
-    # ----- Datasets -----
     if args.test_data is None:
         print("No test data provided. Splitting train data: 92% train, 8% test")
         full_dataset = CustomDataset(
@@ -303,7 +201,7 @@ def main():
             dataset_filters=datasets_info,
         )
         total_size = len(full_dataset)
-        eval_size = int(0.08 * total_size)
+        eval_size = max(1, int(0.08 * total_size))
         train_size = total_size - eval_size
         train_dataset, eval_dataset = random_split(
             full_dataset,
@@ -335,6 +233,14 @@ def main():
 
     data_collator = DataCollatorSpeechSeq2SeqWithPadding(processor=processor)
 
+    # Optional sanity check: keep ratio of non-masked labels
+    if args.check_label_keep_ratio:
+        dl = DataLoader(train_dataset, batch_size=2, collate_fn=data_collator)
+        batch = next(iter(dl))
+        labels = batch["labels"]
+        keep_ratio = (labels != -100).float().mean().item()
+        print(f"🔎 Label keep ratio: {keep_ratio:.3f} (want high, e.g., >0.7)")
+
     # ----- Device map / DDP -----
     device_map: Any = "auto"
     world_size = int(os.environ.get("WORLD_SIZE", 1))
@@ -342,58 +248,61 @@ def main():
     if ddp:
         device_map = {"": int(os.environ.get("LOCAL_RANK") or 0)}
 
-    # ----- Load model (no quantization) -----
+    # ----- Load model -----
     model = WhisperForConditionalGeneration.from_pretrained(
         args.base_model,
         device_map=device_map,
         local_files_only=args.local_files_only,
     )
-    model.config.suppress_tokens = []
 
-    # ----------------- SPECIAL-TOKEN ALIGNMENT (Model & Generation) -----------------
-    # Mirror tokenizer ids into model.config and generation_config.
+    # Align special tokens
     model.config.pad_token_id = tok.pad_token_id
     model.config.eos_token_id = tok.eos_token_id
     model.config.bos_token_id = tok.bos_token_id
-
-    # Whisper uses <|startoftranscript|> as decoder start (not bos)
     start_id = tok.convert_tokens_to_ids("<|startoftranscript|>")
     if start_id is not None:
         model.config.decoder_start_token_id = start_id
 
-    # Keep generate() quiet and consistent
+    # Set generation ids (shared by generate)
     model.generation_config.pad_token_id = tok.pad_token_id
     model.generation_config.eos_token_id = tok.eos_token_id
 
-    # Save processor (now that pad token is set) into the unique run directory
+    # Save processor (with PAD) early
     processor.save_pretrained(output_dir)
     print(f"✅ Saved processor files (incl. tokenizer with PAD) to: {output_dir}")
 
-    # TRAIN: keep decoder prompt free; EVAL/GEN: use processor prompt ids
-    train_forced_decoder_ids = None
+    # TRAIN: keep decoder free; EVAL/GEN: force language/task prompt
     eval_forced_decoder_ids = processor.get_decoder_prompt_ids(
         language=args.language, task=args.task
     )
+    model.config.forced_decoder_ids = None  # training
+    model.generation_config.forced_decoder_ids = eval_forced_decoder_ids  # eval
+    # Optional clarity (Whisper respects forced ids; these help downstream tools)
+    try:
+        model.generation_config.language = "uz"
+        model.generation_config.task = "transcribe"
+        model.generation_config.no_timestamps = not args.timestamps
+    except Exception:
+        pass
 
-    # Safer multi-GPU w/ Whisper’s conv1 front-end
+    # Make Whisper’s conv1 track gradients (safer AMP/bf16)
     model.model.encoder.conv1.register_forward_hook(make_inputs_require_grad)
 
-    # Gradient checkpointing (big memory saver)
+    # Gradient checkpointing
     model.gradient_checkpointing_enable(
         gradient_checkpointing_kwargs={"use_reentrant": False}
     )
 
-    # ----- Calculate steps for logging and eval -----
-    world_size = int(os.environ.get("WORLD_SIZE", 1))
-    effective_batch_size = (
-        args.per_device_train_batch_size * args.gradient_accumulation_steps * world_size
+    # ----- Calculate steps for logging/eval and AdaLoRA -----
+    eff_batch = (
+        args.per_device_train_batch_size
+        * args.gradient_accumulation_steps
+        * max(1, world_size)
     )
-    steps_per_epoch = len(train_dataset) // max(1, effective_batch_size)
-
+    steps_per_epoch = max(1, math.ceil(len(train_dataset) / eff_batch))
     if args.logging_steps is None:
         args.logging_steps = max(1, steps_per_epoch // 2)
         print(f"Setting logging_steps to {args.logging_steps} (half epoch)")
-
     if args.save_steps is None:
         args.save_steps = max(1, steps_per_epoch // 2)
         print(f"Setting save_steps to {args.save_steps} (half epoch)")
@@ -402,18 +311,18 @@ def main():
         eval_strategy = "epoch"
         save_strategy = "epoch"
         eval_steps = None
-        print("Setting evaluation strategy to 'epoch' (eval every epoch)")
-        print("Setting save strategy to 'epoch' to match evaluation strategy")
+        print("Setting evaluation strategy to 'epoch'")
+        print("Setting save strategy to 'epoch'")
     else:
         eval_strategy = "steps"
         save_strategy = "steps"
         eval_steps = args.eval_steps
-        print(f"Setting evaluation strategy to 'steps' with eval_steps={eval_steps}")
-        print("Setting save strategy to 'steps' to match evaluation strategy")
+        print(f"Setting evaluation strategy to 'steps' (eval_steps={eval_steps})")
+        print("Setting save strategy to 'steps'")
 
     # ----- LoRA / AdaLoRA -----
-    total_step = args.num_train_epochs * max(1, len(train_dataset))
     target_modules = ["k_proj", "q_proj", "v_proj", "out_proj", "fc1", "fc2"]
+    total_update_steps = args.num_train_epochs * steps_per_epoch
 
     if args.use_lora:
         if args.resume_from_checkpoint:
@@ -436,7 +345,7 @@ def main():
                     lora_dropout=args.lora_dropout,
                     orth_reg_weight=0.75,
                     target_modules=target_modules,
-                    total_step=total_step,
+                    total_step=total_update_steps,  # FIX: use optimizer steps
                 )
             else:
                 config = LoraConfig(
@@ -497,23 +406,18 @@ def main():
 
     def compute_metrics(eval_pred):
         preds, labels = eval_pred
+        # when predict_with_generate=True, preds are token ids already
         labels = labels.copy()
         labels[labels == -100] = processor.tokenizer.pad_token_id
 
-        # Ensure eval uses language/task prompt
-        prev_forced = model.config.forced_decoder_ids
-        model.config.forced_decoder_ids = eval_forced_decoder_ids
-
         pred_str = processor.tokenizer.batch_decode(preds, skip_special_tokens=True)
         label_str = processor.tokenizer.batch_decode(labels, skip_special_tokens=True)
-
-        model.config.forced_decoder_ids = prev_forced
         wer = wer_metric.compute(predictions=pred_str, references=label_str)
         return {"wer": wer}
 
     # ----- Trainer -----
     callbacks = [
-        SavePeftModelCallback,
+        SavePeftModelCallback(),  # FIX: instantiate
         EarlyStoppingCallback(early_stopping_patience=args.early_stopping_patience),
     ]
 
@@ -523,7 +427,7 @@ def main():
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         data_collator=data_collator,
-        processing_class=processor,
+        processing_class=processor,  # keep to match your environment
         compute_metrics=compute_metrics,
         callbacks=callbacks,
     )
@@ -531,19 +435,19 @@ def main():
     trainer._load_from_checkpoint = load_from_checkpoint
 
     # ---- Training ----
-    model.config.forced_decoder_ids = None  # keep training prompt-free
+    model.config.forced_decoder_ids = None  # training stays prompt-free
     trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
 
     # ---- Save & Export ----
     trainer.save_state()
     model.config.use_cache = True
-    model.config.forced_decoder_ids = eval_forced_decoder_ids
+    model.config.forced_decoder_ids = (
+        eval_forced_decoder_ids  # set for downstream eval/infer
+    )
 
-    # Save PEFT adapter
     if training_args.local_rank in (0, -1):
         final_dir = os.path.join(output_dir, "checkpoint-final")
         os.makedirs(final_dir, exist_ok=True)
-
         model.save_pretrained(final_dir, safe_serialization=True)
         processor.save_pretrained(final_dir)
         print(f"✅ Saved processor files to: {final_dir}")
@@ -560,19 +464,16 @@ def main():
                 if skip_merge:
                     print("⏭️ Skipping merge_and_unload because skip_merge=True")
                 else:
-                    print(
-                        "🔄 Starting merge_and_unload of LoRA adapters into base model..."
-                    )
+                    print("🔄 Merging LoRA adapters into base model...")
                     if merge_on_cpu:
                         try:
-                            print(
-                                "↪️ Moving model to CPU for merging to reduce GPU memory usage..."
-                            )
+                            print("↪️ Moving model to CPU for merge...")
                             model = model.to("cpu")
                         except Exception as move_e:
                             warnings.warn(
                                 f"Failed to move model to CPU for merge: {move_e}"
                             )
+
                     merged = model.merge_and_unload()
 
                     if merge_bf16:
@@ -594,7 +495,6 @@ def main():
                     if save_sharded:
                         save_kwargs["max_shard_size"] = merge_max_shard_size
                     merged.save_pretrained(merged_dir, **save_kwargs)
-
                     processor.save_pretrained(merged_dir)
                     print(f"✅ Saved processor files to: {merged_dir}")
             else:
