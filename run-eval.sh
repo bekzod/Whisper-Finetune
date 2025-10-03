@@ -5,7 +5,7 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 export CUDA_VISIBLE_DEVICES=0
 
-python3.11 ./evaluation.py \
+python ./evaluation.py \
   --test_data ../datasets/dataset_for_stt_ttsmodels/metadata.csv \
   --model_path ../models/whisper-large-v3 \
   --adapter_path ../models/output/whisper-large-v3-1/checkpoint-best \
