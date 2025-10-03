@@ -84,7 +84,7 @@ add_arg(
     help="Task for the model",
 )
 add_arg(
-    "metric", type=str, default="cer", choices=["cer", "wer"], help="Evaluation method"
+    "metric", type=str, default="wer", choices=["cer", "wer"], help="Evaluation method"
 )
 add_arg(
     "kenlm_path",
@@ -300,6 +300,7 @@ def main():
         if hasattr(model, "merge_and_unload"):
             model = model.merge_and_unload()
 
+    model.generation_config.task = "transcribe"
     model.generation_config.language = args.language.lower()
     model.generation_config.forced_decoder_ids = None
     model.eval()
