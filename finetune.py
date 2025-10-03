@@ -16,7 +16,6 @@ from transformers import (
     Seq2SeqTrainingArguments,
     WhisperForConditionalGeneration,
     WhisperProcessor,
-    GenerationConfig,
 )
 from transformers.trainer_callback import EarlyStoppingCallback, TrainerCallback
 from transformers.trainer_utils import set_seed
@@ -378,27 +377,14 @@ def main():
         device_map=device_map,
         local_files_only=args.local_files_only,
     )
-    # Whisper generation defaults: set a fresh GenerationConfig to avoid migration warnings
-    gen_cfg_path = os.path.join(args.base_model, "generation_config.json")
-    if os.path.exists(gen_cfg_path):
-        gen_cfg = GenerationConfig.from_pretrained(args.base_model)
-    else:
-        gen_cfg = GenerationConfig()
-        # carry over existing begin_suppress_tokens/suppress_tokens/max_length if present
-        if hasattr(model.config, "begin_suppress_tokens"):
-            gen_cfg.begin_suppress_tokens = model.config.begin_suppress_tokens
-        if hasattr(model.config, "suppress_tokens"):
-            gen_cfg.suppress_tokens = model.config.suppress_tokens
-        if hasattr(model.config, "max_length"):
-            gen_cfg.max_length = model.config.max_length
-    # Override with CLI/runtime prefs
-    gen_cfg.task = args.task
-    gen_cfg.language = args.language
-    gen_cfg.no_timestamps = not args.timestamps
-    gen_cfg.forced_decoder_ids = None
-    if getattr(gen_cfg, "suppress_tokens", None) is None:
-        gen_cfg.suppress_tokens = []
-    model.generation_config = gen_cfg
+    # Whisper generation defaults
+    model.config.suppress_tokens = []
+
+    # TRAIN: keep decoder prompt free; EVAL/GEN: use processor prompt ids
+    train_forced_decoder_ids = None
+    eval_forced_decoder_ids = processor.get_decoder_prompt_ids(
+        language=args.language, task=args.task
+    )
 
     # Safer multi-GPU w/ Whisper’s conv1 front-end
     model.model.encoder.conv1.register_forward_hook(make_inputs_require_grad)
@@ -534,11 +520,16 @@ def main():
         labels = labels.copy()
         labels[labels == -100] = processor.tokenizer.pad_token_id
 
-        # Using generation_config.task/language; no need to toggle forced_decoder_ids
+        # Ensure eval uses language/task prompt
+        prev_forced = model.config.forced_decoder_ids
+        model.config.forced_decoder_ids = eval_forced_decoder_ids
 
         # Decode strings
         pred_str = processor.tokenizer.batch_decode(preds, skip_special_tokens=True)
         label_str = processor.tokenizer.batch_decode(labels, skip_special_tokens=True)
+
+        # Restore previous forced ids (avoid side-effects)
+        model.config.forced_decoder_ids = prev_forced
 
         wer = wer_metric.compute(predictions=pred_str, references=label_str)
         return {"wer": wer}
@@ -563,11 +554,15 @@ def main():
     trainer._load_from_checkpoint = load_from_checkpoint
 
     # ---- Training ----
+    # Keep training free of forced prompt so adapters can learn freely
+    model.config.forced_decoder_ids = None
     trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
 
     # ---- Save & Export ----
     trainer.save_state()
     model.config.use_cache = True
+    # Set eval prompt by default for downstream generation
+    model.config.forced_decoder_ids = eval_forced_decoder_ids
 
     # Save PEFT adapter
     if training_args.local_rank in (0, -1):
