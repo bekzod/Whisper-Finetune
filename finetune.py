@@ -41,68 +41,213 @@ parser = argparse.ArgumentParser("Whisper-large-v3 LoRA finetune with W&B (bf16 
 add_arg = functools.partial(add_arguments, argparser=parser)
 
 # Data & model
-add_arg("train_data", type=str, default="../datasets/train.json")
-add_arg("test_data", type=str, default=None)
-add_arg("base_model", type=str, default="../models/whisper-large-v3")
-add_arg("output_dir", type=str, default="output/")
+add_arg(
+    "train_data",
+    type=str,
+    default="../datasets/train.json",
+    help="Path to training data file or dataset",
+)
+add_arg(
+    "test_data",
+    type=str,
+    default=None,
+    help="Path to test/validation data file or dataset",
+)
+add_arg(
+    "base_model",
+    type=str,
+    default="../models/whisper-large-v3",
+    help="Path to base Whisper model",
+)
+add_arg(
+    "output_dir", type=str, default="output/", help="Directory to save model outputs"
+)
 
 # Task / language
-add_arg("timestamps", type=bool, default=False)
-add_arg("language", type=str, default="Uzbek")
-add_arg("task", type=str, default="transcribe", choices=["transcribe", "translate"])
+add_arg(
+    "timestamps",
+    type=bool,
+    default=False,
+    help="Whether to include timestamps in transcription",
+)
+add_arg("language", type=str, default="Uzbek", help="Language for transcription")
+add_arg(
+    "task",
+    type=str,
+    default="transcribe",
+    help="Task type: transcribe or translate",
+    choices=["transcribe", "translate"],
+)
 
 # Loader / augmentation
-add_arg("min_audio_len", type=float, default=0.5)
-add_arg("max_audio_len", type=float, default=30.0)
-add_arg("augment_config_path", type=str, default="./configs/augmentation.json")
-add_arg("num_workers", type=int, default=min(10, os.cpu_count() or 1))
+add_arg(
+    "min_audio_len", type=float, default=0.5, help="Minimum audio length in seconds"
+)
+add_arg(
+    "max_audio_len", type=float, default=30.0, help="Maximum audio length in seconds"
+)
+add_arg(
+    "augment_config_path",
+    type=str,
+    default="./configs/augmentation.json",
+    help="Path to augmentation config JSON file",
+)
+add_arg(
+    "num_workers",
+    type=int,
+    default=min(10, os.cpu_count() or 1),
+    help="Number of data loader workers",
+)
 
 # LoRA / AdaLoRA
-add_arg("use_lora", type=bool, default=True)
-add_arg("use_adalora", type=bool, default=True)
-add_arg("lora_r", type=int, default=16)
-add_arg("lora_alpha", type=int, default=32)
-add_arg("lora_dropout", type=float, default=0.05)
+add_arg("use_lora", type=bool, default=True, help="Whether to use LoRA for fine-tuning")
+add_arg(
+    "use_adalora",
+    type=bool,
+    default=True,
+    help="Whether to use AdaLoRA instead of standard LoRA",
+)
+add_arg("lora_r", type=int, default=16, help="LoRA rank parameter")
+add_arg("lora_alpha", type=int, default=32, help="LoRA alpha scaling parameter")
+add_arg("lora_dropout", type=float, default=0.05, help="LoRA dropout rate")
 
 # Training schedule
-add_arg("num_train_epochs", type=int, default=3)
-add_arg("per_device_train_batch_size", type=int, default=8)
-add_arg("per_device_eval_batch_size", type=int, default=8)
-add_arg("gradient_accumulation_steps", type=int, default=4)
-add_arg("learning_rate", type=float, default=2e-4)
-add_arg("weight_decay", type=float, default=0.01)
-add_arg("max_grad_norm", type=float, default=1.0)
-add_arg("warmup_ratio", type=float, default=0.05)
-add_arg("lr_scheduler_type", type=str, default="cosine")
+add_arg("num_train_epochs", type=int, default=3, help="Number of training epochs")
+add_arg(
+    "per_device_train_batch_size",
+    type=int,
+    default=8,
+    help="Training batch size per device",
+)
+add_arg(
+    "per_device_eval_batch_size",
+    type=int,
+    default=8,
+    help="Evaluation batch size per device",
+)
+add_arg(
+    "gradient_accumulation_steps",
+    type=int,
+    default=4,
+    help="Number of gradient accumulation steps",
+)
+add_arg("learning_rate", type=float, default=2e-4, help="Learning rate for optimizer")
+add_arg(
+    "weight_decay",
+    type=float,
+    default=0.01,
+    help="Weight decay regularization parameter",
+)
+add_arg(
+    "max_grad_norm", type=float, default=1.0, help="Maximum gradient norm for clipping"
+)
+add_arg(
+    "warmup_ratio",
+    type=float,
+    default=0.05,
+    help="Warmup ratio for learning rate scheduler",
+)
+add_arg(
+    "lr_scheduler_type",
+    type=str,
+    default="cosine",
+    help="Type of learning rate scheduler",
+)
 
 # Logging / eval / saving
-add_arg("logging_steps", type=int, default=None)
-add_arg("eval_steps", type=int, default=None)
-add_arg("save_steps", type=int, default=None)
-add_arg("save_total_limit", type=int, default=10)
-add_arg("predict_with_generate", type=bool, default=True)
-add_arg("early_stopping_patience", type=int, default=4)
-add_arg("group_by_length", type=bool, default=False)
-add_arg("length_column_name", type=str, default=None)
-add_arg("generation_max_length", type=int, default=225)
+add_arg("logging_steps", type=int, default=None, help="Number of steps between logging")
+add_arg(
+    "eval_steps", type=int, default=None, help="Number of steps between evaluations"
+)
+add_arg(
+    "save_steps", type=int, default=None, help="Number of steps between model saves"
+)
+add_arg(
+    "save_total_limit",
+    type=int,
+    default=10,
+    help="Maximum number of checkpoints to keep",
+)
+add_arg(
+    "predict_with_generate",
+    type=bool,
+    default=True,
+    help="Whether to use generation for evaluation",
+)
+add_arg(
+    "early_stopping_patience",
+    type=int,
+    default=4,
+    help="Number of evaluations with no improvement before stopping",
+)
+add_arg(
+    "group_by_length",
+    type=bool,
+    default=False,
+    help="Whether to group samples by length for efficiency",
+)
+add_arg(
+    "length_column_name",
+    type=str,
+    default=None,
+    help="Name of column containing sample lengths",
+)
+add_arg(
+    "generation_max_length",
+    type=int,
+    default=225,
+    help="Maximum length for generation during evaluation",
+)
 
 # Infra / misc
-add_arg("seed", type=int, default=42)
-add_arg("use_compile", type=bool, default=False)
-add_arg("local_files_only", type=bool, default=True)
-add_arg("resume_from_checkpoint", type=str, default=None)
-add_arg("push_to_hub", type=bool, default=False)
-add_arg("hub_model_id", type=str, default=None)
+add_arg("seed", type=int, default=42, help="Random seed for reproducibility")
+add_arg(
+    "use_compile",
+    type=bool,
+    default=False,
+    help="Whether to use torch.compile for optimization",
+)
+add_arg(
+    "local_files_only",
+    type=bool,
+    default=True,
+    help="Whether to only use local files (no downloading)",
+)
+add_arg(
+    "resume_from_checkpoint",
+    type=str,
+    default=None,
+    help="Path to checkpoint to resume training from",
+)
+add_arg(
+    "push_to_hub",
+    type=bool,
+    default=False,
+    help="Whether to push model to Hugging Face Hub",
+)
+add_arg("hub_model_id", type=str, default=None, help="Model ID for Hugging Face Hub")
 
 # W&B
-add_arg("wandb_project", type=str, default=None)
-add_arg("wandb_entity", type=str, default=None)
-add_arg("wandb_run_name", type=str, default=None)
-add_arg("wandb_tags", type=str, default=None)
-add_arg("wandb_table_rows", type=int, default=6)
+add_arg("wandb_project", type=str, default=None, help="Weights & Biases project name")
+add_arg(
+    "wandb_entity", type=str, default=None, help="Weights & Biases entity/team name"
+)
+add_arg("wandb_run_name", type=str, default=None, help="Weights & Biases run name")
+add_arg("wandb_tags", type=str, default=None, help="Comma-separated tags for W&B run")
+add_arg(
+    "wandb_table_rows",
+    type=int,
+    default=6,
+    help="Number of samples to log to W&B table",
+)
 
 # Debugging
-add_arg("check_label_keep_ratio", type=bool, default=False)
+add_arg(
+    "check_label_keep_ratio",
+    type=bool,
+    default=False,
+    help="Whether to check label retention ratio during data loading",
+)
 
 args = parser.parse_args()
 
