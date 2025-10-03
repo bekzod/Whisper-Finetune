@@ -18,4 +18,7 @@ python3.11 ./evaluation.py \
   --max_audio_len 30 \
   --local_files_only True \
   --task transcribe \
-  --metric wer
+  --metric wer \
+  # --kenlm_path /path/to/your/kenlm_model.arpa \
+  # --kenlm_alpha 0.5 \
+  # --kenlm_top_k 50
