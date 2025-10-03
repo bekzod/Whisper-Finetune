@@ -24,7 +24,7 @@ accelerate launch --multi_gpu --num_processes=2 --config_file ./configs/accelera
   --warmup_ratio 0.1 \
   --lr_scheduler_type cosine \
   --use_lora False \
-  --weight_decay 0.005 \
+  --weight_decay 0.01 \
   --save_total_limit 4 \
   --wandb_project whisper-uzbek \
   --wandb_run_name whisper-v3-uzbek \
