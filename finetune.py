@@ -247,6 +247,30 @@ def main():
     # processor.save_pretrained(args.base_model)
     # print(f"✅ Saved processor files next to base model: {args.base_model}")
 
+    # ----- Dataset Filters -----
+    datasets_info = [
+        {
+            "name": "uzbekvoice-filtered",
+            "filter_fn": lambda ex: (
+                ex.get("reported_reasons") is None
+                and ex.get("downvotes_count", 0) == 0
+                and ex.get("reported_count", 0) == 0
+                and ex.get("client_id")
+                not in [
+                    "56ac8e86-b8c9-4879-a342-0eeb94f686fc",
+                    "3d3fca02-6a07-41e2-9af4-60886ea60300",
+                    "231d3776-2dbe-4a42-a535-c67943427e3f",
+                    "e2716f95-70b5-4832-b903-eef2343591a4",
+                    "2a815774-e953-4031-931a-8a28052e5cf9",
+                    "d6fd3dc4-a55d-4a80-9bbf-b713325d05be",
+                    "10b29e87-bf01-4b16-bead-a044076f849b",
+                    "e3412d51-f079-4167-b3f9-311a976443ce",
+                ]
+            ),
+        },
+        {"name": "uzbek_voice", "filter_fn": lambda ex: (ex.get("is_correct") == True)},
+    ]
+
     # ----- Datasets -----
     if args.test_data is None:
         # If no test data provided, load train data and split it
@@ -259,6 +283,7 @@ def main():
             min_duration=args.min_audio_len,
             max_duration=args.max_audio_len,
             augment_config_path=args.augment_config_path,
+            dataset_filters=datasets_info,
         )
 
         # Calculate split sizes
@@ -282,6 +307,7 @@ def main():
             min_duration=args.min_audio_len,
             max_duration=args.max_audio_len,
             augment_config_path=args.augment_config_path,
+            dataset_filters=datasets_info,
         )
         eval_dataset = CustomDataset(
             data_list_path=args.test_data,
@@ -290,6 +316,7 @@ def main():
             timestamps=args.timestamps,
             min_duration=args.min_audio_len,
             max_duration=args.max_audio_len,
+            dataset_filters=datasets_info,
         )
 
     print(f"Training data: {len(train_dataset)}, Eval data: {len(eval_dataset)}")

@@ -70,6 +70,7 @@ class CustomDataset(Dataset):
         silence_top_db: int = 40,
         silence_min_gap_ms: int = 200,
         silence_pad_ms: int = 50,
+        dataset_filters=None,
     ):
         """
         Args:
@@ -95,6 +96,10 @@ class CustomDataset(Dataset):
             min_sentence: Minimum sentence character count for fine-tuning, default 1
             max_sentence: Maximum sentence character count for fine-tuning, default 200
             augment_config_path: Path to data augmentation configuration parameter file
+            dataset_filters: List of dictionaries with 'name' and 'filter_fn' keys for dataset filtering.
+                           Each dict should have:
+                           - 'name': dataset name (partial match)
+                           - 'filter_fn': lambda function that takes a row/example and returns True to keep it
 
             Example A params:
             silence_top_db: energy threshold for librosa.effects.split (smaller = more aggressive)
@@ -129,6 +134,7 @@ class CustomDataset(Dataset):
         self.silence_top_db = silence_top_db
         self.silence_min_gap_ms = silence_min_gap_ms
         self.silence_pad_ms = silence_pad_ms
+        self.dataset_filters = dataset_filters or []
 
         self.vocab = self.processor.tokenizer.get_vocab()
         self.startoftranscript = self.vocab["<|startoftranscript|>"]
@@ -189,6 +195,15 @@ class CustomDataset(Dataset):
                 self._load_csv_data(data_path)
             else:
                 # Get data list from JSON/JSONL
+                # Find matching filter function for this dataset
+                filter_fn = None
+                dataset_name = os.path.basename(data_path)
+                for filter_config in self.dataset_filters:
+                    if filter_config["name"] in dataset_name:
+                        filter_fn = filter_config["filter_fn"]
+                        print(f"  Found filter for dataset '{filter_config['name']}'")
+                        break
+
                 with open(data_path, "r", encoding="utf-8") as f:
                     lines = f.readlines()
                 for line in tqdm(lines, desc=f"Reading data list from {data_path}"):
@@ -230,7 +245,12 @@ class CustomDataset(Dataset):
                             or sentence_len > self.max_sentence
                         ):
                             continue
-                    self.data_list.append(dict(line))
+
+                    # Apply custom filter if available for JSON/JSONL data
+                    if filter_fn and not filter_fn(line):
+                        continue
+
+                    self.data_list.append(line)
 
     def _is_huggingface_dataset(self, path):
         """Check if a directory contains a Hugging Face dataset."""
@@ -255,6 +275,15 @@ class CustomDataset(Dataset):
             f"Loading Hugging Face dataset from {data_path}"
             + (f" (subset: {dataset_subset})" if dataset_subset else "")
         )
+
+        # Find matching filter function for this dataset
+        filter_fn = None
+        dataset_name = os.path.basename(data_path)
+        for filter_config in self.dataset_filters:
+            if filter_config["name"] in dataset_name:
+                filter_fn = filter_config["filter_fn"]
+                print(f"  Found filter for dataset '{filter_config['name']}'")
+                break
 
         try:
             # Load the dataset
@@ -284,6 +313,16 @@ class CustomDataset(Dataset):
                     from datasets import concatenate_datasets
 
                     dataset = concatenate_datasets(all_data)
+
+            # Apply filter if one was found
+            if filter_fn:
+                print(f"  Applying filter to dataset...")
+                original_size = len(dataset)
+                dataset = dataset.filter(filter_fn)
+                filtered_size = len(dataset)
+                print(
+                    f"  Filtered dataset: {original_size} -> {filtered_size} samples (kept {filtered_size / original_size * 100:.1f}%)"
+                )
 
             # Process the dataset entries
             for idx, item in enumerate(
@@ -392,6 +431,15 @@ class CustomDataset(Dataset):
 
     def _load_csv_data(self, data_path):
         """Load data from CSV file. Supports multiple CSV formats with proper header mapping."""
+        # Find matching filter function for this dataset
+        filter_fn = None
+        dataset_name = os.path.basename(data_path)
+        for filter_config in self.dataset_filters:
+            if filter_config["name"] in dataset_name:
+                filter_fn = filter_config["filter_fn"]
+                print(f"  Found filter for dataset '{filter_config['name']}'")
+                break
+
         with open(data_path, "r", encoding="utf-8") as f:
             # Try to detect CSV format by reading first few lines
             sample_lines = []
@@ -550,6 +598,10 @@ class CustomDataset(Dataset):
                     len(line["sentence"]) < self.min_sentence
                     or len(line["sentence"]) > self.max_sentence
                 ):
+                    continue
+
+                # Apply custom filter if available for CSV data
+                if filter_fn and not filter_fn(line):
                     continue
 
                 self.data_list.append(line)
