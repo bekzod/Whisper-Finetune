@@ -209,16 +209,39 @@ args.fp16 = False
 
 print_arguments(args)
 
-# -------------------- W&B Setup --------------------
+# -------------------- W&B Setup (robust for parallel runs) --------------------
 USE_WANDB = args.wandb_project is not None
+
+# compute base output_dir early (you already do this later; keep consistent)
+base_name = args.base_model[:-1] if args.base_model.endswith("/") else args.base_model
+output_dir = os.path.join(args.output_dir, os.path.basename(base_name))
+os.makedirs(output_dir, exist_ok=True)
+
 if USE_WANDB:
+    import time, uuid
+
+    # 1) unique run name: prefer user-provided name but append timestamp/pid/uuid
+    timestamp = int(time.time())
+    short_uuid = uuid.uuid4().hex[:6]
+    pid = os.getpid()
+    user_name = args.wandb_run_name or "run"
+    unique_run_name = f"{user_name}-{timestamp}-{pid}-{short_uuid}"
+    os.environ["WANDB_RUN_NAME"] = unique_run_name
+
+    # 2) project/entity (keep your values)
     os.environ["WANDB_PROJECT"] = args.wandb_project
     if args.wandb_entity:
         os.environ["WANDB_ENTITY"] = args.wandb_entity
-    if args.wandb_run_name:
-        os.environ["WANDB_RUN_NAME"] = args.wandb_run_name
     if args.wandb_tags:
         os.environ["WANDB_TAGS"] = args.wandb_tags
+
+    # 3) direct W&B to write inside the run's output dir (prevents ./wandb collisions)
+    #    this will create output_dir/wandb instead of ./wandb
+    os.environ["WANDB_DIR"] = os.path.join(output_dir, "wandb")
+
+    # 4) ensure wandb doesn't try to resume an earlier run by accident
+    #    If you intentionally want to resume set WANDB_RESUME or WANDB_RUN_ID explicitly.
+    os.environ["WANDB_RESUME"] = "false"
 
 
 # -------------------- Main --------------------
