@@ -546,8 +546,48 @@ class CustomDataset(Dataset):
             data_list = self.dataset_reader.get_data(self.data_list[idx])
         else:
             data_list = self.data_list[idx]
-        # Split audio path and labels
-        audio_file = data_list["audio"]["path"]
+
+        # Check if we have preloaded audio array from Hugging Face dataset
+        if "audio_array" in data_list:
+            # Use preloaded audio array from Hugging Face dataset
+            sample = data_list["audio_array"]
+            sample_rate = data_list.get("sampling_rate", 16000)
+
+            # Ensure it's float32 and 2D for consistency
+            if not isinstance(sample, np.ndarray):
+                sample = np.array(sample, dtype=np.float32)
+            else:
+                sample = sample.astype(np.float32)
+
+            # Make it 2D if it's 1D (add channel dimension)
+            if sample.ndim == 1:
+                sample = sample.reshape(-1, 1)
+        else:
+            # Original file-based loading
+            # Split audio path and labels
+            if isinstance(data_list.get("audio"), dict):
+                audio_file = data_list["audio"]["path"]
+            else:
+                audio_file = data_list.get("wav", data_list.get("audio"))
+
+            # --------- FAST IO + CHEAP MONO ----------
+            if (
+                isinstance(data_list.get("audio"), dict)
+                and "start_time" in data_list["audio"].keys()
+            ):
+                start_time, end_time = (
+                    data_list["audio"]["start_time"],
+                    data_list["audio"]["end_time"],
+                )
+                # Split and read audio (ensure 2D)
+                sample, sample_rate = self.slice_from_file(
+                    audio_file, start=start_time, end=end_time
+                )  # shape: (N, C)
+            else:
+                # Read as (frames, channels) without decoding twice
+                sample, sample_rate = soundfile.read(
+                    audio_file, dtype="float32", always_2d=True
+                )  # shape: (N, C)
 
         # Handle transcript extraction with fallback to 'text' column
         if self.timestamps:
@@ -557,22 +597,6 @@ class CustomDataset(Dataset):
             transcript = data_list.get("sentence", data_list.get("text", ""))
 
         language = data_list["language"] if "language" in data_list.keys() else None
-
-        # --------- FAST IO + CHEAP MONO ----------
-        if "start_time" not in data_list["audio"].keys():
-            # Read as (frames, channels) without decoding twice
-            sample, sample_rate = soundfile.read(
-                audio_file, dtype="float32", always_2d=True
-            )  # shape: (N, C)
-        else:
-            start_time, end_time = (
-                data_list["audio"]["start_time"],
-                data_list["audio"]["end_time"],
-            )
-            # Split and read audio (ensure 2D)
-            sample, sample_rate = self.slice_from_file(
-                audio_file, start=start_time, end=end_time
-            )  # shape: (N, C)
 
         # Convert to mono channel cheaply
         # sample shape is (N, C). If mono requested and C>1, average channels.
