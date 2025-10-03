@@ -8,6 +8,12 @@ export WANDB_API_KEY='2dfc22d8af7805df156e7f31ea3bc090ec99d52e'
 export RAYON_NUM_THREADS=1
 export TOKENIZERS_PARALLELISM=false
 
+# Diagnostics / stability
+export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
+export TORCH_NCCL_BLOCKING_WAIT=1
+export NCCL_TIMEOUT=600
+export NCCL_IB_DISABLE=1             # single-node hygiene
+
 accelerate launch --multi_gpu --num_processes=2 --config_file ./configs/accelerate.yaml finetune.py \
   --base_model ../models/whisper-large-v3 \
   --output_dir ../models/output-full-finetune \
