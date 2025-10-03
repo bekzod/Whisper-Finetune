@@ -424,14 +424,19 @@ def main():
         print(f"Setting save_steps to {args.save_steps} (half epoch)")
 
     # Set eval strategy based on whether eval_steps is provided
+    # Decide eval strategy and align save strategy for compatibility with load_best_model_at_end
     if args.eval_steps is None:
         eval_strategy = "epoch"
+        save_strategy = "epoch"
         eval_steps = None
         print("Setting evaluation strategy to 'epoch' (eval every epoch)")
+        print("Setting save strategy to 'epoch' to match evaluation strategy")
     else:
         eval_strategy = "steps"
+        save_strategy = "steps"
         eval_steps = args.eval_steps
         print(f"Setting evaluation strategy to 'steps' with eval_steps={eval_steps}")
+        print("Setting save strategy to 'steps' to match evaluation strategy")
 
     # ----- LoRA / AdaLoRA -----
     total_step = args.num_train_epochs * max(1, len(train_dataset))
@@ -486,10 +491,10 @@ def main():
         "warmup_ratio": args.warmup_ratio,
         "lr_scheduler_type": args.lr_scheduler_type,
         "logging_steps": args.logging_steps,
-        "save_steps": args.save_steps,
+        "save_steps": args.save_steps if save_strategy == "steps" else None,
         "save_total_limit": args.save_total_limit,
         "eval_strategy": eval_strategy,
-        "save_strategy": "steps",
+        "save_strategy": save_strategy,
         "load_best_model_at_end": True,
         "metric_for_best_model": "wer",
         "greater_is_better": False,
