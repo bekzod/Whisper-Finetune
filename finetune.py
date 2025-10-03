@@ -127,9 +127,24 @@ add_arg("warmup_ratio", type=float, default=0.05, help="Warmup ratio")
 add_arg("lr_scheduler_type", type=str, default="cosine", help="Scheduler")
 
 # Logging / eval / saving
-add_arg("logging_steps", type=int, default=250, help="Logging steps")
-add_arg("eval_steps", type=int, default=1000, help="Eval steps")
-add_arg("save_steps", type=int, default=1000, help="Save steps")
+add_arg(
+    "logging_steps",
+    type=int,
+    default=None,
+    help="Logging steps (if None, logs every half epoch)",
+)
+add_arg(
+    "eval_steps",
+    type=int,
+    default=None,
+    help="Eval steps (if None, evaluates every epoch)",
+)
+add_arg(
+    "save_steps",
+    type=int,
+    default=None,
+    help="Save steps (if None, saves every half epoch)",
+)
 add_arg("save_total_limit", type=int, default=10, help="Max checkpoints to keep")
 add_arg(
     "predict_with_generate", type=bool, default=True, help="Use generate() during eval"
@@ -367,6 +382,34 @@ def main():
         gradient_checkpointing_kwargs={"use_reentrant": False}
     )
 
+    # ----- Calculate steps for logging and eval -----
+    # Calculate steps per epoch based on batch size and gradient accumulation
+    world_size = int(os.environ.get("WORLD_SIZE", 1))
+    effective_batch_size = (
+        args.per_device_train_batch_size * args.gradient_accumulation_steps * world_size
+    )
+    steps_per_epoch = len(train_dataset) // effective_batch_size
+
+    # Set logging_steps to half an epoch if not specified
+    if args.logging_steps is None:
+        args.logging_steps = max(1, steps_per_epoch // 2)
+        print(f"Setting logging_steps to {args.logging_steps} (half epoch)")
+
+    # Set save_steps to half an epoch if not specified
+    if args.save_steps is None:
+        args.save_steps = max(1, steps_per_epoch // 2)
+        print(f"Setting save_steps to {args.save_steps} (half epoch)")
+
+    # Set eval strategy based on whether eval_steps is provided
+    if args.eval_steps is None:
+        eval_strategy = "epoch"
+        eval_steps = None
+        print("Setting evaluation strategy to 'epoch' (eval every epoch)")
+    else:
+        eval_strategy = "steps"
+        eval_steps = args.eval_steps
+        print(f"Setting evaluation strategy to 'steps' with eval_steps={eval_steps}")
+
     # ----- LoRA / AdaLoRA -----
     total_step = args.num_train_epochs * max(1, len(train_dataset))
     target_modules = ["k_proj", "q_proj", "v_proj", "out_proj", "fc1", "fc2"]
@@ -408,43 +451,48 @@ def main():
         # No PEFT adapters - model remains as is for full fine-tuning
 
     # ----- Training args -----
-    training_args = Seq2SeqTrainingArguments(
-        output_dir=output_dir,
-        num_train_epochs=args.num_train_epochs,
-        per_device_train_batch_size=args.per_device_train_batch_size,
-        per_device_eval_batch_size=args.per_device_eval_batch_size,
-        gradient_accumulation_steps=args.gradient_accumulation_steps,
-        learning_rate=args.learning_rate,
-        weight_decay=args.weight_decay,
-        max_grad_norm=args.max_grad_norm,
-        warmup_ratio=args.warmup_ratio,
-        lr_scheduler_type=args.lr_scheduler_type,
-        logging_steps=args.logging_steps,
-        eval_steps=args.eval_steps,
-        save_steps=args.save_steps,
-        save_total_limit=args.save_total_limit,
-        eval_strategy="steps",
-        save_strategy="steps",
-        load_best_model_at_end=True,
-        metric_for_best_model="wer",
-        greater_is_better=False,
-        bf16=True,  # enforced
-        fp16=False,  # enforced
-        optim="adamw_torch_fused",
-        torch_compile=args.use_compile,
-        ddp_find_unused_parameters=False if ddp else None,
-        dataloader_num_workers=args.num_workers,
-        dataloader_pin_memory=True,
-        dataloader_persistent_workers=True if args.num_workers > 0 else False,
-        remove_unused_columns=False,
-        label_names=["labels"],
-        report_to=(["tensorboard", "wandb"] if USE_WANDB else ["tensorboard"]),
-        push_to_hub=args.push_to_hub,
-        group_by_length=args.group_by_length,
-        length_column_name=args.length_column_name,
-        predict_with_generate=args.predict_with_generate,
-        generation_max_length=args.generation_max_length,
-    )
+    training_args_dict = {
+        "output_dir": output_dir,
+        "num_train_epochs": args.num_train_epochs,
+        "per_device_train_batch_size": args.per_device_train_batch_size,
+        "per_device_eval_batch_size": args.per_device_eval_batch_size,
+        "gradient_accumulation_steps": args.gradient_accumulation_steps,
+        "learning_rate": args.learning_rate,
+        "weight_decay": args.weight_decay,
+        "max_grad_norm": args.max_grad_norm,
+        "warmup_ratio": args.warmup_ratio,
+        "lr_scheduler_type": args.lr_scheduler_type,
+        "logging_steps": args.logging_steps,
+        "save_steps": args.save_steps,
+        "save_total_limit": args.save_total_limit,
+        "eval_strategy": eval_strategy,
+        "save_strategy": "steps",
+        "load_best_model_at_end": True,
+        "metric_for_best_model": "wer",
+        "greater_is_better": False,
+        "bf16": True,  # enforced
+        "fp16": False,  # enforced
+        "optim": "adamw_torch_fused",
+        "torch_compile": args.use_compile,
+        "ddp_find_unused_parameters": False if ddp else None,
+        "dataloader_num_workers": args.num_workers,
+        "dataloader_pin_memory": True,
+        "dataloader_persistent_workers": True if args.num_workers > 0 else False,
+        "remove_unused_columns": False,
+        "label_names": ["labels"],
+        "report_to": (["tensorboard", "wandb"] if USE_WANDB else ["tensorboard"]),
+        "push_to_hub": args.push_to_hub,
+        "group_by_length": args.group_by_length,
+        "length_column_name": args.length_column_name,
+        "predict_with_generate": args.predict_with_generate,
+        "generation_max_length": args.generation_max_length,
+    }
+
+    # Add eval_steps only if using steps strategy
+    if eval_strategy == "steps":
+        training_args_dict["eval_steps"] = eval_steps
+
+    training_args = Seq2SeqTrainingArguments(**training_args_dict)
 
     # ----- Metrics: WER -----
     wer_metric = evaluate.load("wer")
