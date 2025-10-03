@@ -20,14 +20,14 @@ accelerate launch --multi_gpu --num_processes=2 --config_file ./configs/accelera
   --num_train_epochs 8 \
   --per_device_train_batch_size 32 \
   --per_device_eval_batch_size 64 \
-  --gradient_accumulation_steps 2 \
-  --learning_rate 1e-4 \
+  --gradient_accumulation_steps 3 \
+  --learning_rate 1e-3 \
   --warmup_ratio 0.1 \
   --lr_scheduler_type cosine \
   --use_lora False \
   --save_total_limit 5 \
   --wandb_project whisper-uzbek \
-  --wandb_run_name whisper-v3-uzbek-2xH100-full-finetune \
+  --wandb_run_name whisper-v3-uzbek \
   --wandb_tags uzbek,whisper,full-finetune,H100 \
   --train_data ../datasets/uzbek_voice/data/train/metadata.csv
   # --test_data ../datasets/uzbek_voice/test.json \
