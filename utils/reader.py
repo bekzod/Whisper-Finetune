@@ -178,9 +178,15 @@ class CustomDataset(Dataset):
                         data_path = potential_path
                         dataset_subset = potential_subset
 
-            # Check if it's a Hugging Face dataset folder
-            if os.path.isdir(data_path) and self._is_huggingface_dataset(data_path):
-                self._load_huggingface_dataset(data_path, dataset_subset)
+            # Check if it's a directory - treat all directories as potential HuggingFace datasets
+            if os.path.isdir(data_path):
+                try:
+                    self._load_huggingface_dataset(data_path, dataset_subset)
+                except Exception as e:
+                    print(
+                        f"Warning: Failed to load {data_path} as HuggingFace dataset: {e}"
+                    )
+                    print(f"Skipping directory: {data_path}")
             elif data_path.endswith(".header"):
                 # Get binary data list
                 dataset_reader = DatasetReader(
@@ -251,23 +257,6 @@ class CustomDataset(Dataset):
                         continue
 
                     self.data_list.append(line)
-
-    def _is_huggingface_dataset(self, path):
-        """Check if a directory contains a Hugging Face dataset."""
-        # Check for common Hugging Face dataset indicators
-        indicators = ["dataset_dict.json", "dataset_info.json", "state.json"]
-
-        for indicator in indicators:
-            if os.path.exists(os.path.join(path, indicator)):
-                return True
-
-        # Check for arrow or parquet files in subdirectories
-        for root, dirs, files in os.walk(path):
-            for file in files:
-                if file.endswith((".arrow", ".parquet")):
-                    return True
-
-        return False
 
     def _load_huggingface_dataset(self, data_path, dataset_subset=None):
         """Load data from a Hugging Face dataset folder."""
