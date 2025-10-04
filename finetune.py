@@ -17,6 +17,7 @@ from transformers import (
     Seq2SeqTrainingArguments,
     WhisperForConditionalGeneration,
     WhisperProcessor,
+    TrainerCallback,
 )
 from transformers.trainer_callback import EarlyStoppingCallback
 from transformers.trainer_utils import set_seed
@@ -154,6 +155,14 @@ add_arg(
     help="Type of learning rate scheduler",
 )
 
+# NEW: staged training
+add_arg(
+    "freeze_encoder_epochs",
+    type=int,
+    default=0,
+    help="Freeze the encoder for the first N epochs, then unfreeze.",
+)
+
 # Logging / eval / saving
 add_arg("logging_steps", type=int, default=None, help="Number of steps between logging")
 add_arg(
@@ -278,6 +287,93 @@ if USE_WANDB:
         os.environ["WANDB_TAGS"] = args.wandb_tags
     os.environ["WANDB_DIR"] = os.path.join(output_dir, "wandb")
     os.environ["WANDB_RESUME"] = "never"
+
+
+# -------------------- Freeze / unfreeze helpers --------------------
+def _unwrap_to_base(model: torch.nn.Module) -> torch.nn.Module:
+    """Return the underlying WhisperForConditionalGeneration even if wrapped by PEFT."""
+    try:
+        if isinstance(model, PeftModel):
+            return model.get_base_model()
+    except Exception:
+        pass
+    return model
+
+
+def _get_encoder_module(model: torch.nn.Module) -> torch.nn.Module:
+    base = _unwrap_to_base(model)
+    # WhisperForConditionalGeneration has .model.encoder
+    if hasattr(base, "model") and hasattr(base.model, "encoder"):
+        return base.model.encoder
+    raise ValueError("Could not locate the Whisper encoder module.")
+
+
+def freeze_encoder(model: torch.nn.Module) -> None:
+    enc = _get_encoder_module(model)
+    for p in enc.parameters():
+        p.requires_grad = False
+
+
+def unfreeze_encoder(model: torch.nn.Module) -> None:
+    enc = _get_encoder_module(model)
+    for p in enc.parameters():
+        p.requires_grad = True
+
+
+def count_trainable(model: torch.nn.Module) -> tuple[int, int]:
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    total = sum(p.numel() for p in model.parameters())
+    return trainable, total
+
+
+class UnfreezeEncoderCallback(TrainerCallback):
+    """
+    Unfreezes the encoder at the end of epoch `unfreeze_after_epochs`, and
+    adds those params to the optimizer so they start training next epoch.
+    """
+
+    def __init__(
+        self,
+        unfreeze_after_epochs: int,
+        lr: float | None = None,
+        wd: float | None = None,
+    ):
+        self.unfreeze_after_epochs = int(unfreeze_after_epochs)
+        self.lr = lr
+        self.wd = wd
+        self.did_unfreeze = False
+
+    def on_epoch_end(self, args, state, control, **kwargs):
+        if self.did_unfreeze or self.unfreeze_after_epochs <= 0:
+            return
+
+        # At end of epoch, HF sets state.epoch to a 1-based float (e.g., 1.0)
+        if state.epoch is not None and int(state.epoch) >= self.unfreeze_after_epochs:
+            model = kwargs["model"]
+            optimizer = kwargs.get("optimizer", None)
+
+            unfreeze_encoder(model)
+
+            if optimizer is not None:
+                enc = _get_encoder_module(model)
+                # Only add params that are now trainable (and not already in any group)
+                new_params = [p for p in enc.parameters() if p.requires_grad]
+                optimizer.add_param_group(
+                    {
+                        "params": new_params,
+                        "lr": self.lr if self.lr is not None else args.learning_rate,
+                        "weight_decay": self.wd
+                        if self.wd is not None
+                        else args.weight_decay,
+                    }
+                )
+
+            self.did_unfreeze = True
+            tr, tot = count_trainable(model)
+            print(
+                f"🔓 Unfroze encoder at end of epoch {int(state.epoch)} "
+                f"(trainable now {tr / 1e6:.2f}M / {tot / 1e6:.2f}M params)."
+            )
 
 
 def main():
@@ -490,7 +586,7 @@ def main():
                     lora_dropout=args.lora_dropout,
                     orth_reg_weight=0.75,
                     target_modules=target_modules,
-                    total_step=total_update_steps,  # FIX: use optimizer steps
+                    total_step=total_update_steps,  # optimizer steps estimate
                 )
             else:
                 config = LoraConfig(
@@ -503,6 +599,15 @@ def main():
             model = get_peft_model(model, config)
     else:
         print("Using full fine-tuning (no LoRA)...")
+
+    # --- Optional staged un/freezing ---
+    if args.freeze_encoder_epochs > 0:
+        print(f"🧊 Freezing encoder for {args.freeze_encoder_epochs} epoch(s) ...")
+        freeze_encoder(model)
+        tr, tot = count_trainable(model)
+        print(
+            f"   -> Trainable params while frozen: {tr / 1e6:.2f}M / {tot / 1e6:.2f}M"
+        )
 
     # ----- Training args -----
     training_args_dict = {
@@ -519,7 +624,8 @@ def main():
         "logging_steps": args.logging_steps,
         "save_steps": args.save_steps if save_strategy == "steps" else None,
         "save_total_limit": args.save_total_limit,
-        "eval_strategy": eval_strategy,
+        # use the canonical key; keep legacy alias just in case
+        "evaluation_strategy": eval_strategy,
         "save_strategy": save_strategy,
         "load_best_model_at_end": True,
         "metric_for_best_model": "wer",
@@ -551,7 +657,6 @@ def main():
 
     def compute_metrics(eval_pred):
         preds, labels = eval_pred
-        # when predict_with_generate=True, preds are token ids already
         labels = labels.copy()
         labels[labels == -100] = processor.tokenizer.pad_token_id
 
@@ -562,9 +667,17 @@ def main():
 
     # ----- Trainer -----
     callbacks = [
-        SavePeftModelCallback(),  # FIX: instantiate
+        SavePeftModelCallback(),
         EarlyStoppingCallback(early_stopping_patience=args.early_stopping_patience),
     ]
+    if args.freeze_encoder_epochs > 0:
+        callbacks.append(
+            UnfreezeEncoderCallback(
+                unfreeze_after_epochs=args.freeze_encoder_epochs,
+                lr=args.learning_rate,
+                wd=args.weight_decay,
+            )
+        )
 
     trainer = Seq2SeqTrainer(
         args=training_args,
