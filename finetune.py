@@ -453,27 +453,45 @@ def main():
         subset: str | None = None,
     ) -> list[str]:
         materialized = []
+        # Build a stable directory name including repo, optional revision and subset
+        safe_repo = repo.replace("/", "__")
+        rev_suffix = f"@{revision}" if revision else ""
+        subset_suffix = f"#{subset}" if subset else ""
+        base_dir = os.path.join(save_root, f"{safe_repo}{rev_suffix}{subset_suffix}")
+
         for sp in splits:
+            # Adjust Common Voice 17: drop revision when a language subset is used
+            adj_subset = subset
+            adj_revision = revision
+            if (
+                repo.startswith("mozilla-foundation/common_voice_17_0")
+                and adj_subset
+                and adj_revision == "refs/convert/parquet"
+            ):
+                adj_revision = None
+
+            split_dir = os.path.join(base_dir, sp)
             try:
-                # Warm HF cache (no saving to disk) with explicit subset(config) and revision
-                # Adjust Common Voice 17: drop revision when a language subset is used
-                adj_subset = subset
-                adj_revision = revision
-                if (
-                    repo.startswith("mozilla-foundation/common_voice_17_0")
-                    and adj_subset
-                    and adj_revision == "refs/convert/parquet"
-                ):
-                    adj_revision = None
-                _ = load_dataset(repo, name=adj_subset, revision=adj_revision, split=sp)
+                # Prefer already materialized split on disk
+                if os.path.isdir(split_dir):
+                    materialized.append(f"{split_dir}:{sp}")
+                    continue
+
+                # Otherwise, load (will use HF cache) and save this split to disk
+                ds = load_dataset(
+                    repo, name=adj_subset, revision=adj_revision, split=sp
+                )
+                os.makedirs(split_dir, exist_ok=True)
+                ds.save_to_disk(split_dir)
+                materialized.append(f"{split_dir}:{sp}")
             except Exception as e:
                 print(
-                    f"Failed to load dataset {repo}:{sp} (subset={subset}, revision={revision}) from HF Hub: {e}"
+                    f"Failed to prepare dataset {repo}:{sp} (subset={subset}, revision={revision}) -> {e}"
                 )
-                continue
-            rev_part = f"@{adj_revision}" if adj_revision else ""
-            subset_part = f"#{adj_subset}" if adj_subset else ""
-            materialized.append(f"hf://{repo}{rev_part}{subset_part}:{sp}")
+                # As a fallback, return an HF reference so downstream loader can still use cache
+                rev_part = f"@{adj_revision}" if adj_revision else ""
+                subset_part = f"#{adj_subset}" if adj_subset else ""
+                materialized.append(f"hf://{repo}{rev_part}{subset_part}:{sp}")
         return materialized
 
     def _collect_entries(
