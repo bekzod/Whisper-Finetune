@@ -368,8 +368,16 @@ class CustomDataset(Dataset):
 
             # Apply filter lazily during iteration to avoid expensive full dataset materialization
             if filter_fn:
+                try:
+                    original_size = len(dataset)
+                except Exception:
+                    original_size = None
+                prev_len = len(self.data_list)
                 print("  Applying filter lazily during iteration...")
                 dataset = (ex for ex in dataset if filter_fn(ex))
+            else:
+                original_size = None
+                prev_len = None
 
             # Process the dataset entries
             for idx, item in enumerate(
@@ -471,6 +479,20 @@ class CustomDataset(Dataset):
                 except Exception as e:
                     print(f"Error processing item {idx} in HF dataset: {e}")
                     continue
+
+            # After iterating, report filter stats if available
+            if filter_fn and original_size is not None and prev_len is not None:
+                filtered_kept = len(self.data_list) - prev_len
+                print(
+                    f"  Filtered dataset: {original_size} -> {filtered_kept} samples (kept {filtered_kept / original_size * 100:.1f}%)"
+                )
+
+            # After iterating, report filter stats if available
+            if filter_fn and original_size is not None and prev_len is not None:
+                filtered_kept = len(self.data_list) - prev_len
+                print(
+                    f"  Filtered dataset: {original_size} -> {filtered_kept} samples (kept {filtered_kept / original_size * 100:.1f}%)"
+                )
 
         except Exception as e:
             print(f"Error loading Hugging Face dataset from {data_path}: {e}")
