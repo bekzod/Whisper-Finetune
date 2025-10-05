@@ -460,7 +460,10 @@ def main():
                 adj_subset = subset
                 adj_revision = revision
                 if (
-                    repo.startswith("mozilla-foundation/common_voice_17_0")
+                    (
+                        repo.startswith("mozilla-foundation/common_voice_17_0")
+                        or repo.startswith("google/fleurs")
+                    )
                     and adj_subset
                     and adj_revision == "refs/convert/parquet"
                 ):

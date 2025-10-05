@@ -316,7 +316,10 @@ class CustomDataset(Dataset):
 
                 # Common Voice 17: drop revision when language subset is used (only 'default' config exists on parquet conversion)
                 if (
-                    repo.startswith("mozilla-foundation/common_voice_17_0")
+                    (
+                        repo.startswith("mozilla-foundation/common_voice_17_0")
+                        or repo.startswith("google/fleurs")
+                    )
                     and subset_name
                     and revision == "refs/convert/parquet"
                 ):
