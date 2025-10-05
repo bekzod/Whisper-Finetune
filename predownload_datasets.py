@@ -58,31 +58,15 @@ def download_dataset(repo_id, subset=None, split=None, revision=None, cache_dir=
         print(f"   Revision: {revision}")
 
     try:
-        # First try with the specified subset
-        try:
-            dataset = rate_limited_download(
-                load_dataset,
-                repo_id,
-                name=subset,
-                split=split,
-                revision=revision,
-                cache_dir=cache_dir,
-                download_mode="reuse_dataset_if_exists",
-            )
-        except Exception as subset_error:
-            if "not found" in str(subset_error).lower() and subset:
-                print(f"   Subset '{subset}' not found, trying with default config...")
-                # Try without subset (use default config)
-                dataset = rate_limited_download(
-                    load_dataset,
-                    repo_id,
-                    split=split,
-                    revision=revision,
-                    cache_dir=cache_dir,
-                    download_mode="reuse_dataset_if_exists",
-                )
-            else:
-                raise subset_error
+        dataset = rate_limited_download(
+            load_dataset,
+            repo_id,
+            name=subset,
+            split=split,
+            revision=revision,
+            cache_dir=cache_dir,
+            download_mode="reuse_dataset_if_exists",
+        )
 
         # Get dataset size info
         if hasattr(dataset, "__len__"):
@@ -152,7 +136,7 @@ def main():
                 "repo_id": "mozilla-foundation/common_voice_17_0",
                 "subset": "uz",
                 "splits": ["train", "validation", "test"],
-                "revision": None,  # Remove specific revision
+                "revision": "refs/convert/parquet",
             }
         ]
     else:
@@ -241,9 +225,6 @@ def main():
         print("   - Wait for rate limits to reset")
         print("   - Upgrade your HuggingFace organization plan")
         print("   - Check dataset names and availability")
-        print(
-            "   - Some datasets may use 'default' config instead of language-specific subsets"
-        )
 
 
 if __name__ == "__main__":
