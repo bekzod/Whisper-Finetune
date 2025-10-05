@@ -290,17 +290,37 @@ class CustomDataset(Dataset):
             if os.path.isdir(data_path):
                 dataset = load_from_disk(data_path)
             else:
-                # Treat as HF Hub repo; allow 'hf://' scheme or bare 'org/name'
-                repo = (
+                # Treat as HF Hub repo; allow:
+                # - hf://org/name:split
+                # - hf://org/name@revision#subset:split
+                # - org/name:split
+                # - org/name@revision#subset:split
+                repo_spec = (
                     data_path[5:]
                     if isinstance(data_path, str) and data_path.startswith("hf://")
                     else data_path
                 )
+                # Split off optional split (already provided via dataset_subset when parsed earlier)
+                # Parse repo@revision#subset
+                repo = repo_spec
+                revision = None
+                subset_name = None
+                if "@" in repo and "#" in repo:
+                    repo_part, rest = repo.split("@", 1)
+                    rev_part, subset_name = rest.split("#", 1)
+                    repo, revision = repo_part, rev_part
+                elif "@" in repo:
+                    repo, revision = repo.split("@", 1)
+                elif "#" in repo:
+                    repo, subset_name = repo.split("#", 1)
+
                 if dataset_subset:
-                    dataset = load_dataset(repo, split=dataset_subset)
+                    dataset = load_dataset(
+                        repo, name=subset_name, revision=revision, split=dataset_subset
+                    )
                 else:
                     # May return a DatasetDict (multiple splits) or a single Dataset
-                    dataset = load_dataset(repo)
+                    dataset = load_dataset(repo, name=subset_name, revision=revision)
 
             # Handle DatasetDict vs Dataset
             if isinstance(dataset, DatasetDict):

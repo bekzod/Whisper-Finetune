@@ -445,18 +445,26 @@ def main():
         base = s.split(":", 1)[0]
         return ("/" in base) and (not os.path.exists(base))
 
-    def _prefetch_hf(repo: str, splits: list[str], save_root: str) -> list[str]:
+    def _prefetch_hf(
+        repo: str,
+        splits: list[str],
+        save_root: str,
+        revision: str | None = None,
+        subset: str | None = None,
+    ) -> list[str]:
         materialized = []
         for sp in splits:
-            save_dir = os.path.join(save_root, repo.replace("/", "__"), sp)
-            os.makedirs(save_dir, exist_ok=True)
             try:
-                ds = load_dataset(repo, split=sp)
+                # Warm HF cache (no saving to disk) with explicit subset(config) and revision
+                _ = load_dataset(repo, name=subset, revision=revision, split=sp)
             except Exception as e:
-                print(f"Failed to load dataset {repo}:{sp} from HF Hub: {e}")
+                print(
+                    f"Failed to load dataset {repo}:{sp} (subset={subset}, revision={revision}) from HF Hub: {e}"
+                )
                 continue
-            # Warm the HF cache by loading, but do not save to disk here
-            materialized.append(f"hf://{repo}:{sp}")
+            rev_part = f"@{revision}" if revision else ""
+            subset_part = f"#{subset}" if subset else ""
+            materialized.append(f"hf://{repo}{rev_part}{subset_part}:{sp}")
         return materialized
 
     def _collect_entries(
@@ -466,29 +474,59 @@ def main():
             return []
         paths = []
         for ent in entries:
-            if isinstance(ent, dict) and any(k in ent for k in ("hf", "huggingface")):
-                repo = ent.get("hf") or ent.get("huggingface")
-                # choose provided split(s) or default common split names
+            if isinstance(ent, dict):
+                # Support:
+                # - {"hf": "org/name", "split": "train"}
+                # - {"name": "org/name", "subset": "uz_uz", "revision": "refs/convert/parquet", "splits": ["train","validation"]}
+                repo = ent.get("hf") or ent.get("huggingface") or ent.get("name")
+                revision = ent.get("revision")
+                subset = ent.get("subset")
                 splits = ent.get("splits") or (
                     [ent.get("split")] if ent.get("split") else default_splits
                 )
-                paths.extend(_prefetch_hf(repo, splits, save_root))
+                if repo:
+                    paths.extend(
+                        _prefetch_hf(
+                            repo, splits, save_root, revision=revision, subset=subset
+                        )
+                    )
+                    continue
+                print(f"Unrecognized manifest dict entry (missing 'name'/'hf'): {ent}")
             elif isinstance(ent, str):
                 val = ent.strip()
-                # Accept 'hf://repo:split' or 'repo:split' forms
+                # Accept forms:
+                # - hf://org/name:split
+                # - hf://org/name@rev#subset:split
+                # - org/name:split
+                # - org/name@rev#subset:split
                 val_no_proto = val[5:] if val.startswith("hf://") else val
                 if ":" in val_no_proto:
                     base, split = val_no_proto.split(":", 1)
                 else:
                     base, split = val_no_proto, None
-                if _is_hf_repo_spec(base):
-                    # If split unspecified, try common split names
+                # Parse repo@revision#subset
+                repo = base
+                revision = None
+                subset = None
+                if "@" in base and "#" in base:
+                    repo_part, rest = base.split("@", 1)
+                    rev_part, subset = rest.split("#", 1)
+                    repo, revision = repo_part, rev_part
+                elif "@" in base:
+                    repo, revision = base.split("@", 1)
+                elif "#" in base:
+                    repo, subset = base.split("#", 1)
+                if _is_hf_repo_spec(repo):
                     splits = (
                         [split]
                         if split
                         else ["train", "validation", "test", "dev", "validated"]
                     )
-                    paths.extend(_prefetch_hf(base, splits, save_root))
+                    paths.extend(
+                        _prefetch_hf(
+                            repo, splits, save_root, revision=revision, subset=subset
+                        )
+                    )
                 else:
                     # local file/dir (optionally with :subset handled by CustomDataset)
                     paths.append(val)

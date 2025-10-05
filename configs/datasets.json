@@ -1,18 +1,63 @@
 {
   "train": [
-    "hf://Beehzod/dataset_for_STT_TTSmodels",
-    "hf://DavronSherbaev/uzbekvoice-filtered:train",
-    "hf://bekzod123/uzbek_voice",
-    "hf://bekzod123/uzbek_voice_2:train",
-    "hf://bekzod123/uzbek_voice_2:test",
-    "hf://bekzod123/uzbek_voice_3",
-    "hf://bekzod123/uzbek_voice_4",
-    "hf://k2speech/FeruzaSpeech:train",
-    "hf://k2speech/FeruzaSpeech:test"
+    {
+      "name": "Beehzod/dataset_for_STT_TTSmodels",
+      "revision": "refs/convert/parquet"
+    },
+    {
+      "name": "google/fleurs",
+      "subset": "uz_uz",
+      "splits": ["train", "test"]
+    },
+    {
+      "name": "bekzod123/uzbek_voice",
+      "revision": "refs/convert/parquet"
+    },
+    {
+      "name": "mozilla-foundation/common_voice_17_0",
+      "subset": "uz",
+      "splits": ["train", "test", "validated"]
+    },
+    {
+      "name": "DavronSherbaev/uzbekvoice-filtered"
+    },
+    {
+      "name": "bekzod123/uzbek_voice_2",
+      "splits": ["train", "test"]
+    },
+    {
+      "name": "bekzod123/uzbek_voice_3"
+    },
+    {
+      "name": "bekzod123/uzbek_voice_4"
+    },
+    {
+      "name": "k2speech/FeruzaSpeech",
+      "splits": ["train", "test"]
+    }
   ],
   "eval": [
-    "hf://DavronSherbaev/uzbekvoice-filtered:validate",
-    "hf://bekzod123/uzbek_voice_2:validation",
-    "hf://k2speech/FeruzaSpeech:validation"
+    {
+      "name": "google/fleurs",
+      "subset": "uz_uz",
+      "splits": ["dev"]
+    },
+    {
+      "name": "mozilla-foundation/common_voice_17_0",
+      "subset": "uz",
+      "splits": ["test", "validation"]
+    },
+    {
+      "name": "DavronSherbaev/uzbekvoice-filtered",
+      "splits": ["validate"]
+    },
+    {
+      "name": "bekzod123/uzbek_voice_2",
+      "splits": ["validation"]
+    },
+    {
+      "name": "k2speech/FeruzaSpeech",
+      "splits": ["validation"]
+    }
   ]
 }
