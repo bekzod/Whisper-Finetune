@@ -366,15 +366,10 @@ class CustomDataset(Dataset):
 
                     dataset = concatenate_datasets(all_data)
 
-            # Apply filter if one was found
+            # Apply filter lazily during iteration to avoid expensive full dataset materialization
             if filter_fn:
-                print(f"  Applying filter to dataset...")
-                original_size = len(dataset)
-                dataset = dataset.filter(filter_fn)
-                filtered_size = len(dataset)
-                print(
-                    f"  Filtered dataset: {original_size} -> {filtered_size} samples (kept {filtered_size / original_size * 100:.1f}%)"
-                )
+                print("  Applying filter lazily during iteration...")
+                dataset = (ex for ex in dataset if filter_fn(ex))
 
             # Process the dataset entries
             for idx, item in enumerate(
