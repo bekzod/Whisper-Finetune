@@ -314,13 +314,28 @@ class CustomDataset(Dataset):
                 elif "#" in repo:
                     repo, subset_name = repo.split("#", 1)
 
+                # Common Voice 17: drop revision when language subset is used (only 'default' config exists on parquet conversion)
+                if (
+                    repo.startswith("mozilla-foundation/common_voice_17_0")
+                    and subset_name
+                    and revision == "refs/convert/parquet"
+                ):
+                    adj_revision = None
+                else:
+                    adj_revision = revision
+
                 if dataset_subset:
                     dataset = load_dataset(
-                        repo, name=subset_name, revision=revision, split=dataset_subset
+                        repo,
+                        name=subset_name,
+                        revision=adj_revision,
+                        split=dataset_subset,
                     )
                 else:
                     # May return a DatasetDict (multiple splits) or a single Dataset
-                    dataset = load_dataset(repo, name=subset_name, revision=revision)
+                    dataset = load_dataset(
+                        repo, name=subset_name, revision=adj_revision
+                    )
 
             # Handle DatasetDict vs Dataset
             if isinstance(dataset, DatasetDict):

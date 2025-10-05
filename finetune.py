@@ -456,14 +456,23 @@ def main():
         for sp in splits:
             try:
                 # Warm HF cache (no saving to disk) with explicit subset(config) and revision
-                _ = load_dataset(repo, name=subset, revision=revision, split=sp)
+                # Adjust Common Voice 17: drop revision when a language subset is used
+                adj_subset = subset
+                adj_revision = revision
+                if (
+                    repo.startswith("mozilla-foundation/common_voice_17_0")
+                    and adj_subset
+                    and adj_revision == "refs/convert/parquet"
+                ):
+                    adj_revision = None
+                _ = load_dataset(repo, name=adj_subset, revision=adj_revision, split=sp)
             except Exception as e:
                 print(
                     f"Failed to load dataset {repo}:{sp} (subset={subset}, revision={revision}) from HF Hub: {e}"
                 )
                 continue
-            rev_part = f"@{revision}" if revision else ""
-            subset_part = f"#{subset}" if subset else ""
+            rev_part = f"@{adj_revision}" if adj_revision else ""
+            subset_part = f"#{adj_subset}" if adj_subset else ""
             materialized.append(f"hf://{repo}{rev_part}{subset_part}:{sp}")
         return materialized
 
