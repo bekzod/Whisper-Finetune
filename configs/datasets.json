@@ -11,7 +11,7 @@
     },
     {
       "name": "bekzod123/uzbek_voice",
-      "revision": "refs/convert/parquet"
+      "splits": ["train"]
     },
     {
       "name": "mozilla-foundation/common_voice_17_0",
