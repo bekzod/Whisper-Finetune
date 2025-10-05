@@ -3,6 +3,7 @@ import json
 import os
 import random
 import sys
+import time
 from typing import List
 from itertools import chain
 
@@ -15,6 +16,36 @@ from torch.utils.data import Dataset
 from tqdm import tqdm
 
 from utils.binary import DatasetReader
+
+
+def rate_limited_request(func, *args, **kwargs):
+    """
+    Execute a function with exponential backoff retry for rate limiting.
+    """
+    max_retries = 5
+    base_delay = 60  # Start with 1 minute delay
+
+    for attempt in range(max_retries):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            error_msg = str(e).lower()
+            if "rate limit" in error_msg or "quota" in error_msg or "2500" in error_msg:
+                if attempt < max_retries - 1:
+                    delay = base_delay * (2**attempt)  # Exponential backoff
+                    print(
+                        f"Rate limit hit. Waiting {delay} seconds before retry {attempt + 1}/{max_retries}..."
+                    )
+                    time.sleep(delay)
+                    continue
+                else:
+                    print(
+                        "Max retries reached for rate limiting. Please upgrade your HF organization or wait."
+                    )
+                    raise
+            else:
+                # Re-raise non-rate-limit errors immediately
+                raise
 
 
 def remove_silence_librosa(
@@ -323,25 +354,31 @@ class CustomDataset(Dataset):
                     print(
                         f"  Loading HF dataset via hub: repo='{repo}' name='{subset_name}' revision='{adj_revision}' split='{dataset_subset}'"
                     )
-                    dataset = load_dataset(
+                    # Use local caching instead of streaming to reduce API calls
+                    dataset = rate_limited_request(
+                        load_dataset,
                         repo,
                         name=subset_name,
                         revision=adj_revision,
                         split=dataset_subset,
-                        streaming=True,
+                        streaming=False,  # Changed from True to False
                         download_mode="reuse_dataset_if_exists",
+                        cache_dir=os.getenv("HF_DATASETS_CACHE", None),
                     )
                 else:
                     # May return a DatasetDict (multiple splits) or a single Dataset
                     print(
                         f"  Loading HF dataset via hub: repo='{repo}' name='{subset_name}' revision='{adj_revision}' (all splits)"
                     )
-                    dataset = load_dataset(
+                    # Use local caching instead of streaming to reduce API calls
+                    dataset = rate_limited_request(
+                        load_dataset,
                         repo,
                         name=subset_name,
                         revision=adj_revision,
-                        streaming=True,
+                        streaming=False,  # Changed from True to False
                         download_mode="reuse_dataset_if_exists",
+                        cache_dir=os.getenv("HF_DATASETS_CACHE", None),
                     )
 
             # Build iterator across splits; avoid concatenation/materialization

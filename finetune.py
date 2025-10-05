@@ -6,6 +6,7 @@ import functools
 import math
 import os
 import sys
+import time
 import warnings
 from typing import Any
 
@@ -99,7 +100,7 @@ add_arg(
 add_arg(
     "num_workers",
     type=int,
-    default=min(2, os.cpu_count() or 1),
+    default=min(8, os.cpu_count() or 1),
     help="Number of data loader workers",
 )
 
@@ -292,6 +293,37 @@ if USE_WANDB:
     os.environ["WANDB_RESUME"] = "never"
 
 
+# -------------------- Rate Limiting Helper --------------------
+def rate_limited_request(func, *args, **kwargs):
+    """
+    Execute a function with exponential backoff retry for rate limiting.
+    """
+    max_retries = 5
+    base_delay = 60  # Start with 1 minute delay
+
+    for attempt in range(max_retries):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            error_msg = str(e).lower()
+            if "rate limit" in error_msg or "quota" in error_msg or "2500" in error_msg:
+                if attempt < max_retries - 1:
+                    delay = base_delay * (2**attempt)  # Exponential backoff
+                    print(
+                        f"Rate limit hit. Waiting {delay} seconds before retry {attempt + 1}/{max_retries}..."
+                    )
+                    time.sleep(delay)
+                    continue
+                else:
+                    print(
+                        "Max retries reached for rate limiting. Please upgrade your HF organization or wait."
+                    )
+                    raise
+            else:
+                # Re-raise non-rate-limit errors immediately
+                raise
+
+
 # -------------------- Freeze / unfreeze helpers --------------------
 def _unwrap_to_base(model: torch.nn.Module) -> torch.nn.Module:
     """Return the underlying WhisperForConditionalGeneration even if wrapped by PEFT."""
@@ -459,7 +491,8 @@ def main():
                 # Adjust Common Voice 17: drop revision when a language subset is used
                 adj_subset = subset
                 adj_revision = revision
-                _ = load_dataset(
+                _ = rate_limited_request(
+                    load_dataset,
                     repo,
                     name=adj_subset,
                     revision=adj_revision,
