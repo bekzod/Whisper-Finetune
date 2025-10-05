@@ -3,6 +3,7 @@
     {
       "name": "Beehzod/dataset_for_STT_TTSmodels",
       "revision": "refs/convert/parquet"
+      "splits": ["train"]
     },
     {
       "name": "google/fleurs",
