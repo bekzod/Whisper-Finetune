@@ -2,7 +2,7 @@
   "train": [
     {
       "name": "Beehzod/dataset_for_STT_TTSmodels",
-      "revision": "refs/convert/parquet"
+      "revision": "refs/convert/parquet",
       "splits": ["train"]
     },
     {
