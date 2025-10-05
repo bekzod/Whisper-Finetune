@@ -22,7 +22,8 @@
       "splits": ["train", "test", "validated"]
     },
     {
-      "name": "DavronSherbaev/uzbekvoice-filtered"
+      "name": "DavronSherbaev/uzbekvoice-filtered",
+      "splits": ["train"]
     },
     {
       "name": "bekzod123/uzbek_voice_2",
