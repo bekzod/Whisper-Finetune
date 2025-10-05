@@ -12,7 +12,7 @@ from typing import Any
 import torch
 from torch.utils.data import DataLoader, random_split
 import evaluate
-from datasets import load_dataset, DatasetDict
+from datasets import load_dataset
 from pathlib import Path
 import json
 from transformers import (
@@ -459,7 +459,13 @@ def main():
                 # Adjust Common Voice 17: drop revision when a language subset is used
                 adj_subset = subset
                 adj_revision = revision
-                _ = load_dataset(repo, name=adj_subset, revision=adj_revision, split=sp)
+                _ = load_dataset(
+                    repo,
+                    name=adj_subset,
+                    revision=adj_revision,
+                    split=sp,
+                    download_mode="reuse_dataset_if_exists",
+                )
             except Exception as e:
                 print(
                     f"Failed to load dataset {repo}:{sp} (subset={adj_subset}, revision={adj_revision}) from HF Hub: {e}"
