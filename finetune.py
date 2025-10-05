@@ -174,7 +174,7 @@ add_arg(
 add_arg(
     "save_total_limit",
     type=int,
-    default=10,
+    default=4,
     help="Maximum number of checkpoints to keep",
 )
 add_arg(
@@ -186,7 +186,7 @@ add_arg(
 add_arg(
     "early_stopping_patience",
     type=int,
-    default=4,
+    default=3,
     help="Number of evaluations with no improvement before stopping",
 )
 add_arg(
