@@ -459,19 +459,10 @@ def main():
                 # Adjust Common Voice 17: drop revision when a language subset is used
                 adj_subset = subset
                 adj_revision = revision
-                if (
-                    (
-                        repo.startswith("mozilla-foundation/common_voice_17_0")
-                        or repo.startswith("google/fleurs")
-                    )
-                    and adj_subset
-                    and adj_revision == "refs/convert/parquet"
-                ):
-                    adj_revision = None
                 _ = load_dataset(repo, name=adj_subset, revision=adj_revision, split=sp)
             except Exception as e:
                 print(
-                    f"Failed to load dataset {repo}:{sp} (subset={subset}, revision={revision}) from HF Hub: {e}"
+                    f"Failed to load dataset {repo}:{sp} (subset={adj_subset}, revision={adj_revision}) from HF Hub: {e}"
                 )
                 continue
             rev_part = f"@{adj_revision}" if adj_revision else ""
@@ -529,11 +520,13 @@ def main():
                 elif "#" in base:
                     repo, subset = base.split("#", 1)
                 if _is_hf_repo_spec(repo):
-                    splits = (
-                        [split]
-                        if split
-                        else ["train", "validation", "test", "dev", "validated"]
-                    )
+                    fallback_splits = [
+                        s
+                        for s in default_splits
+                        if s in ("train", "validation", "test")
+                    ]
+                    fallback_splits = fallback_splits or ["train", "validation", "test"]
+                    splits = [split] if split else fallback_splits
                     paths.extend(
                         _prefetch_hf(
                             repo, splits, save_root, revision=revision, subset=subset
