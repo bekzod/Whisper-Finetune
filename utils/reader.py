@@ -4,6 +4,7 @@ import os
 import random
 import sys
 from typing import List
+from itertools import chain
 
 import librosa
 import numpy as np
@@ -327,6 +328,7 @@ class CustomDataset(Dataset):
                         name=subset_name,
                         revision=adj_revision,
                         split=dataset_subset,
+                        streaming=True,
                         download_mode="reuse_dataset_if_exists",
                     )
                 else:
@@ -338,10 +340,11 @@ class CustomDataset(Dataset):
                         repo,
                         name=subset_name,
                         revision=adj_revision,
+                        streaming=True,
                         download_mode="reuse_dataset_if_exists",
                     )
 
-            # Handle DatasetDict vs Dataset
+            # Build iterator across splits; avoid concatenation/materialization
             if isinstance(dataset, DatasetDict):
                 if dataset_subset:
                     if dataset_subset not in dataset:
@@ -350,39 +353,27 @@ class CustomDataset(Dataset):
                             f"Subset '{dataset_subset}' not found in dataset. "
                             f"Available subsets: {available_subsets}"
                         )
-                    dataset = dataset[dataset_subset]
+                    split_names = [dataset_subset]
                 else:
-                    # If no subset specified, use all available data
-                    print(
-                        f"No subset specified, using all available subsets: {list(dataset.keys())}"
-                    )
-                    all_data = []
-                    for subset_name in dataset.keys():
-                        print(f"  Loading subset '{subset_name}'...")
-                        all_data.append(dataset[subset_name])
-
-                    # Concatenate all subsets
-                    from datasets import concatenate_datasets
-
-                    dataset = concatenate_datasets(all_data)
-
-            # Apply filter lazily during iteration to avoid expensive full dataset materialization
-            if filter_fn:
-                try:
-                    original_size = len(dataset)
-                except Exception:
-                    original_size = None
-                prev_len = len(self.data_list)
-                print("  Applying filter lazily during iteration...")
-                dataset = (ex for ex in dataset if filter_fn(ex))
+                    split_names = list(dataset.keys())
+                    print(f"No subset specified, iterating over subsets: {split_names}")
+                dataset_iter = chain.from_iterable(dataset[sp] for sp in split_names)
             else:
-                original_size = None
-                prev_len = None
+                dataset_iter = dataset
 
-            # Process the dataset entries
+            # Process the dataset entries with on-the-fly filtering and counters
+            total_original = 0
+            filter_kept = 0
+
             for idx, item in enumerate(
-                tqdm(dataset, desc=f"Processing HF dataset {data_path}")
+                tqdm(dataset_iter, desc=f"Processing HF dataset {data_path}")
             ):
+                # Count and apply dataset-level filter quickly
+                total_original += 1
+                if filter_fn and not filter_fn(item):
+                    continue
+                if filter_fn:
+                    filter_kept += 1
                 try:
                     # Create a compatible data entry
                     data_entry = {}
@@ -481,17 +472,9 @@ class CustomDataset(Dataset):
                     continue
 
             # After iterating, report filter stats if available
-            if filter_fn and original_size is not None and prev_len is not None:
-                filtered_kept = len(self.data_list) - prev_len
+            if filter_fn and total_original > 0:
                 print(
-                    f"  Filtered dataset: {original_size} -> {filtered_kept} samples (kept {filtered_kept / original_size * 100:.1f}%)"
-                )
-
-            # After iterating, report filter stats if available
-            if filter_fn and original_size is not None and prev_len is not None:
-                filtered_kept = len(self.data_list) - prev_len
-                print(
-                    f"  Filtered dataset: {original_size} -> {filtered_kept} samples (kept {filtered_kept / original_size * 100:.1f}%)"
+                    f"  Filtered dataset: {total_original} -> {filter_kept} samples (kept {filter_kept / total_original * 100:.1f}%)"
                 )
 
         except Exception as e:
