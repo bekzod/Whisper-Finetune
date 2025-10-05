@@ -872,6 +872,13 @@ class CustomDataset(Dataset):
                     sample = self.add_noise(
                         sample, sample_rate, noise_path=noise_path, snr_dB=snr_dB
                     )
+            if config["type"] == "gaussian" and random.random() < config["prob"]:
+                min_snr_dB, max_snr_dB = (
+                    config["params"]["min_snr_dB"],
+                    config["params"]["max_snr_dB"],
+                )
+                snr_dB = random.uniform(min_snr_dB, max_snr_dB)
+                sample = self.add_gaussian_noise(sample, snr_dB=snr_dB)
         return sample, sample_rate
 
     # Change speech speed
@@ -972,6 +979,35 @@ class CustomDataset(Dataset):
 
         sample = (sample + noise).astype(np.float32)
         return sample
+
+    def add_gaussian_noise(self, sample, snr_dB):
+        """
+        Add Gaussian white noise to audio sample.
+
+        Args:
+            sample: Audio signal as 1D numpy array
+            snr_dB: Signal-to-noise ratio in decibels
+
+        Returns:
+            Noisy audio sample
+        """
+        # Calculate signal power and convert SNR from dB
+        signal_power = np.mean(sample**2)
+        snr_linear = 10 ** (snr_dB / 10)
+
+        # Calculate noise power based on desired SNR
+        noise_power = signal_power / snr_linear
+
+        # Generate Gaussian noise with calculated power
+        noise = np.random.normal(0, np.sqrt(noise_power), sample.shape)
+
+        # Add noise to signal
+        noisy_sample = (sample + noise).astype(np.float32)
+
+        # Clip to prevent overflow (optional, but recommended for audio)
+        noisy_sample = np.clip(noisy_sample, -1.0, 1.0)
+
+        return noisy_sample
 
     @staticmethod
     def rms_db(sample):
