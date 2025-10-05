@@ -11,7 +11,6 @@ faster-whisper>=1.1.1
 jiwer>=3.1.0
 peft>=0.15.2
 accelerate>=1.6.0
-zhconv>=1.4.2
 tqdm>=4.62.1
 soundcard>=0.4.2
 uvicorn>=0.21.1
