@@ -7,7 +7,7 @@ from typing import List, Optional
 
 import librosa
 import numpy as np
-from datasets import load_from_disk, DatasetDict
+from datasets import load_from_disk, DatasetDict, load_dataset
 
 import soundfile
 from torch.utils.data import Dataset
@@ -168,18 +168,29 @@ class CustomDataset(Dataset):
 
             # Parse path:subset format for HuggingFace datasets
             dataset_subset = None
+            is_hf_scheme = isinstance(data_path, str) and data_path.startswith("hf://")
             if ":" in data_path and not data_path.startswith("http"):
                 # Check if this is a path:subset format (not a URL or Windows drive)
                 parts = data_path.rsplit(":", 1)
                 if len(parts) == 2 and not parts[1].startswith("//"):
                     potential_path, potential_subset = parts
-                    # Verify the path exists before treating it as path:subset
+                    # If local path exists, treat as path:subset on disk; otherwise allow HF repo specs
                     if os.path.exists(potential_path):
                         data_path = potential_path
                         dataset_subset = potential_subset
+                    elif is_hf_scheme or (
+                        "/" in potential_path and not os.path.exists(potential_path)
+                    ):
+                        # hf://org/name:split or org/name:split -> load from HF hub
+                        data_path = potential_path
+                        dataset_subset = potential_subset
 
-            # Check if it's a directory - treat all directories as potential HuggingFace datasets
-            if os.path.isdir(data_path):
+            # Check if it's a directory or HF Hub spec - treat as HuggingFace datasets
+            if (
+                os.path.isdir(data_path)
+                or is_hf_scheme
+                or ("/" in data_path and not os.path.exists(data_path))
+            ):
                 try:
                     self._load_huggingface_dataset(data_path, dataset_subset)
                 except Exception as e:
@@ -275,8 +286,21 @@ class CustomDataset(Dataset):
                 break
 
         try:
-            # Load the dataset
-            dataset = load_from_disk(data_path)
+            # Load the dataset (supports HF Hub refs via cache or local saved datasets)
+            if os.path.isdir(data_path):
+                dataset = load_from_disk(data_path)
+            else:
+                # Treat as HF Hub repo; allow 'hf://' scheme or bare 'org/name'
+                repo = (
+                    data_path[5:]
+                    if isinstance(data_path, str) and data_path.startswith("hf://")
+                    else data_path
+                )
+                if dataset_subset:
+                    dataset = load_dataset(repo, split=dataset_subset)
+                else:
+                    # May return a DatasetDict (multiple splits) or a single Dataset
+                    dataset = load_dataset(repo)
 
             # Handle DatasetDict vs Dataset
             if isinstance(dataset, DatasetDict):

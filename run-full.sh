@@ -33,5 +33,4 @@ accelerate launch --multi_gpu --num_processes=2 --config_file ./configs/accelera
   --wandb_project whisper-uzbek \
   --wandb_run_name whisper-v3-uzbek \
   --wandb_tags uzbek,whisper,full-finetune,H100 \
-  --train_data /workspace/datasets/uzbek_voice+/workspace/datasets/FeruzaSpeech:train+/workspace/datasets/FeruzaSpeech:validation+/workspace/datasets/dataset_for_stt_ttsmodels+/workspace/datasets/fleurs_uz_uz:train+/workspace/datasets/fleurs_uz_uz:dev+/workspace/datasets/uzbek_voice_2:train+/workspace/datasets/uzbek_voice_2:dev+/workspace/datasets/uzbek_voice_2:validated+/workspace/datasets/uzbek_voice_3+/workspace/datasets/uzbek_voice_4+/workspace/datasets/uzbekvoice_filtered:train \
-  --test_data /workspace/datasets/FeruzaSpeech:test+/workspace/datasets/fleurs_uz_uz:test+/workspace/datasets/uzbek_voice_2:test+/workspace/datasets/uzbekvoice_filtered:validate
+  --train_data ./configs/datasets.json

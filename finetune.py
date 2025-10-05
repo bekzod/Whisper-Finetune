@@ -12,6 +12,9 @@ from typing import Any
 import torch
 from torch.utils.data import DataLoader, random_split
 import evaluate
+from datasets import load_dataset, DatasetDict
+from pathlib import Path
+import json
 from transformers import (
     Seq2SeqTrainer,
     Seq2SeqTrainingArguments,
@@ -429,10 +432,134 @@ def main():
         {"name": "uzbek_voice", "filter_fn": lambda ex: (ex.get("is_correct") is True)},
     ]
 
-    if args.test_data is None:
+    # ----- Build dataset specs (supports JSON manifest and HF Hub prefetch) -----
+    # If train_data points to a JSON file, treat it as a manifest:
+    # - Dict form: {"train": [...], "eval": [...]} where entries can be:
+    #     - local file/dir paths (optionally "path:subset" for HF saved datasets)
+    #     - HF hub refs as "hf://org/name:split" or "org/name:split" or {"hf": "org/name", "split": "train"}
+    # - List form: [...], treated as training entries only
+    #
+    # HF hub entries are materialized to disk under "<output_dir>/prefetched/<org__name>/<split>"
+    # and then referenced as "<path>:<split>" for our CustomDataset loader.
+    def _is_hf_repo_spec(s: str) -> bool:
+        base = s.split(":", 1)[0]
+        return ("/" in base) and (not os.path.exists(base))
+
+    def _prefetch_hf(repo: str, splits: list[str], save_root: str) -> list[str]:
+        materialized = []
+        for sp in splits:
+            save_dir = os.path.join(save_root, repo.replace("/", "__"), sp)
+            os.makedirs(save_dir, exist_ok=True)
+            try:
+                ds = load_dataset(repo, split=sp)
+            except Exception as e:
+                print(f"Failed to load dataset {repo}:{sp} from HF Hub: {e}")
+                continue
+            # Warm the HF cache by loading, but do not save to disk here
+            materialized.append(f"hf://{repo}:{sp}")
+        return materialized
+
+    def _collect_entries(
+        entries, save_root: str, default_splits: list[str]
+    ) -> list[str]:
+        if not entries:
+            return []
+        paths = []
+        for ent in entries:
+            if isinstance(ent, dict) and any(k in ent for k in ("hf", "huggingface")):
+                repo = ent.get("hf") or ent.get("huggingface")
+                # choose provided split(s) or default common split names
+                splits = ent.get("splits") or (
+                    [ent.get("split")] if ent.get("split") else default_splits
+                )
+                paths.extend(_prefetch_hf(repo, splits, save_root))
+            elif isinstance(ent, str):
+                val = ent.strip()
+                # Accept 'hf://repo:split' or 'repo:split' forms
+                val_no_proto = val[5:] if val.startswith("hf://") else val
+                if ":" in val_no_proto:
+                    base, split = val_no_proto.split(":", 1)
+                else:
+                    base, split = val_no_proto, None
+                if _is_hf_repo_spec(base):
+                    # If split unspecified, try common split names
+                    splits = (
+                        [split]
+                        if split
+                        else ["train", "validation", "test", "dev", "validated"]
+                    )
+                    paths.extend(_prefetch_hf(base, splits, save_root))
+                else:
+                    # local file/dir (optionally with :subset handled by CustomDataset)
+                    paths.append(val)
+            else:
+                print(f"Unrecognized manifest entry: {ent}")
+        return paths
+
+    # Defaults
+    train_data_arg = None
+    eval_data_arg = None
+
+    # If a manifest is provided via train_data path, parse it; otherwise keep CLI paths.
+    manifest_prefetch_root = os.path.join(output_dir, "prefetched")
+    if (
+        args.train_data
+        and args.train_data.endswith(".json")
+        and os.path.isfile(args.train_data)
+    ):
+        try:
+            with open(args.train_data, "r", encoding="utf-8") as f:
+                manifest = json.load(f)
+            if isinstance(manifest, dict):
+                train_entries = manifest.get("train") or manifest.get("training") or []
+                eval_entries = (
+                    manifest.get("eval")
+                    or manifest.get("validation")
+                    or manifest.get("test")
+                    or []
+                )
+            elif isinstance(manifest, list):
+                train_entries = manifest
+                eval_entries = []
+            else:
+                raise ValueError(
+                    "Manifest must be a dict with 'train'/'eval' keys or a list"
+                )
+
+            train_paths = _collect_entries(
+                train_entries,
+                save_root=manifest_prefetch_root,
+                default_splits=["train", "validation", "test", "dev", "validated"],
+            )
+            eval_paths = _collect_entries(
+                eval_entries,
+                save_root=manifest_prefetch_root,
+                default_splits=["train", "validation", "test", "dev", "validated"],
+            )
+
+            train_data_arg = "+".join(train_paths) if train_paths else None
+            eval_data_arg = "+".join(eval_paths) if eval_paths else None
+
+            if train_data_arg:
+                print(
+                    f"Using {len(train_paths)} dataset entries from manifest for training"
+                )
+            if eval_data_arg:
+                print(
+                    f"Using {len(eval_paths)} dataset entries from manifest for evaluation"
+                )
+        except Exception as e:
+            print(f"Failed to parse or use dataset manifest at {args.train_data}: {e}")
+
+    if not train_data_arg:
+        train_data_arg = args.train_data
+    if not eval_data_arg:
+        eval_data_arg = args.test_data
+
+    if eval_data_arg is None:
         print("No test data provided. Splitting train data: 92% train, 8% test")
         full_dataset = CustomDataset(
-            data_list_path=args.train_data,
+            data_list_path=train_data_arg,
             processor=processor,
             language=args.language,
             timestamps=args.timestamps,
@@ -451,7 +578,7 @@ def main():
         )
     else:
         train_dataset = CustomDataset(
-            data_list_path=args.train_data,
+            data_list_path=train_data_arg,
             processor=processor,
             language=args.language,
             timestamps=args.timestamps,
@@ -461,7 +588,7 @@ def main():
             dataset_filters=datasets_info,
         )
         eval_dataset = CustomDataset(
-            data_list_path=args.test_data,
+            data_list_path=eval_data_arg,
             processor=processor,
             language=args.language,
             timestamps=args.timestamps,

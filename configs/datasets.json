@@ -1,0 +1,18 @@
+{
+  "train": [
+    "hf://Beehzod/dataset_for_STT_TTSmodels",
+    "hf://DavronSherbaev/uzbekvoice-filtered:train",
+    "hf://bekzod123/uzbek_voice",
+    "hf://bekzod123/uzbek_voice_2:train",
+    "hf://bekzod123/uzbek_voice_2:test",
+    "hf://bekzod123/uzbek_voice_3",
+    "hf://bekzod123/uzbek_voice_4",
+    "hf://k2speech/FeruzaSpeech:train",
+    "hf://k2speech/FeruzaSpeech:test"
+  ],
+  "eval": [
+    "hf://DavronSherbaev/uzbekvoice-filtered:validate",
+    "hf://bekzod123/uzbek_voice_2:validation",
+    "hf://k2speech/FeruzaSpeech:validation"
+  ]
+}
