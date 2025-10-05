@@ -3,11 +3,11 @@ import json
 import os
 import random
 import sys
-from typing import List, Optional
+from typing import List
 
 import librosa
 import numpy as np
-from datasets import load_from_disk, DatasetDict, load_dataset, DownloadConfig
+from datasets import load_from_disk, DatasetDict, load_dataset
 
 import soundfile
 from torch.utils.data import Dataset
@@ -330,12 +330,7 @@ class CustomDataset(Dataset):
                         name=subset_name,
                         revision=adj_revision,
                         split=dataset_subset,
-                        download_mode=DownloadMode.REUSE_DATASET_IF_EXISTS,
-                        download_config=DownloadConfig(
-                            cache_dir=os.environ.get("HF_DATASETS_CACHE"),
-                            local_files_only=os.environ.get("HF_HUB_OFFLINE")
-                            in ("1", "true", "True"),
-                        ),
+                        download_mode="reuse_dataset_if_exists",
                     )
                 else:
                     # May return a DatasetDict (multiple splits) or a single Dataset
@@ -344,11 +339,6 @@ class CustomDataset(Dataset):
                         name=subset_name,
                         revision=adj_revision,
                         download_mode="reuse_dataset_if_exists",
-                        download_config=DownloadConfig(
-                            cache_dir=os.environ.get("HF_DATASETS_CACHE"),
-                            local_files_only=os.environ.get("HF_HUB_OFFLINE")
-                            in ("1", "true", "True"),
-                        ),
                     )
 
             # Handle DatasetDict vs Dataset
