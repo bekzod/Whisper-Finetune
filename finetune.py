@@ -99,7 +99,7 @@ add_arg(
 add_arg(
     "num_workers",
     type=int,
-    default=min(10, os.cpu_count() or 1),
+    default=min(8, os.cpu_count() or 1),
     help="Number of data loader workers",
 )
 
