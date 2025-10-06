@@ -491,14 +491,58 @@ def main():
                 # Adjust Common Voice 17: drop revision when a language subset is used
                 adj_subset = subset
                 adj_revision = revision
-                _ = rate_limited_request(
-                    load_dataset,
-                    repo,
-                    name=adj_subset,
-                    revision=adj_revision,
-                    split=sp,
-                    download_mode="reuse_dataset_if_exists",
-                )
+                # Prefer snapshot_download to limit to desired language files for Common Voice 17
+                if (
+                    repo
+                    in (
+                        "mozilla-foundation/common_voice_17_0",
+                        "foundation/common_voice_17_0",
+                    )
+                    and adj_subset
+                ):
+                    try:
+                        from huggingface_hub import snapshot_download
+
+                        patterns = [
+                            f"audio/{adj_subset}/*",
+                            f"transcript/{adj_subset}/*",
+                        ]
+                        snap_rev = (
+                            None
+                            if (
+                                adj_revision
+                                and "refs/convert/parquet" in str(adj_revision)
+                            )
+                            else adj_revision
+                        )
+                        _ = rate_limited_request(
+                            snapshot_download,
+                            repo_id=repo,
+                            repo_type="dataset",
+                            revision=snap_rev,
+                            allow_patterns=patterns,
+                        )
+                    except Exception as se:
+                        print(
+                            f"Snapshot prefetch failed for {repo}:{sp} (subset={adj_subset}). Falling back to load_dataset: {se}"
+                        )
+                        _ = rate_limited_request(
+                            load_dataset,
+                            repo,
+                            name=adj_subset,
+                            revision=adj_revision,
+                            split=sp,
+                            download_mode="reuse_dataset_if_exists",
+                        )
+                else:
+                    _ = rate_limited_request(
+                        load_dataset,
+                        repo,
+                        name=adj_subset,
+                        revision=adj_revision,
+                        split=sp,
+                        download_mode="reuse_dataset_if_exists",
+                    )
             except Exception as e:
                 print(
                     f"Failed to load dataset {repo}:{sp} (subset={adj_subset}, revision={adj_revision}) from HF Hub: {e}"

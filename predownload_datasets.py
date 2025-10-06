@@ -12,6 +12,7 @@ import os
 import sys
 import time
 from datasets import load_dataset
+from huggingface_hub import snapshot_download
 from tqdm import tqdm
 
 
@@ -58,6 +59,29 @@ def download_dataset(repo_id, subset=None, split=None, revision=None, cache_dir=
         print(f"   Revision: {revision}")
 
     try:
+        # Special-case Common Voice 17.0 Uzbek: snapshot only uz files from the dataset repo
+        if repo_id in (
+            "mozilla-foundation/common_voice_17_0",
+            "foundation/common_voice_17_0",
+        ):
+            patterns = ["audio/uz/*", "transcript/uz/*"]
+            # Ignore parquet conversion ref for raw snapshot (paths don't exist on that ref)
+            rev = (
+                None
+                if (revision and "refs/convert/parquet" in str(revision))
+                else revision
+            )
+            local_path = rate_limited_download(
+                snapshot_download,
+                repo_id=repo_id,
+                revision=rev,
+                repo_type="dataset",
+                cache_dir=cache_dir,
+                allow_patterns=patterns,
+            )
+            print(f"✅ Snapshot available at: {local_path}")
+            return True
+
         dataset = rate_limited_download(
             load_dataset,
             repo_id,
