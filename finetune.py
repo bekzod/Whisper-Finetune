@@ -488,28 +488,61 @@ def main():
         subset: str | None = None,
     ) -> list[str]:
         materialized = []
-        for sp in splits:
-            try:
-                # Warm HF cache (no saving to disk) with explicit subset(config) and revision
-                adj_subset = subset
-                adj_revision = revision
-                # Load dataset normally
-                _ = rate_limited_request(
-                    load_dataset,
-                    repo,
-                    name=adj_subset,
-                    revision=adj_revision,
-                    split=sp,
-                    download_mode="reuse_dataset_if_exists",
-                )
-            except Exception as e:
-                print(
-                    f"Failed to load dataset {repo}:{sp} (subset={adj_subset}, revision={adj_revision}) from HF Hub: {e}"
-                )
-                continue
-            rev_part = f"@{adj_revision}" if adj_revision else ""
-            subset_part = f"#{adj_subset}" if adj_subset else ""
-            materialized.append(f"hf://{repo}{rev_part}{subset_part}:{sp}")
+
+        # Special handling for google/fleurs dataset
+        if repo == "google/fleurs" and subset:
+            from huggingface_hub import snapshot_download
+
+            for sp in splits:
+                try:
+                    print(f"Prefetching google/fleurs subset {subset}, split {sp}")
+
+                    # Download the specific files for this subset
+                    cache_dir = os.getenv(
+                        "HF_DATASETS_CACHE", None
+                    ) or os.path.expanduser("~/.cache/huggingface/datasets")
+
+                    # Download the tar.gz and tsv files for the subset
+                    snapshot_download(
+                        repo_id="google/fleurs",
+                        repo_type="dataset",
+                        allow_patterns=[
+                            f"data/{subset}/audio/*.tar.gz",
+                            f"data/{subset}/*.tsv",
+                        ],
+                        local_dir_use_symlinks=False,
+                    )
+
+                    subset_part = f"#{subset}" if subset else ""
+                    materialized.append(f"hf://{repo}{subset_part}:{sp}")
+
+                except Exception as e:
+                    print(f"Failed to prefetch google/fleurs {subset}:{sp}: {e}")
+                    continue
+        else:
+            # Original logic for other datasets
+            for sp in splits:
+                try:
+                    # Warm HF cache (no saving to disk) with explicit subset(config) and revision
+                    adj_subset = subset
+                    adj_revision = revision
+                    # Load dataset normally
+                    _ = rate_limited_request(
+                        load_dataset,
+                        repo,
+                        name=adj_subset,
+                        revision=adj_revision,
+                        split=sp,
+                        download_mode="reuse_dataset_if_exists",
+                    )
+                except Exception as e:
+                    print(
+                        f"Failed to load dataset {repo}:{sp} (subset={adj_subset}, revision={adj_revision}) from HF Hub: {e}"
+                    )
+                    continue
+                rev_part = f"@{adj_revision}" if adj_revision else ""
+                subset_part = f"#{adj_subset}" if adj_subset else ""
+                materialized.append(f"hf://{repo}{rev_part}{subset_part}:{sp}")
         return materialized
 
     def _collect_entries(

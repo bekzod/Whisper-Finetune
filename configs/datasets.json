@@ -8,7 +8,6 @@
     {
       "name": "google/fleurs",
       "subset": "uz_uz",
-      "revision": "refs/convert/parquet",
       "splits": ["train", "test"]
     },
     {

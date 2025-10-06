@@ -3,6 +3,7 @@ import json
 import os
 import random
 import sys
+import tarfile
 import time
 import warnings
 from typing import List
@@ -11,6 +12,7 @@ from itertools import chain
 import librosa
 import numpy as np
 from datasets import load_from_disk, DatasetDict, load_dataset
+from huggingface_hub import snapshot_download
 
 import soundfile
 from torch.utils.data import Dataset
@@ -416,36 +418,126 @@ class CustomDataset(Dataset):
 
                 adj_revision = revision
 
-                if dataset_subset:
+                # Special handling for google/fleurs dataset
+                if repo == "google/fleurs" and subset_name:
                     print(
-                        f"  Loading HF dataset via hub: repo='{repo}' name='{subset_name}' revision='{adj_revision}' split='{dataset_subset}'"
+                        f"  Special handling for google/fleurs with subset {subset_name}"
                     )
-                    # Use local caching instead of streaming to reduce API calls
-                    dataset = rate_limited_request(
-                        load_dataset,
-                        repo,
-                        name=subset_name,
-                        revision=adj_revision,
-                        split=dataset_subset,
-                        streaming=False,  # Changed from True to False
-                        download_mode="reuse_dataset_if_exists",
-                        cache_dir=os.getenv("HF_DATASETS_CACHE", None),
+
+                    # Download the specific files for this subset
+                    cache_dir = os.getenv(
+                        "HF_DATASETS_CACHE", None
+                    ) or os.path.expanduser("~/.cache/huggingface/datasets")
+                    local_dir = os.path.join(cache_dir, "google_fleurs", subset_name)
+
+                    # Download the tar.gz and tsv files for the subset
+                    print(f"  Downloading google/fleurs files to {local_dir}")
+                    snapshot_download(
+                        repo_id="google/fleurs",
+                        repo_type="dataset",
+                        allow_patterns=[
+                            f"data/{subset_name}/audio/*.tar.gz",
+                            f"data/{subset_name}/*.tsv",
+                        ],
+                        local_dir=local_dir,
+                        local_dir_use_symlinks=False,
                     )
+
+                    # Process the downloaded files
+                    data_dir = os.path.join(local_dir, "data", subset_name)
+                    audio_dir = os.path.join(data_dir, "audio")
+
+                    # Extract tar.gz files if they exist
+                    for tar_file in (
+                        os.listdir(audio_dir) if os.path.exists(audio_dir) else []
+                    ):
+                        if tar_file.endswith(".tar.gz"):
+                            tar_path = os.path.join(audio_dir, tar_file)
+                            extract_dir = os.path.join(
+                                audio_dir, tar_file.replace(".tar.gz", "")
+                            )
+
+                            if not os.path.exists(extract_dir):
+                                print(f"  Extracting {tar_file} to {extract_dir}")
+                                with tarfile.open(tar_path, "r:gz") as tar:
+                                    tar.extractall(extract_dir)
+
+                    # Load TSV files and create dataset items
+                    dataset_items = []
+
+                    # Process the split requested
+                    if dataset_subset:
+                        tsv_file = os.path.join(data_dir, f"{dataset_subset}.tsv")
+                        if os.path.exists(tsv_file):
+                            print(f"  Processing TSV file: {tsv_file}")
+                            with open(tsv_file, "r", encoding="utf-8") as f:
+                                # Skip header if present
+                                lines = f.readlines()
+                                for line in lines[1:]:  # Skip header
+                                    parts = line.strip().split("\t")
+                                    if len(parts) >= 3:
+                                        # Format: id, filename, transcription
+                                        audio_filename = parts[1]
+                                        transcription = parts[2]
+
+                                        # Find the audio file in extracted directories
+                                        audio_path = None
+                                        for subdir in [
+                                            "train",
+                                            "test",
+                                            "dev",
+                                            "validation",
+                                        ]:
+                                            potential_path = os.path.join(
+                                                audio_dir, subdir, audio_filename
+                                            )
+                                            if os.path.exists(potential_path):
+                                                audio_path = potential_path
+                                                break
+
+                                        if audio_path:
+                                            dataset_items.append(
+                                                {
+                                                    "audio": {"path": audio_path},
+                                                    "text": transcription,
+                                                }
+                                            )
+
+                    # Create an iterable dataset from the items
+                    dataset = dataset_items
+
                 else:
-                    # May return a DatasetDict (multiple splits) or a single Dataset
-                    print(
-                        f"  Loading HF dataset via hub: repo='{repo}' name='{subset_name}' revision='{adj_revision}' (all splits)"
-                    )
-                    # Use local caching instead of streaming to reduce API calls
-                    dataset = rate_limited_request(
-                        load_dataset,
-                        repo,
-                        name=subset_name,
-                        revision=adj_revision,
-                        streaming=False,  # Changed from True to False
-                        download_mode="reuse_dataset_if_exists",
-                        cache_dir=os.getenv("HF_DATASETS_CACHE", None),
-                    )
+                    # Original loading logic for other datasets
+                    if dataset_subset:
+                        print(
+                            f"  Loading HF dataset via hub: repo='{repo}' name='{subset_name}' revision='{adj_revision}' split='{dataset_subset}'"
+                        )
+                        # Use local caching instead of streaming to reduce API calls
+                        dataset = rate_limited_request(
+                            load_dataset,
+                            repo,
+                            name=subset_name,
+                            revision=adj_revision,
+                            split=dataset_subset,
+                            streaming=False,  # Changed from True to False
+                            download_mode="reuse_dataset_if_exists",
+                            cache_dir=os.getenv("HF_DATASETS_CACHE", None),
+                        )
+                    else:
+                        # May return a DatasetDict (multiple splits) or a single Dataset
+                        print(
+                            f"  Loading HF dataset via hub: repo='{repo}' name='{subset_name}' revision='{adj_revision}' (all splits)"
+                        )
+                        # Use local caching instead of streaming to reduce API calls
+                        dataset = rate_limited_request(
+                            load_dataset,
+                            repo,
+                            name=subset_name,
+                            revision=adj_revision,
+                            streaming=False,  # Changed from True to False
+                            download_mode="reuse_dataset_if_exists",
+                            cache_dir=os.getenv("HF_DATASETS_CACHE", None),
+                        )
 
             # Build iterator across splits; avoid concatenation/materialization
             if isinstance(dataset, DatasetDict):
@@ -461,6 +553,9 @@ class CustomDataset(Dataset):
                     split_names = list(dataset.keys())
                     print(f"No subset specified, iterating over subsets: {split_names}")
                 dataset_iter = chain.from_iterable(dataset[sp] for sp in split_names)
+            elif isinstance(dataset, list):
+                # Handle list datasets (like from google/fleurs)
+                dataset_iter = dataset
             else:
                 dataset_iter = dataset
 
