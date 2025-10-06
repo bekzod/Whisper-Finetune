@@ -510,7 +510,6 @@ def main():
                             f"data/{subset}/audio/*.tar.gz",
                             f"data/{subset}/*.tsv",
                         ],
-                        local_dir_use_symlinks=False,
                     )
 
                     subset_part = f"#{subset}" if subset else ""
@@ -543,7 +542,6 @@ def main():
                             f"audio/{subset}/*",
                             f"transcript/{subset}/*",
                         ],
-                        local_dir_use_symlinks=False,
                     )
 
                     subset_part = f"#{subset}" if subset else ""

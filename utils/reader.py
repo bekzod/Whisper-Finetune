@@ -1,4 +1,5 @@
 import csv
+import gc
 import json
 import os
 import random
@@ -440,7 +441,6 @@ class CustomDataset(Dataset):
                             f"data/{subset_name}/*.tsv",
                         ],
                         local_dir=local_dir,
-                        local_dir_use_symlinks=False,
                     )
 
                     # Process the downloaded files
@@ -457,54 +457,64 @@ class CustomDataset(Dataset):
                                 audio_dir, tar_file.replace(".tar.gz", "")
                             )
 
-                            if not os.path.exists(extract_dir):
+                            # Check if already extracted by looking for audio files
+                            if (
+                                not os.path.exists(extract_dir)
+                                or not any(
+                                    f.endswith((".wav", ".mp3", ".flac"))
+                                    for f in os.listdir(extract_dir)
+                                    if os.path.isfile(os.path.join(extract_dir, f))
+                                )
+                                if os.path.exists(extract_dir)
+                                else True
+                            ):
                                 print(f"  Extracting {tar_file} to {extract_dir}")
+                                os.makedirs(extract_dir, exist_ok=True)
+                                # Extract with lower memory usage
                                 with tarfile.open(tar_path, "r:gz") as tar:
-                                    tar.extractall(extract_dir)
+                                    # Extract files one by one to avoid memory issues
+                                    for member in tar:
+                                        tar.extract(member, extract_dir)
 
-                    # Load TSV files and create dataset items
-                    dataset_items = []
+                    # Create a generator for TSV files to avoid loading all in memory
+                    def fleurs_generator():
+                        if dataset_subset:
+                            tsv_file = os.path.join(data_dir, f"{dataset_subset}.tsv")
+                            if os.path.exists(tsv_file):
+                                print(f"  Processing TSV file: {tsv_file}")
+                                with open(tsv_file, "r", encoding="utf-8") as f:
+                                    # Skip header if present
+                                    next(f, None)  # Skip header line
+                                    for line in f:  # Process line by line
+                                        parts = line.strip().split("\t")
+                                        if len(parts) >= 3:
+                                            # Format: id, filename, transcription
+                                            audio_filename = parts[1]
+                                            transcription = parts[2]
 
-                    # Process the split requested
-                    if dataset_subset:
-                        tsv_file = os.path.join(data_dir, f"{dataset_subset}.tsv")
-                        if os.path.exists(tsv_file):
-                            print(f"  Processing TSV file: {tsv_file}")
-                            with open(tsv_file, "r", encoding="utf-8") as f:
-                                # Skip header if present
-                                lines = f.readlines()
-                                for line in lines[1:]:  # Skip header
-                                    parts = line.strip().split("\t")
-                                    if len(parts) >= 3:
-                                        # Format: id, filename, transcription
-                                        audio_filename = parts[1]
-                                        transcription = parts[2]
+                                            # Find the audio file in extracted directories
+                                            audio_path = None
+                                            for subdir in [
+                                                "train",
+                                                "test",
+                                                "dev",
+                                                "validation",
+                                            ]:
+                                                potential_path = os.path.join(
+                                                    audio_dir, subdir, audio_filename
+                                                )
+                                                if os.path.exists(potential_path):
+                                                    audio_path = potential_path
+                                                    break
 
-                                        # Find the audio file in extracted directories
-                                        audio_path = None
-                                        for subdir in [
-                                            "train",
-                                            "test",
-                                            "dev",
-                                            "validation",
-                                        ]:
-                                            potential_path = os.path.join(
-                                                audio_dir, subdir, audio_filename
-                                            )
-                                            if os.path.exists(potential_path):
-                                                audio_path = potential_path
-                                                break
-
-                                        if audio_path:
-                                            dataset_items.append(
-                                                {
+                                            if audio_path:
+                                                yield {
                                                     "audio": {"path": audio_path},
                                                     "text": transcription,
                                                 }
-                                            )
 
-                    # Create an iterable dataset from the items
-                    dataset = dataset_items
+                    # Use the generator instead of a list
+                    dataset = fleurs_generator()
 
                 # Special handling for mozilla-foundation/common_voice_17_0 dataset
                 elif repo == "mozilla-foundation/common_voice_17_0" and subset_name:
@@ -532,7 +542,6 @@ class CustomDataset(Dataset):
                             f"transcript/{subset_name}/*",
                         ],
                         local_dir=local_dir,
-                        local_dir_use_symlinks=False,
                     )
 
                     # Process the downloaded files
@@ -555,61 +564,65 @@ class CustomDataset(Dataset):
                             if not os.path.exists(extract_marker):
                                 print(f"  Extracting {tar_file} to {audio_dir}")
                                 with tarfile.open(tar_path, "r") as tar:
-                                    tar.extractall(audio_dir)
+                                    # Extract files one by one to avoid memory issues
+                                    for member in tar:
+                                        tar.extract(member, audio_dir)
                                 # Create marker file to indicate extraction is done
                                 with open(extract_marker, "w") as f:
                                     f.write("extracted")
 
-                    # Load TSV/metadata files and create dataset items
-                    dataset_items = []
+                    # Create a generator for Common Voice TSV files to avoid loading all in memory
+                    def common_voice_generator():
+                        if dataset_subset:
+                            # Common Voice uses TSV files for metadata
+                            tsv_file = os.path.join(
+                                transcript_dir, f"{dataset_subset}.tsv"
+                            )
+                            if os.path.exists(tsv_file):
+                                print(f"  Processing TSV file: {tsv_file}")
+                                with open(tsv_file, "r", encoding="utf-8") as f:
+                                    # Read header to get column indices
+                                    header_line = next(f, None)
+                                    if header_line:
+                                        header = header_line.strip().split("\t")
 
-                    # Process the split requested
-                    if dataset_subset:
-                        # Common Voice uses TSV files for metadata
-                        tsv_file = os.path.join(transcript_dir, f"{dataset_subset}.tsv")
-                        if os.path.exists(tsv_file):
-                            print(f"  Processing TSV file: {tsv_file}")
-                            with open(tsv_file, "r", encoding="utf-8") as f:
-                                # Read header to get column indices
-                                lines = f.readlines()
-                                if lines:
-                                    header = lines[0].strip().split("\t")
+                                        # Find column indices
+                                        path_idx = (
+                                            header.index("path")
+                                            if "path" in header
+                                            else 0
+                                        )
+                                        sentence_idx = (
+                                            header.index("sentence")
+                                            if "sentence" in header
+                                            else 2
+                                        )
 
-                                    # Find column indices
-                                    path_idx = (
-                                        header.index("path") if "path" in header else 0
-                                    )
-                                    sentence_idx = (
-                                        header.index("sentence")
-                                        if "sentence" in header
-                                        else 2
-                                    )
+                                        for line in f:  # Process remaining lines
+                                            parts = line.strip().split("\t")
+                                            if len(parts) > max(path_idx, sentence_idx):
+                                                audio_filename = parts[path_idx]
+                                                transcription = parts[sentence_idx]
 
-                                    for line in lines[1:]:  # Skip header
-                                        parts = line.strip().split("\t")
-                                        if len(parts) > max(path_idx, sentence_idx):
-                                            audio_filename = parts[path_idx]
-                                            transcription = parts[sentence_idx]
+                                                # Common Voice audio files are typically mp3
+                                                if not audio_filename.endswith(".mp3"):
+                                                    audio_filename = (
+                                                        audio_filename + ".mp3"
+                                                    )
 
-                                            # Common Voice audio files are typically mp3
-                                            if not audio_filename.endswith(".mp3"):
-                                                audio_filename = audio_filename + ".mp3"
+                                                # Find the audio file
+                                                audio_path = os.path.join(
+                                                    audio_dir, audio_filename
+                                                )
 
-                                            # Find the audio file
-                                            audio_path = os.path.join(
-                                                audio_dir, audio_filename
-                                            )
-
-                                            if os.path.exists(audio_path):
-                                                dataset_items.append(
-                                                    {
+                                                if os.path.exists(audio_path):
+                                                    yield {
                                                         "audio": {"path": audio_path},
                                                         "text": transcription,
                                                     }
-                                                )
 
-                    # Create an iterable dataset from the items
-                    dataset = dataset_items
+                    # Use the generator instead of a list
+                    dataset = common_voice_generator()
 
                 else:
                     # Original loading logic for other datasets
@@ -661,6 +674,9 @@ class CustomDataset(Dataset):
             elif isinstance(dataset, list):
                 # Handle list datasets (like from google/fleurs)
                 dataset_iter = dataset
+            elif callable(dataset):
+                # Handle generator functions
+                dataset_iter = dataset()
             else:
                 dataset_iter = dataset
 
@@ -784,6 +800,7 @@ class CustomDataset(Dataset):
                                     self._process_item(item, data_entry={})
             else:
                 # Original item-by-item processing for chained iterators or no filter
+                batch_size = 1000  # Process in batches to manage memory
                 for idx, item in enumerate(
                     tqdm(dataset_iter, desc=f"Processing HF dataset {data_path}")
                 ):
@@ -794,6 +811,10 @@ class CustomDataset(Dataset):
                     if filter_fn:
                         filter_kept += 1
                     self._process_item(item, data_entry={})
+
+                    # Periodically clear memory
+                    if idx > 0 and idx % batch_size == 0:
+                        gc.collect()
 
             # After iterating, report filter stats if available
             if filter_fn and total_original > 0:
