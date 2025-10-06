@@ -20,8 +20,8 @@ def rate_limited_download(func, *args, **kwargs):
     """
     Execute a function with exponential backoff retry for rate limiting.
     """
-    max_retries = 5
-    base_delay = 120
+    max_retries = 6
+    base_delay = 240
 
     for attempt in range(max_retries):
         try:
