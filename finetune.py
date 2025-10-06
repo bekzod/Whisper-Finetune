@@ -463,7 +463,7 @@ def main():
                 # Adjust Common Voice 17: drop revision when a language subset is used
                 adj_subset = subset
                 adj_revision = revision
-                # Prefer snapshot_download to limit to desired language files for Common Voice 17
+                # Prefer snapshot_download to limit to desired language files for Common Voice 17 and Google FLEURS
                 if (
                     repo
                     in (
@@ -471,14 +471,22 @@ def main():
                         "foundation/common_voice_17_0",
                     )
                     and adj_subset
-                ):
+                ) or (repo == "google/fleurs" and adj_subset):
                     try:
                         from huggingface_hub import snapshot_download
 
-                        patterns = [
-                            f"audio/{adj_subset}/*",
-                            f"transcript/{adj_subset}/*",
-                        ]
+                        # Different patterns for different datasets
+                        if repo == "google/fleurs":
+                            patterns = [
+                                f"data/{adj_subset}/*",
+                                "data/metadata.zip",  # Include metadata file for FLEURS
+                            ]
+                        else:
+                            # Common Voice patterns
+                            patterns = [
+                                f"audio/{adj_subset}/*",
+                                f"transcript/{adj_subset}/*",
+                            ]
                         snap_rev = (
                             None
                             if (
