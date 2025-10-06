@@ -60,16 +60,16 @@ def normalize_text(text):
 
     # Various apostrophe-like characters that might appear
     apostrophe_variants = [
-        '\u2019',  # Right single quotation mark
-        '\u0027',  # Apostrophe
-        '\u02BC',  # Modifier letter apostrophe
-        '\u02BB',  # Modifier letter turned comma
-        '`',       # Grave accent
-        '´',       # Acute accent
-        'ʻ',       # Modifier letter turned comma (another variant)
-        'ʼ',       # Modifier letter apostrophe (another variant)
-        ''',       # Right single quotation mark (direct)
-        '‛',       # Single high-reversed-9 quotation mark
+        "\u2019",  # Right single quotation mark
+        "\u0027",  # Apostrophe
+        "\u02bc",  # Modifier letter apostrophe
+        "\u02bb",  # Modifier letter turned comma
+        "`",  # Grave accent
+        "´",  # Acute accent
+        "ʻ",  # Modifier letter turned comma (another variant)
+        "ʼ",  # Modifier letter apostrophe (another variant)
+        "'",  # Right single quotation mark (direct)
+        "‛",  # Single high-reversed-9 quotation mark
     ]
 
     # Replace all variants with standard apostrophe (')
@@ -79,6 +79,7 @@ def normalize_text(text):
 
     # Keep only alphabetical characters, comma, dot, apostrophe, and spaces
     import re
+
     # This regex keeps:
     # - \w matches word characters (letters, digits, underscore) - we'll refine this
     # - \s matches whitespace
@@ -87,7 +88,7 @@ def normalize_text(text):
     normalized = re.sub(r"[^a-zA-ZА-Яа-яЎўҚқҒғҲҳ\s,.']+", "", normalized)
 
     # Clean up multiple spaces
-    normalized = re.sub(r'\s+', ' ', normalized).strip()
+    normalized = re.sub(r"\s+", " ", normalized).strip()
 
     return normalized
 
@@ -737,7 +738,10 @@ class CustomDataset(Dataset):
                     continue
 
                 # Create line dict in expected format
-                line = {"audio": {"path": filename}, "sentence": normalize_text(text.strip())}
+                line = {
+                    "audio": {"path": filename},
+                    "sentence": normalize_text(text.strip()),
+                }
 
                 # Try to get audio duration if file exists
                 try:
