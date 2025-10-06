@@ -398,115 +398,136 @@ class CustomDataset(Dataset):
             else:
                 dataset_iter = dataset
 
-            # Process the dataset entries with on-the-fly filtering and counters
+            # Process the dataset entries with batch filtering for speed
             total_original = 0
             filter_kept = 0
 
-            for idx, item in enumerate(
-                tqdm(dataset_iter, desc=f"Processing HF dataset {data_path}")
-            ):
-                # Count and apply dataset-level filter quickly
-                total_original += 1
-                if filter_fn and not filter_fn(item):
-                    continue
-                if filter_fn:
-                    filter_kept += 1
-                try:
-                    # Create a compatible data entry
-                    data_entry = {}
+            # Check if we have a filter and can batch process
+            if filter_fn and not isinstance(dataset_iter, chain):
+                # Batch processing for single dataset (not chained)
+                if isinstance(dataset, DatasetDict):
+                    # Process each split separately for batch filtering
+                    for split_name in split_names:
+                        split_data = dataset[split_name]
+                        total_original += len(split_data)
 
-                    # Handle audio data - HF datasets often have 'audio' column with dict
-                    if "audio" in item:
-                        audio_data = item["audio"]
-                        if isinstance(audio_data, dict):
-                            # Standard HF audio format
-                            if "path" in audio_data:
-                                data_entry["wav"] = audio_data["path"]
-                            elif "filename" in audio_data:
-                                data_entry["wav"] = audio_data["filename"]
-
-                            # Get sample rate if available
-                            if "sampling_rate" in audio_data:
-                                sr = audio_data["sampling_rate"]
-                                # We might need to resample if it's not 16kHz
-
-                            # Get audio array if available
-                            if "array" in audio_data:
-                                # Store the array for direct use
-                                data_entry["audio_array"] = audio_data["array"]
-                                if "sampling_rate" in audio_data:
-                                    data_entry["sampling_rate"] = audio_data[
-                                        "sampling_rate"
-                                    ]
-                        else:
-                            # Audio might be a path string
-                            data_entry["wav"] = str(audio_data)
-
-                    # Alternative audio column names
-                    elif "audio_path" in item:
-                        data_entry["wav"] = item["audio_path"]
-                    elif "file" in item:
-                        data_entry["wav"] = item["file"]
-                    elif "filename" in item:
-                        data_entry["wav"] = item["filename"]
-                    elif "path" in item:
-                        data_entry["wav"] = item["path"]
-
-                    # Handle transcription/text
-                    text = None
-                    for text_key in [
-                        "transcription",
-                        "text",
-                        "sentence",
-                        "transcript",
-                        "label",
-                    ]:
-                        if text_key in item:
-                            text = item[text_key]
-                            break
-
-                    if text:
-                        data_entry["sentence"] = text
-
-                    # Get or compute duration if possible
-                    if "duration" in item:
-                        data_entry["duration"] = item["duration"]
-                    elif "audio_array" in data_entry and "sampling_rate" in data_entry:
-                        # Compute duration from array length
-                        data_entry["duration"] = (
-                            len(data_entry["audio_array"]) / data_entry["sampling_rate"]
+                        # Apply filter in batch if dataset supports it
+                        try:
+                            # For uzbekvoice-filtered, use batch filtering
+                            if "uzbekvoice" in data_path.lower():
+                                # Filter using dataset's filter method (much faster)
+                                blacklist_clients = [
+                                    "56ac8e86-b8c9-4879-a342-0eeb94f686fc",
+                                    "3d3fca02-6a07-41e2-9af4-60886ea60300",
+                                    "231d3776-2dbe-4a42-a535-c67943427e3f",
+                                    "e2716f95-70b5-4832-b903-eef2343591a4",
+                                    "2a815774-e953-4031-931a-8a28052e5cf9",
+                                    "d6fd3dc4-a55d-4a80-9bbf-b713325d05be",
+                                    "10b29e87-bf01-4b16-bead-a044076f849b",
+                                    "e3412d51-f079-4167-b3f9-311a976443ce",
+                                ]
+                                filtered_data = split_data.filter(
+                                    lambda ex: (
+                                        ex.get("reported_reasons") is None
+                                        and ex.get("downvotes_count", 0) == 0
+                                        and ex.get("reported_count", 0) == 0
+                                        and ex.get("client_id") not in blacklist_clients
+                                    ),
+                                    batched=True,
+                                    batch_size=1000,
+                                    num_proc=4,  # Use multiprocessing
+                                    desc=f"Filtering {split_name}",
+                                )
+                                filter_kept += len(filtered_data)
+                                # Process filtered data
+                                for item in tqdm(
+                                    filtered_data,
+                                    desc=f"Processing filtered {split_name}",
+                                ):
+                                    self._process_item(item, data_entry={})
+                            else:
+                                # Generic batch filter
+                                filtered_data = split_data.filter(
+                                    filter_fn,
+                                    batched=False,
+                                    num_proc=4,
+                                    desc=f"Filtering {split_name}",
+                                )
+                                filter_kept += len(filtered_data)
+                                for item in tqdm(
+                                    filtered_data,
+                                    desc=f"Processing filtered {split_name}",
+                                ):
+                                    self._process_item(item, data_entry={})
+                        except:
+                            # Fallback to item-by-item if batch fails
+                            for item in tqdm(
+                                split_data, desc=f"Processing {split_name}"
+                            ):
+                                if filter_fn(item):
+                                    filter_kept += 1
+                                    self._process_item(item, data_entry={})
+                else:
+                    # Single dataset
+                    total_original = len(dataset)
+                    if "uzbekvoice" in data_path.lower():
+                        blacklist_clients = [
+                            "56ac8e86-b8c9-4879-a342-0eeb94f686fc",
+                            "3d3fca02-6a07-41e2-9af4-60886ea60300",
+                            "231d3776-2dbe-4a42-a535-c67943427e3f",
+                            "e2716f95-70b5-4832-b903-eef2343591a4",
+                            "2a815774-e953-4031-931a-8a28052e5cf9",
+                            "d6fd3dc4-a55d-4a80-9bbf-b713325d05be",
+                            "10b29e87-bf01-4b16-bead-a044076f849b",
+                            "e3412d51-f079-4167-b3f9-311a976443ce",
+                        ]
+                        filtered_data = dataset.filter(
+                            lambda ex: (
+                                ex.get("reported_reasons") is None
+                                and ex.get("downvotes_count", 0) == 0
+                                and ex.get("reported_count", 0) == 0
+                                and ex.get("client_id") not in blacklist_clients
+                            ),
+                            batched=True,
+                            batch_size=1000,
+                            num_proc=4,
+                            desc="Filtering dataset",
                         )
-                    else:
-                        # We'll compute it later when loading the audio
-                        data_entry["duration"] = -1  # Flag to compute later
-
-                    # Skip if we don't have both audio and text
-                    if "wav" not in data_entry and "audio_array" not in data_entry:
-                        continue
-                    if "sentence" not in data_entry:
-                        continue
-
-                    # Apply duration filters if duration is known
-                    if data_entry["duration"] != -1:
-                        if data_entry["duration"] < self.min_duration:
-                            continue
-                        if (
-                            self.max_duration != -1
-                            and data_entry["duration"] > self.max_duration
+                        filter_kept = len(filtered_data)
+                        for item in tqdm(
+                            filtered_data, desc="Processing filtered data"
                         ):
-                            continue
-
-                    # Apply sentence length filters
-                    if len(data_entry["sentence"]) < self.min_sentence:
+                            self._process_item(item, data_entry={})
+                    else:
+                        try:
+                            filtered_data = dataset.filter(
+                                filter_fn,
+                                batched=False,
+                                num_proc=4,
+                                desc="Filtering dataset",
+                            )
+                            filter_kept = len(filtered_data)
+                            for item in tqdm(
+                                filtered_data, desc="Processing filtered data"
+                            ):
+                                self._process_item(item, data_entry={})
+                        except:
+                            for item in tqdm(dataset, desc="Processing dataset"):
+                                if filter_fn(item):
+                                    filter_kept += 1
+                                    self._process_item(item, data_entry={})
+            else:
+                # Original item-by-item processing for chained iterators or no filter
+                for idx, item in enumerate(
+                    tqdm(dataset_iter, desc=f"Processing HF dataset {data_path}")
+                ):
+                    # Count and apply dataset-level filter quickly
+                    total_original += 1
+                    if filter_fn and not filter_fn(item):
                         continue
-                    if len(data_entry["sentence"]) > self.max_sentence:
-                        continue
-
-                    self.data_list.append(data_entry)
-
-                except Exception as e:
-                    print(f"Error processing item {idx} in HF dataset: {e}")
-                    continue
+                    if filter_fn:
+                        filter_kept += 1
+                    self._process_item(item, data_entry={})
 
             # After iterating, report filter stats if available
             if filter_fn and total_original > 0:
@@ -823,6 +844,99 @@ class CustomDataset(Dataset):
             labels.extend([end])
         data["labels"] = labels + [self.endoftext]
         return data
+
+    def _process_item(self, item, data_entry):
+        """Helper method to process a single dataset item."""
+        try:
+            # Handle audio data - HF datasets often have 'audio' column with dict
+            if "audio" in item:
+                audio_data = item["audio"]
+                if isinstance(audio_data, dict):
+                    # Standard HF audio format
+                    if "path" in audio_data:
+                        data_entry["wav"] = audio_data["path"]
+                    elif "filename" in audio_data:
+                        data_entry["wav"] = audio_data["filename"]
+
+                    # Get sample rate if available
+                    if "sampling_rate" in audio_data:
+                        sr = audio_data["sampling_rate"]
+                        # We might need to resample if it's not 16kHz
+
+                    # Get audio array if available
+                    if "array" in audio_data:
+                        # Store the array for direct use
+                        data_entry["audio_array"] = audio_data["array"]
+                        if "sampling_rate" in audio_data:
+                            data_entry["sampling_rate"] = audio_data["sampling_rate"]
+                else:
+                    # Audio might be a path string
+                    data_entry["wav"] = str(audio_data)
+
+            # Alternative audio column names
+            elif "audio_path" in item:
+                data_entry["wav"] = item["audio_path"]
+            elif "file" in item:
+                data_entry["wav"] = item["file"]
+            elif "filename" in item:
+                data_entry["wav"] = item["filename"]
+            elif "path" in item:
+                data_entry["wav"] = item["path"]
+
+            # Handle transcription/text
+            text = None
+            for text_key in [
+                "transcription",
+                "text",
+                "sentence",
+                "transcript",
+                "label",
+            ]:
+                if text_key in item:
+                    text = item[text_key]
+                    break
+
+            if text:
+                data_entry["sentence"] = text
+
+            # Get or compute duration if possible
+            if "duration" in item:
+                data_entry["duration"] = item["duration"]
+            elif "audio_array" in data_entry and "sampling_rate" in data_entry:
+                # Compute duration from array length
+                data_entry["duration"] = (
+                    len(data_entry["audio_array"]) / data_entry["sampling_rate"]
+                )
+            else:
+                # We'll compute it later when loading the audio
+                data_entry["duration"] = -1  # Flag to compute later
+
+            # Skip if we don't have both audio and text
+            if "wav" not in data_entry and "audio_array" not in data_entry:
+                return
+            if "sentence" not in data_entry:
+                return
+
+            # Apply duration filters if duration is known
+            if data_entry["duration"] != -1:
+                if data_entry["duration"] < self.min_duration:
+                    return
+                if (
+                    self.max_duration != -1
+                    and data_entry["duration"] > self.max_duration
+                ):
+                    return
+
+            # Apply sentence length filters
+            if len(data_entry["sentence"]) < self.min_sentence:
+                return
+            if len(data_entry["sentence"]) > self.max_sentence:
+                return
+
+            self.data_list.append(data_entry)
+
+        except Exception as e:
+            print(f"Error processing item: {e}")
 
     def __getitem__(self, idx):
         try:
