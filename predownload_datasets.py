@@ -59,37 +59,15 @@ def download_dataset(repo_id, subset=None, split=None, revision=None, cache_dir=
         print(f"   Revision: {revision}")
 
     try:
-        # Special-case Common Voice 17.0 Uzbek: snapshot only uz files from the dataset repo
-        if repo_id in (
-            "mozilla-foundation/common_voice_17_0",
-            "foundation/common_voice_17_0",
-        ):
-            patterns = ["audio/uz/*", "transcript/uz/*"]
-            # Ignore parquet conversion ref for raw snapshot (paths don't exist on that ref)
-            rev = (
-                None
-                if (revision and "refs/convert/parquet" in str(revision))
-                else revision
-            )
-            local_path = rate_limited_download(
-                snapshot_download,
-                repo_id=repo_id,
-                revision=rev,
-                repo_type="dataset",
-                cache_dir=cache_dir,
-                allow_patterns=patterns,
-            )
-            print(f"✅ Snapshot available at: {local_path}")
-            return True
-
+        # Standard dataset loading
         dataset = rate_limited_download(
             load_dataset,
             repo_id,
             name=subset,
-            split=split,
             revision=revision,
-            cache_dir=cache_dir,
+            split=split,
             download_mode="reuse_dataset_if_exists",
+            cache_dir=cache_dir,
         )
 
         # Get dataset size info
@@ -113,7 +91,7 @@ def main():
     parser.add_argument(
         "--datasets",
         nargs="+",
-        help="Dataset repository IDs to download (e.g., 'mozilla-foundation/common_voice_17_0')",
+        help="Dataset repository IDs to download",
     )
 
     parser.add_argument(
@@ -139,12 +117,6 @@ def main():
         help="Custom cache directory for datasets (default: uses HuggingFace default)",
     )
 
-    parser.add_argument(
-        "--common-voice-uz",
-        action="store_true",
-        help="Quick option to download Uzbek Common Voice 17.0 dataset",
-    )
-
     args = parser.parse_args()
 
     # Set up cache directory
@@ -152,32 +124,20 @@ def main():
     if cache_dir:
         print(f"Using cache directory: {cache_dir}")
 
-    # Quick option for Common Voice Uzbek
-    if args.common_voice_uz:
-        print("🚀 Downloading Uzbek Common Voice 17.0 dataset...")
-        datasets_to_download = [
-            {
-                "repo_id": "mozilla-foundation/common_voice_17_0",
-                "subset": "uz",
-                "splits": ["train", "validation", "test"],
-                "revision": "refs/convert/parquet",
-            }
-        ]
-    else:
-        if not args.datasets:
-            print("❌ Error: Please specify --datasets or use --common-voice-uz")
-            sys.exit(1)
+    if not args.datasets:
+        print("❌ Error: Please specify --datasets")
+        sys.exit(1)
 
-        datasets_to_download = []
-        for repo_id in args.datasets:
-            datasets_to_download.append(
-                {
-                    "repo_id": repo_id,
-                    "subset": args.subsets[0] if args.subsets else None,
-                    "splits": args.splits,
-                    "revision": args.revision,
-                }
-            )
+    datasets_to_download = []
+    for repo_id in args.datasets:
+        datasets_to_download.append(
+            {
+                "repo_id": repo_id,
+                "subset": args.subsets[0] if args.subsets else None,
+                "splits": args.splits,
+                "revision": args.revision,
+            }
+        )
 
     # Download datasets
     total_datasets = len(datasets_to_download)

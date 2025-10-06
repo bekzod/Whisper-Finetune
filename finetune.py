@@ -491,69 +491,17 @@ def main():
         for sp in splits:
             try:
                 # Warm HF cache (no saving to disk) with explicit subset(config) and revision
-                # Adjust Common Voice 17: drop revision when a language subset is used
                 adj_subset = subset
                 adj_revision = revision
-                # Prefer snapshot_download to limit to desired language files for Common Voice 17 and Google FLEURS
-                if (
-                    repo
-                    in (
-                        "mozilla-foundation/common_voice_17_0",
-                        "foundation/common_voice_17_0",
-                    )
-                    and adj_subset
-                ) or (repo == "google/fleurs" and adj_subset):
-                    try:
-                        from huggingface_hub import snapshot_download
-
-                        # Different patterns for different datasets
-                        if repo == "google/fleurs":
-                            patterns = [
-                                f"data/{adj_subset}/*",
-                                "data/metadata.zip",  # Include metadata file for FLEURS
-                            ]
-                        else:
-                            # Common Voice patterns
-                            patterns = [
-                                f"audio/{adj_subset}/*",
-                                f"transcript/{adj_subset}/*",
-                            ]
-                        snap_rev = (
-                            None
-                            if (
-                                adj_revision
-                                and "refs/convert/parquet" in str(adj_revision)
-                            )
-                            else adj_revision
-                        )
-                        _ = rate_limited_request(
-                            snapshot_download,
-                            repo_id=repo,
-                            repo_type="dataset",
-                            revision=snap_rev,
-                            allow_patterns=patterns,
-                        )
-                    except Exception as se:
-                        print(
-                            f"Snapshot prefetch failed for {repo}:{sp} (subset={adj_subset}). Falling back to load_dataset: {se}"
-                        )
-                        _ = rate_limited_request(
-                            load_dataset,
-                            repo,
-                            name=adj_subset,
-                            revision=adj_revision,
-                            split=sp,
-                            download_mode="reuse_dataset_if_exists",
-                        )
-                else:
-                    _ = rate_limited_request(
-                        load_dataset,
-                        repo,
-                        name=adj_subset,
-                        revision=adj_revision,
-                        split=sp,
-                        download_mode="reuse_dataset_if_exists",
-                    )
+                # Load dataset normally
+                _ = rate_limited_request(
+                    load_dataset,
+                    repo,
+                    name=adj_subset,
+                    revision=adj_revision,
+                    split=sp,
+                    download_mode="reuse_dataset_if_exists",
+                )
             except Exception as e:
                 print(
                     f"Failed to load dataset {repo}:{sp} (subset={adj_subset}, revision={adj_revision}) from HF Hub: {e}"

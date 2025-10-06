@@ -414,9 +414,7 @@ class CustomDataset(Dataset):
                 elif "#" in repo:
                     repo, subset_name = repo.split("#", 1)
 
-                # Common Voice 17: drop revision when language subset is used (only 'default' config exists on parquet conversion)
                 adj_revision = revision
-                # Keep explicit revision (e.g., 'refs/convert/parquet') for datasets converted to Parquet
 
                 if dataset_subset:
                     print(
