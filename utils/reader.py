@@ -49,6 +49,49 @@ def rate_limited_request(func, *args, **kwargs):
                 raise
 
 
+def normalize_text(text):
+    """
+    Normalize text by replacing various apostrophe-like characters with a uniform apostrophe
+    and keeping only alphabetical characters, commas, dots, spaces and apostrophes.
+    This handles Uzbek text like "ko'p" to ensure consistent character usage.
+    """
+    if not text:
+        return text
+
+    # Various apostrophe-like characters that might appear
+    apostrophe_variants = [
+        '\u2019',  # Right single quotation mark
+        '\u0027',  # Apostrophe
+        '\u02BC',  # Modifier letter apostrophe
+        '\u02BB',  # Modifier letter turned comma
+        '`',       # Grave accent
+        '´',       # Acute accent
+        'ʻ',       # Modifier letter turned comma (another variant)
+        'ʼ',       # Modifier letter apostrophe (another variant)
+        ''',       # Right single quotation mark (direct)
+        '‛',       # Single high-reversed-9 quotation mark
+    ]
+
+    # Replace all variants with standard apostrophe (')
+    normalized = text
+    for variant in apostrophe_variants:
+        normalized = normalized.replace(variant, "'")
+
+    # Keep only alphabetical characters, comma, dot, apostrophe, and spaces
+    import re
+    # This regex keeps:
+    # - \w matches word characters (letters, digits, underscore) - we'll refine this
+    # - \s matches whitespace
+    # - , . ' are literally those characters
+    # Better regex that keeps only letters (Latin and Cyrillic), spaces, comma, dot, apostrophe
+    normalized = re.sub(r"[^a-zA-ZА-Яа-яЎўҚқҒғҲҳ\s,.']+", "", normalized)
+
+    # Clean up multiple spaces
+    normalized = re.sub(r'\s+', ' ', normalized).strip()
+
+    return normalized
+
+
 def remove_silence_librosa(
     y: np.ndarray,
     sr: int,
@@ -694,7 +737,7 @@ class CustomDataset(Dataset):
                     continue
 
                 # Create line dict in expected format
-                line = {"audio": {"path": filename}, "sentence": text.strip()}
+                line = {"audio": {"path": filename}, "sentence": normalize_text(text.strip())}
 
                 # Try to get audio duration if file exists
                 try:
@@ -795,6 +838,9 @@ class CustomDataset(Dataset):
         else:
             # Try 'sentence' first, then fall back to 'text'
             transcript = data_list.get("sentence", data_list.get("text", ""))
+
+        # Normalize text to use uniform apostrophe characters
+        transcript = normalize_text(transcript)
 
         language = data_list["language"] if "language" in data_list.keys() else None
 
@@ -921,7 +967,7 @@ class CustomDataset(Dataset):
                     break
 
             if text:
-                data_entry["sentence"] = text
+                data_entry["sentence"] = normalize_text(text)
 
             # Get or compute duration if possible
             if "duration" in item:
