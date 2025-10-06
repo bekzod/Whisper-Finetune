@@ -27,7 +27,7 @@
     },
     {
       "name": "bekzod123/uzbek_voice_2",
-      "splits": ["train", "test"]
+      "splits": ["train", "validated", "test"]
     },
     {
       "name": "bekzod123/uzbek_voice_3",
@@ -59,7 +59,7 @@
     },
     {
       "name": "bekzod123/uzbek_voice_2",
-      "splits": ["validation"]
+      "splits": ["dev"]
     },
     {
       "name": "k2speech/FeruzaSpeech",

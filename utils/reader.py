@@ -4,6 +4,7 @@ import os
 import random
 import sys
 import time
+import warnings
 from typing import List
 from itertools import chain
 
@@ -167,6 +168,29 @@ class CustomDataset(Dataset):
         self.silence_min_gap_ms = silence_min_gap_ms
         self.silence_pad_ms = silence_pad_ms
         self.dataset_filters = dataset_filters or []
+
+        # Detect distributed training to avoid multiprocessing conflicts with CUDA
+        # Check multiple environment variables used by different distributed training frameworks
+        is_distributed = (
+            os.environ.get("WORLD_SIZE", "1") != "1"  # PyTorch DDP / DeepSpeed
+            or os.environ.get("LOCAL_RANK") is not None  # PyTorch DDP
+            or os.environ.get("RANK") is not None  # General distributed training
+            or os.environ.get("OMPI_COMM_WORLD_SIZE") is not None  # OpenMPI
+            or os.environ.get("PMI_SIZE")
+            is not None  # PMI (Process Management Interface)
+        )
+
+        # Disable multiprocessing in distributed training to prevent segmentation faults
+        if is_distributed:
+            self.num_proc = 0
+            warnings.warn(
+                "Distributed training detected. Disabling multiprocessing in dataset filtering "
+                "to prevent CUDA/fork conflicts. This may slow down dataset loading but ensures stability.",
+                UserWarning,
+            )
+        else:
+            # Use multiprocessing for faster filtering in single-GPU mode
+            self.num_proc = 4
 
         self.vocab = self.processor.tokenizer.get_vocab()
         self.startoftranscript = self.vocab["<|startoftranscript|>"]
@@ -435,7 +459,7 @@ class CustomDataset(Dataset):
                                     ),
                                     batched=True,
                                     batch_size=1000,
-                                    num_proc=4,  # Use multiprocessing
+                                    num_proc=self.num_proc,
                                     desc=f"Filtering {split_name}",
                                 )
                                 filter_kept += len(filtered_data)
@@ -450,7 +474,7 @@ class CustomDataset(Dataset):
                                 filtered_data = split_data.filter(
                                     filter_fn,
                                     batched=False,
-                                    num_proc=4,
+                                    num_proc=self.num_proc,
                                     desc=f"Filtering {split_name}",
                                 )
                                 filter_kept += len(filtered_data)
@@ -490,7 +514,7 @@ class CustomDataset(Dataset):
                             ),
                             batched=True,
                             batch_size=1000,
-                            num_proc=4,
+                            num_proc=self.num_proc,
                             desc="Filtering dataset",
                         )
                         filter_kept = len(filtered_data)
@@ -503,7 +527,7 @@ class CustomDataset(Dataset):
                             filtered_data = dataset.filter(
                                 filter_fn,
                                 batched=False,
-                                num_proc=4,
+                                num_proc=self.num_proc,
                                 desc="Filtering dataset",
                             )
                             filter_kept = len(filtered_data)
