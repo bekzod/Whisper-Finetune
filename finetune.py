@@ -519,6 +519,42 @@ def main():
                 except Exception as e:
                     print(f"Failed to prefetch google/fleurs {subset}:{sp}: {e}")
                     continue
+
+        # Special handling for mozilla-foundation/common_voice_17_0 dataset
+        elif repo == "mozilla-foundation/common_voice_17_0" and subset:
+            from huggingface_hub import snapshot_download
+
+            for sp in splits:
+                try:
+                    print(
+                        f"Prefetching mozilla-foundation/common_voice_17_0 subset {subset}, split {sp}"
+                    )
+
+                    # Download the specific files for this subset
+                    cache_dir = os.getenv(
+                        "HF_DATASETS_CACHE", None
+                    ) or os.path.expanduser("~/.cache/huggingface/datasets")
+
+                    # Download the audio and transcript files for the subset
+                    snapshot_download(
+                        repo_id="mozilla-foundation/common_voice_17_0",
+                        repo_type="dataset",
+                        allow_patterns=[
+                            f"audio/{subset}/*",
+                            f"transcript/{subset}/*",
+                        ],
+                        local_dir_use_symlinks=False,
+                    )
+
+                    subset_part = f"#{subset}" if subset else ""
+                    materialized.append(f"hf://{repo}{subset_part}:{sp}")
+
+                except Exception as e:
+                    print(
+                        f"Failed to prefetch mozilla-foundation/common_voice_17_0 {subset}:{sp}: {e}"
+                    )
+                    continue
+
         else:
             # Original logic for other datasets
             for sp in splits:

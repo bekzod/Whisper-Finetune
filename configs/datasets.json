@@ -17,7 +17,6 @@
     {
       "name": "mozilla-foundation/common_voice_17_0",
       "subset": "uz",
-      "revision": "refs/convert/parquet",
       "splits": ["train", "test", "validated"]
     },
     {

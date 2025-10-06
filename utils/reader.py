@@ -506,6 +506,111 @@ class CustomDataset(Dataset):
                     # Create an iterable dataset from the items
                     dataset = dataset_items
 
+                # Special handling for mozilla-foundation/common_voice_17_0 dataset
+                elif repo == "mozilla-foundation/common_voice_17_0" and subset_name:
+                    print(
+                        f"  Special handling for mozilla-foundation/common_voice_17_0 with subset {subset_name}"
+                    )
+
+                    # Download the specific files for this subset
+                    cache_dir = os.getenv(
+                        "HF_DATASETS_CACHE", None
+                    ) or os.path.expanduser("~/.cache/huggingface/datasets")
+                    local_dir = os.path.join(
+                        cache_dir, "mozilla_common_voice", subset_name
+                    )
+
+                    # Download the audio and transcript files for the subset
+                    print(
+                        f"  Downloading mozilla-foundation/common_voice_17_0 files to {local_dir}"
+                    )
+                    snapshot_download(
+                        repo_id="mozilla-foundation/common_voice_17_0",
+                        repo_type="dataset",
+                        allow_patterns=[
+                            f"audio/{subset_name}/*",
+                            f"transcript/{subset_name}/*",
+                        ],
+                        local_dir=local_dir,
+                        local_dir_use_symlinks=False,
+                    )
+
+                    # Process the downloaded files
+                    audio_dir = os.path.join(local_dir, "audio", subset_name)
+                    transcript_dir = os.path.join(local_dir, "transcript", subset_name)
+
+                    # Extract tar files if they exist
+                    for tar_file in (
+                        os.listdir(audio_dir) if os.path.exists(audio_dir) else []
+                    ):
+                        if tar_file.endswith(".tar"):
+                            tar_path = os.path.join(audio_dir, tar_file)
+                            # Extract to the audio directory itself
+                            split_name = tar_file.replace(".tar", "")
+
+                            # Check if already extracted
+                            extract_marker = os.path.join(
+                                audio_dir, f".{split_name}_extracted"
+                            )
+                            if not os.path.exists(extract_marker):
+                                print(f"  Extracting {tar_file} to {audio_dir}")
+                                with tarfile.open(tar_path, "r") as tar:
+                                    tar.extractall(audio_dir)
+                                # Create marker file to indicate extraction is done
+                                with open(extract_marker, "w") as f:
+                                    f.write("extracted")
+
+                    # Load TSV/metadata files and create dataset items
+                    dataset_items = []
+
+                    # Process the split requested
+                    if dataset_subset:
+                        # Common Voice uses TSV files for metadata
+                        tsv_file = os.path.join(transcript_dir, f"{dataset_subset}.tsv")
+                        if os.path.exists(tsv_file):
+                            print(f"  Processing TSV file: {tsv_file}")
+                            with open(tsv_file, "r", encoding="utf-8") as f:
+                                # Read header to get column indices
+                                lines = f.readlines()
+                                if lines:
+                                    header = lines[0].strip().split("\t")
+
+                                    # Find column indices
+                                    path_idx = (
+                                        header.index("path") if "path" in header else 0
+                                    )
+                                    sentence_idx = (
+                                        header.index("sentence")
+                                        if "sentence" in header
+                                        else 2
+                                    )
+
+                                    for line in lines[1:]:  # Skip header
+                                        parts = line.strip().split("\t")
+                                        if len(parts) > max(path_idx, sentence_idx):
+                                            audio_filename = parts[path_idx]
+                                            transcription = parts[sentence_idx]
+
+                                            # Common Voice audio files are typically mp3
+                                            if not audio_filename.endswith(".mp3"):
+                                                audio_filename = audio_filename + ".mp3"
+
+                                            # Find the audio file
+                                            audio_path = os.path.join(
+                                                audio_dir, audio_filename
+                                            )
+
+                                            if os.path.exists(audio_path):
+                                                dataset_items.append(
+                                                    {
+                                                        "audio": {"path": audio_path},
+                                                        "text": transcription,
+                                                    }
+                                                )
+
+                    # Create an iterable dataset from the items
+                    dataset = dataset_items
+
                 else:
                     # Original loading logic for other datasets
                     if dataset_subset:
