@@ -415,7 +415,23 @@ def main():
     # ----- Datasets -----
     datasets_info = [
         {
-            "name": "uzbekvoice-filtered",
+            "name": "Beehzod/dataset_for_STT_TTSmodels",
+            "filter_fn": None,  # No filter needed
+        },
+        {
+            "name": "google/fleurs",
+            "filter_fn": None,  # No filter needed
+        },
+        {
+            "name": "bekzod123/uzbek_voice",
+            "filter_fn": lambda ex: (ex.get("is_correct") is True),
+        },
+        {
+            "name": "mozilla-foundation/common_voice_17_0",
+            "filter_fn": None,  # No filter needed
+        },
+        {
+            "name": "DavronSherbaev/uzbekvoice-filtered",
             "filter_fn": lambda ex: (
                 ex.get("reported_reasons") is None
                 and ex.get("downvotes_count", 0) == 0
@@ -433,7 +449,22 @@ def main():
                 ]
             ),
         },
-        {"name": "uzbek_voice", "filter_fn": lambda ex: (ex.get("is_correct") is True)},
+        {
+            "name": "bekzod123/uzbek_voice_2",
+            "filter_fn": None,  # No filter needed
+        },
+        {
+            "name": "bekzod123/uzbek_voice_3",
+            "filter_fn": None,  # No filter needed
+        },
+        {
+            "name": "bekzod123/uzbek_voice_4",
+            "filter_fn": None,  # No filter needed
+        },
+        {
+            "name": "k2speech/FeruzaSpeech",
+            "filter_fn": None,  # No filter needed
+        },
     ]
 
     # ----- Build dataset specs (supports JSON manifest and HF Hub prefetch) -----
