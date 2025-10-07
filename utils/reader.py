@@ -265,6 +265,17 @@ class CustomDataset(Dataset):
         self.hf_splits = []
         self._load_data_list()
 
+        # Summary logging to make filtering effects obvious
+        try:
+            materialized = len(self.data_list)
+            lazy_splits = len(self.hf_splits)
+            total = len(self)
+            print(
+                f"📊 Dataset loaded: materialized={materialized}, hf_splits={lazy_splits}, total={total}"
+            )
+        except Exception:
+            pass
+
         self.augmenter = None
         if augment_config_path:
             with open(augment_config_path, "r", encoding="utf-8") as f:
@@ -330,9 +341,17 @@ class CustomDataset(Dataset):
                 filter_fn = None
                 dataset_name = os.path.basename(data_path)
                 for filter_config in self.dataset_filters:
-                    if filter_config["name"] in dataset_name:
+                    cfg_name = filter_config["name"]
+                    cfg_base = os.path.basename(cfg_name)
+                    if (
+                        cfg_name in data_path
+                        or cfg_base in dataset_name
+                        or dataset_name in cfg_name
+                    ):
                         filter_fn = filter_config["filter_fn"]
-                        print(f"  Found filter for dataset '{filter_config['name']}'")
+                        print(
+                            f"  Found filter for dataset '{cfg_name}' (matched on '{dataset_name}')"
+                        )
                         break
 
                 with open(data_path, "r", encoding="utf-8") as f:
@@ -394,10 +413,20 @@ class CustomDataset(Dataset):
         filter_fn = None
         dataset_name = os.path.basename(data_path)
         for filter_config in self.dataset_filters:
-            if filter_config["name"] in dataset_name:
+            cfg_name = filter_config["name"]
+            cfg_base = os.path.basename(cfg_name)
+            if (
+                cfg_name in data_path
+                or cfg_base in dataset_name
+                or dataset_name in cfg_name
+            ):
                 filter_fn = filter_config["filter_fn"]
-                print(f"  Found filter for dataset '{filter_config['name']}'")
+                print(
+                    f"  Found filter for dataset '{cfg_name}' (matched on '{dataset_name}')"
+                )
                 break
+        if filter_fn is None:
+            print(f"  No dataset-specific filter configured for '{dataset_name}'")
 
         try:
             # Load the dataset (supports HF Hub refs via cache or local saved datasets)
@@ -708,6 +737,7 @@ class CustomDataset(Dataset):
             # NEW: Avoid materializing massive Python dicts; keep HF splits lazily
             def _append_lazy_split(ds_obj, split_name_label: str):
                 if filter_fn:
+                    print(f"  Applying filter to split: {split_name_label}")
                     # Try to apply filtering within HF Datasets to keep it on-disk
                     safe_num_proc = self.num_proc
                     try:
@@ -807,10 +837,20 @@ class CustomDataset(Dataset):
         filter_fn = None
         dataset_name = os.path.basename(data_path)
         for filter_config in self.dataset_filters:
-            if filter_config["name"] in dataset_name:
+            cfg_name = filter_config["name"]
+            cfg_base = os.path.basename(cfg_name)
+            if (
+                cfg_name in data_path
+                or cfg_base in dataset_name
+                or dataset_name in cfg_name
+            ):
                 filter_fn = filter_config["filter_fn"]
-                print(f"  Found filter for dataset '{filter_config['name']}'")
+                print(
+                    f"  Found filter for dataset '{cfg_name}' (matched on '{dataset_name}')"
+                )
                 break
+        if filter_fn is None:
+            print(f"  No dataset-specific filter configured for '{dataset_name}'")
 
         with open(data_path, "r", encoding="utf-8") as f:
             # Try to detect CSV format by reading first few lines

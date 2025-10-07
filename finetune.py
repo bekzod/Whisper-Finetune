@@ -467,6 +467,13 @@ def main():
         },
     ]
 
+    # Log configured dataset filters for clarity
+    active_filters = [d["name"] for d in datasets_info if d.get("filter_fn") is not None]
+    if active_filters:
+        print(f"Data filters configured ({len(active_filters)}): {active_filters}")
+    else:
+        print("No dataset-specific filters configured (all pass-through).")
+
     # ----- Build dataset specs (supports JSON manifest and HF Hub prefetch) -----
     # If train_data points to a JSON file, treat it as a manifest:
     # - Dict form: {"train": [...], "eval": [...]} where entries can be:
@@ -609,6 +616,10 @@ def main():
     if not eval_data_arg:
         eval_data_arg = args.test_data
 
+    print(f"Resolved training data spec: {train_data_arg}")
+    if eval_data_arg is not None:
+        print(f"Resolved evaluation data spec: {eval_data_arg}")
+
     if eval_data_arg is None:
         print("No test data provided. Splitting train data: 92% train, 8% test")
         full_dataset = CustomDataset(
@@ -620,6 +631,9 @@ def main():
             max_duration=args.max_audio_len,
             augment_config_path=args.augment_config_path,
             dataset_filters=datasets_info,
+        )
+        print(
+            f"Loaded full dataset of size {len(full_dataset)} before split (filters applied during load)"
         )
         total_size = len(full_dataset)
         eval_size = max(1, int(0.08 * total_size))
