@@ -7,20 +7,19 @@ import sys
 import tarfile
 import time
 import warnings
-from typing import List, Optional
 from itertools import chain
+from typing import List, Optional
 
 import librosa
 import numpy as np
-from datasets import load_from_disk, DatasetDict, load_dataset
-from datasets import Audio, Dataset as HFDataset, DatasetDict as HFDatasetDict
-
 import soundfile
+from datasets import Audio, Dataset as HFDataset, DatasetDict as HFDatasetDict
+from datasets import load_dataset, load_from_disk, DatasetDict
+from huggingface_hub import snapshot_download  # needed for fleurs/common_voice branches
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
 from utils.binary import DatasetReader
-from huggingface_hub import snapshot_download  # needed for fleurs/common_voice branches
 
 
 def rate_limited_request(func, *args, **kwargs):
