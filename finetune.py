@@ -688,9 +688,10 @@ def main():
     model.generation_config.forced_decoder_ids = eval_forced_decoder_ids  # eval
     # Optional clarity (Whisper respects forced ids; these help downstream tools)
     try:
-        model.generation_config.language = "uz"
+        model.generation_config.language = "<|uz|>"
         model.generation_config.task = "transcribe"
         model.generation_config.no_timestamps = not args.timestamps
+        model.config.suppress_tokens = []
     except Exception:
         pass
 
