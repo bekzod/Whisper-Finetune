@@ -22,4 +22,5 @@ wandb==0.20.1
 evaluate
 kenlm
 hf_transfer
+cloudpickle
 torchcodec

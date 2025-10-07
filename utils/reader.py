@@ -13,6 +13,7 @@ from itertools import chain
 import librosa
 import numpy as np
 from datasets import load_from_disk, DatasetDict, load_dataset
+from datasets import Audio, Dataset as HFDataset, DatasetDict as HFDatasetDict
 
 import soundfile
 from torch.utils.data import Dataset
@@ -638,7 +639,7 @@ class CustomDataset(Dataset):
                             name=subset_name,
                             revision=adj_revision,
                             split=dataset_subset,
-                            streaming=False,  # Changed from True to False
+                            streaming=False,  # ensure materialized dataset
                             download_mode="reuse_dataset_if_exists",
                             cache_dir=os.getenv("HF_DATASETS_CACHE", None),
                         )
@@ -653,10 +654,24 @@ class CustomDataset(Dataset):
                             repo,
                             name=subset_name,
                             revision=adj_revision,
-                            streaming=False,  # Changed from True to False
+                            streaming=False,  # ensure materialized dataset
                             download_mode="reuse_dataset_if_exists",
                             cache_dir=os.getenv("HF_DATASETS_CACHE", None),
                         )
+
+            # ---- IMPORTANT: Disable audio decoding at the dataset level ----
+            def _cast_audio_decode_false(ds):
+                if isinstance(ds, HFDatasetDict):
+                    for sp in ds.keys():
+                        if "audio" in ds[sp].column_names:
+                            ds[sp] = ds[sp].cast_column("audio", Audio(decode=False))
+                elif isinstance(ds, HFDataset):
+                    if "audio" in ds.column_names:
+                        ds = ds.cast_column("audio", Audio(decode=False))
+                return ds
+
+            if isinstance(dataset, (HFDataset, HFDatasetDict)):
+                dataset = _cast_audio_decode_false(dataset)
 
             # Build iterator across splits; avoid concatenation/materialization
             if isinstance(dataset, DatasetDict):
@@ -696,11 +711,19 @@ class CustomDataset(Dataset):
 
                         # Apply filter in batch if dataset supports it
                         try:
-                            # Use batch filtering with the provided filter function
+                            # Guard against non-picklable callables hanging workers
+                            safe_num_proc = self.num_proc
+                            try:
+                                import cloudpickle
+
+                                cloudpickle.dumps(filter_fn)
+                            except Exception:
+                                safe_num_proc = None
+
                             filtered_data = split_data.filter(
                                 filter_fn,
                                 batched=False,
-                                num_proc=self.num_proc,  # None or >=2
+                                num_proc=safe_num_proc,  # None => single process
                                 desc=f"Filtering {split_name}",
                             )
                             filter_kept += len(filtered_data)
@@ -721,10 +744,17 @@ class CustomDataset(Dataset):
                     # Single dataset
                     total_original = len(dataset)
                     try:
+                        safe_num_proc = self.num_proc
+                        try:
+                            import cloudpickle
+
+                            cloudpickle.dumps(filter_fn)
+                        except Exception:
+                            safe_num_proc = None
                         filtered_data = dataset.filter(
                             filter_fn,
                             batched=False,
-                            num_proc=self.num_proc,  # None or >=2
+                            num_proc=safe_num_proc,
                             desc="Filtering dataset",
                         )
                         filter_kept = len(filtered_data)
@@ -952,47 +982,31 @@ class CustomDataset(Dataset):
         else:
             data_list = self.data_list[idx]
 
-        # Check if we have preloaded audio array from Hugging Face dataset
-        if "audio_array" in data_list:
-            # Use preloaded audio array from Hugging Face dataset
-            sample = data_list["audio_array"]
-            sample_rate = data_list.get("sampling_rate", 16000)
-
-            # Ensure it's float32 and 2D for consistency
-            if not isinstance(sample, np.ndarray):
-                sample = np.array(sample, dtype=np.float32)
-            else:
-                sample = sample.astype(np.float32)
-
-            # Make it 2D if it's 1D (add channel dimension)
-            if sample.ndim == 1:
-                sample = sample.reshape(-1, 1)
+        # Always load from file path (we avoid decoded arrays for speed/memory)
+        # Split audio path and labels
+        if isinstance(data_list.get("audio"), dict):
+            audio_file = data_list["audio"]["path"]
         else:
-            # Original file-based loading
-            # Split audio path and labels
-            if isinstance(data_list.get("audio"), dict):
-                audio_file = data_list["audio"]["path"]
-            else:
-                audio_file = data_list.get("wav", data_list.get("audio"))
+            audio_file = data_list.get("wav", data_list.get("audio"))
 
-            # --------- FAST IO + CHEAP MONO ----------
-            if (
-                isinstance(data_list.get("audio"), dict)
-                and "start_time" in data_list["audio"].keys()
-            ):
-                start_time, end_time = (
-                    data_list["audio"]["start_time"],
-                    data_list["audio"]["end_time"],
-                )
-                # Split and read audio (ensure 2D)
-                sample, sample_rate = self.slice_from_file(
-                    audio_file, start=start_time, end=end_time
-                )  # shape: (N, C)
-            else:
-                # Read as (frames, channels) without decoding twice
-                sample, sample_rate = soundfile.read(
-                    audio_file, dtype="float32", always_2d=True
-                )  # shape: (N, C)
+        # --------- FAST IO + CHEAP MONO ----------
+        if (
+            isinstance(data_list.get("audio"), dict)
+            and "start_time" in data_list["audio"].keys()
+        ):
+            start_time, end_time = (
+                data_list["audio"]["start_time"],
+                data_list["audio"]["end_time"],
+            )
+            # Split and read audio (ensure 2D)
+            sample, sample_rate = self.slice_from_file(
+                audio_file, start=start_time, end=end_time
+            )  # shape: (N, C)
+        else:
+            # Read as (frames, channels) without decoding twice
+            sample, sample_rate = soundfile.read(
+                audio_file, dtype="float32", always_2d=True
+            )  # shape: (N, C)
 
         # Handle transcript extraction with fallback to 'text' column
         if self.timestamps:
@@ -1090,17 +1104,9 @@ class CustomDataset(Dataset):
                     elif "filename" in audio_data:
                         data_entry["wav"] = audio_data["filename"]
 
-                    # Get sample rate if available
+                    # Get sample rate if available (not used here, we always read from disk)
                     if "sampling_rate" in audio_data:
-                        sr = audio_data["sampling_rate"]
-                        # We might need to resample if it's not 16kHz
-
-                    # Get audio array if available
-                    if "array" in audio_data:
-                        # Store the array for direct use
-                        data_entry["audio_array"] = audio_data["array"]
-                        if "sampling_rate" in audio_data:
-                            data_entry["sampling_rate"] = audio_data["sampling_rate"]
+                        pass
                 else:
                     # Audio might be a path string
                     data_entry["wav"] = str(audio_data)
@@ -1131,20 +1137,14 @@ class CustomDataset(Dataset):
             if text:
                 data_entry["sentence"] = normalize_text(text)
 
-            # Get or compute duration if possible
+            # Get or set duration if possible
             if "duration" in item:
                 data_entry["duration"] = item["duration"]
-            elif "audio_array" in data_entry and "sampling_rate" in data_entry:
-                # Compute duration from array length
-                data_entry["duration"] = (
-                    len(data_entry["audio_array"]) / data_entry["sampling_rate"]
-                )
             else:
-                # We'll compute it later when loading the audio
-                data_entry["duration"] = -1  # Flag to compute later
+                data_entry["duration"] = -1  # unknown; compute later if needed
 
             # Skip if we don't have both audio and text
-            if "wav" not in data_entry and "audio_array" not in data_entry:
+            if "wav" not in data_entry:
                 return
             if "sentence" not in data_entry:
                 return
@@ -1207,7 +1207,7 @@ class CustomDataset(Dataset):
                         feats = feats[0]
                     elif (
                         hasattr(feats, "shape")
-                        and getattr(feats, "shape", [None])[0] == 1
+                        and getattr(feets, "shape", [None])[0] == 1
                     ):
                         feats = feats[0]
 
