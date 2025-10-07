@@ -3,6 +3,9 @@ export HF_HOME=/workspace/.cache/huggingface
 export HUGGINGFACE_HUB_CACHE=$HF_HOME/hub
 export HF_DATASETS_CACHE=$HF_HOME/datasets
 
+export TRANSFORMERS_VERBOSITY=debug
+export DATASETS_VERBOSITY=debug
+
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 export CUDA_VISIBLE_DEVICES=0,1

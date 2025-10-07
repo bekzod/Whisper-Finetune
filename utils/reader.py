@@ -186,6 +186,7 @@ class CustomDataset(Dataset):
         max_sentence=200,
         augment_config_path=None,
         # --- optional knobs for Example A ---
+        remove_silence: bool = False,
         silence_top_db: int = 40,
         silence_min_gap_ms: int = 200,
         silence_pad_ms: int = 50,
@@ -205,6 +206,7 @@ class CustomDataset(Dataset):
             min_sentence, max_sentence: character-count bounds for transcripts
             augment_config_path: JSON file path with augmentation configs
             dataset_filters: List[{'name': str, 'filter_fn': callable(row)->bool}]
+            remove_silence: Whether to remove silence from audio (default True, non-timestamp mode only)
             silence_*: parameters for silence removal (non-timestamp mode only)
             force_num_proc: if provided, overrides auto-detection.
                             Use 1 or None to disable multiprocessing. Use >=2 to enable.
@@ -234,6 +236,7 @@ class CustomDataset(Dataset):
         self.max_sentence = max_sentence
 
         # Example A config
+        self.remove_silence = remove_silence
         self.silence_top_db = silence_top_db
         self.silence_min_gap_ms = silence_min_gap_ms
         self.silence_pad_ms = silence_pad_ms
@@ -327,7 +330,9 @@ class CustomDataset(Dataset):
             cfg_base_norm = self._normalize_dataset_key(os.path.basename(cfg_name))
             if cfg_norm and (cfg_norm == path_norm or cfg_norm == base_norm):
                 return filter_config
-            if cfg_base_norm and (cfg_base_norm == path_norm or cfg_base_norm == base_norm):
+            if cfg_base_norm and (
+                cfg_base_norm == path_norm or cfg_base_norm == base_norm
+            ):
                 return filter_config
         return None
 
@@ -1182,7 +1187,9 @@ class CustomDataset(Dataset):
             )
 
         if self.timestamps:
-            transcript = entry.sentences if entry.sentences is not None else entry.sentence or ""
+            transcript = (
+                entry.sentences if entry.sentences is not None else entry.sentence or ""
+            )
         else:
             transcript = entry.sentence or ""
             if not transcript and entry.sentences is not None:
@@ -1215,7 +1222,7 @@ class CustomDataset(Dataset):
                 sample = sample[:, 0].astype(np.float32)
 
         # Example A: remove silence for non-timestamp training
-        if not self.timestamps:
+        if not self.timestamps and self.remove_silence:
             sample = remove_silence_librosa(
                 sample,
                 sample_rate,
