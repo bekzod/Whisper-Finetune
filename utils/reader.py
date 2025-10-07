@@ -232,20 +232,19 @@ class CustomDataset(Dataset):
             # normalize: treat <=1 as "no multiprocessing"
             self.num_proc = None if force_num_proc <= 1 else int(force_num_proc)
         else:
-            is_distributed = _detect_distributed()
-            if is_distributed:
-                # Disable multiprocessing to avoid CUDA/fork conflicts in ranks
-                self.num_proc = None  # (HF treats None as single-process)
-                warnings.warn(
-                    "Distributed training detected. Disabling HF Datasets multiprocessing "
-                    "to prevent CUDA/fork conflicts. This may slow down dataset loading "
-                    "but improves stability.",
-                    UserWarning,
-                )
-            else:
-                # modest parallelism to avoid oversubscription vs DataLoader workers
-                cpu_cnt = os.cpu_count() or 4
-                self.num_proc = min(4, max(2, cpu_cnt // 4))
+            # is_distributed = _detect_distributed()
+            # if is_distributed:
+            #     # Disable multiprocessing to avoid CUDA/fork conflicts in ranks
+            #     self.num_proc = None  # (HF treats None as single-process)
+            #     warnings.warn(
+            #         "Distributed training detected. Disabling HF Datasets multiprocessing "
+            #         "to prevent CUDA/fork conflicts. This may slow down dataset loading "
+            #         "but improves stability.",
+            #         UserWarning,
+            #     )
+            # else:
+            cpu_cnt = os.cpu_count() or 4
+            self.num_proc = min(4, max(2, cpu_cnt // 4))
 
         self.vocab = self.processor.tokenizer.get_vocab()
         self.startoftranscript = self.vocab["<|startoftranscript|>"]
@@ -822,7 +821,9 @@ class CustomDataset(Dataset):
                         gc.collect()
             else:
                 # Unknown type; best effort iteration
-                for item in tqdm(dataset_iter, desc=f"Processing HF dataset {data_path}"):
+                for item in tqdm(
+                    dataset_iter, desc=f"Processing HF dataset {data_path}"
+                ):
                     if filter_fn and not filter_fn(item):
                         continue
                     self._process_item(item, data_entry={})
@@ -1218,9 +1219,7 @@ class CustomDataset(Dataset):
         try:
             # Route: materialized list first, then lazy HF splits
             if idx < len(self.data_list):
-                sample, sample_rate, transcript, language = self._get_list_data(
-                    idx=idx
-                )
+                sample, sample_rate, transcript, language = self._get_list_data(idx=idx)
             else:
                 # Map into HF splits
                 rem = idx - len(self.data_list)
@@ -1230,7 +1229,9 @@ class CustomDataset(Dataset):
                 # Find which split contains this index
                 for entry in self.hf_splits:
                     n = (
-                        len(entry["indices"]) if entry["indices"] is not None else len(entry["dataset"])
+                        len(entry["indices"])
+                        if entry["indices"] is not None
+                        else len(entry["dataset"])
                     )
                     if rem < n:
                         ds = entry["dataset"]
@@ -1255,7 +1256,9 @@ class CustomDataset(Dataset):
                     audio_data = item["audio"]
                     if isinstance(audio_data, dict):
                         # Prefer already-decoded array from HF datasets to avoid path issues
-                        if "array" in audio_data and isinstance(audio_data["array"], np.ndarray):
+                        if "array" in audio_data and isinstance(
+                            audio_data["array"], np.ndarray
+                        ):
                             arr = audio_data["array"]
                             # Ensure float32
                             if arr.dtype != np.float32:
@@ -1267,7 +1270,9 @@ class CustomDataset(Dataset):
                             if arr.ndim == 2 and arr.shape[1] == 1:
                                 arr = arr[:, 0].astype(np.float32)
                             sample = arr
-                            sample_rate = int(audio_data.get("sampling_rate", self.sample_rate))
+                            sample_rate = int(
+                                audio_data.get("sampling_rate", self.sample_rate)
+                            )
                         else:
                             audio_file = (
                                 audio_data.get("path")
@@ -1370,7 +1375,11 @@ class CustomDataset(Dataset):
         n = len(self.data_list)
         # Add lazy HF splits sizes
         for entry in self.hf_splits:
-            n += len(entry["indices"]) if entry["indices"] is not None else len(entry["dataset"])
+            n += (
+                len(entry["indices"])
+                if entry["indices"] is not None
+                else len(entry["dataset"])
+            )
         return n
 
     # Split and read audio
