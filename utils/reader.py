@@ -59,8 +59,15 @@ def normalize_text(text):
     and keeping only alphabetical characters, commas, dots, spaces and apostrophes.
     This handles Uzbek text like "ko'p" to ensure consistent character usage.
     """
-    if not text:
+    if text is None:
         return text
+
+    # Coerce to string to handle non-string inputs (e.g., ints)
+    try:
+        normalized = str(text)
+    except Exception:
+        # As a last resort, return empty string if conversion fails
+        return ""
 
     # Various apostrophe-like characters that might appear
     apostrophe_variants = [
@@ -77,7 +84,6 @@ def normalize_text(text):
     ]
 
     # Replace all variants with standard apostrophe (')
-    normalized = text
     for variant in apostrophe_variants:
         normalized = normalized.replace(variant, "'")
 
@@ -1203,14 +1209,31 @@ class CustomDataset(Dataset):
 
                 # Extract audio path and text similar to _process_item
                 audio_file = None
+                sample = None
+                sample_rate = None
                 if "audio" in item:
                     audio_data = item["audio"]
                     if isinstance(audio_data, dict):
-                        audio_file = (
-                            audio_data.get("path")
-                            or audio_data.get("filename")
-                            or audio_data.get("file")
-                        )
+                        # Prefer already-decoded array from HF datasets to avoid path issues
+                        if "array" in audio_data and isinstance(audio_data["array"], np.ndarray):
+                            arr = audio_data["array"]
+                            # Ensure float32
+                            if arr.dtype != np.float32:
+                                arr = arr.astype(np.float32)
+                            # If stereo/2D, average to mono if requested
+                            if arr.ndim == 2 and arr.shape[1] > 1 and self.mono:
+                                arr = arr.mean(axis=1).astype(np.float32)
+                            # If 2D with a single channel, squeeze to 1D
+                            if arr.ndim == 2 and arr.shape[1] == 1:
+                                arr = arr[:, 0].astype(np.float32)
+                            sample = arr
+                            sample_rate = int(audio_data.get("sampling_rate", self.sample_rate))
+                        else:
+                            audio_file = (
+                                audio_data.get("path")
+                                or audio_data.get("filename")
+                                or audio_data.get("file")
+                            )
                     else:
                         audio_file = str(audio_data)
                 elif "audio_path" in item:
@@ -1241,12 +1264,13 @@ class CustomDataset(Dataset):
 
                 language = item.get("language", None)
 
-                # Read audio from file
-                if not audio_file:
-                    raise ValueError("Missing audio path in HF item")
-                sample, sample_rate = soundfile.read(
-                    audio_file, dtype="float32", always_2d=True
-                )
+                # Read audio from file only if no decoded array available
+                if sample is None:
+                    if not audio_file:
+                        raise ValueError("Missing audio path in HF item")
+                    sample, sample_rate = soundfile.read(
+                        audio_file, dtype="float32", always_2d=True
+                    )
 
             # Can set language for individual data
             self.processor.tokenizer.set_prefix_tokens(
