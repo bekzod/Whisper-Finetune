@@ -415,20 +415,8 @@ def main():
     # ----- Datasets -----
     datasets_info = [
         {
-            "name": "Beehzod/dataset_for_STT_TTSmodels",
-            "filter_fn": None,  # No filter needed
-        },
-        {
-            "name": "google/fleurs",
-            "filter_fn": None,  # No filter needed
-        },
-        {
             "name": "bekzod123/uzbek_voice",
             "filter_fn": lambda ex: (ex.get("is_correct") is True),
-        },
-        {
-            "name": "mozilla-foundation/common_voice_17_0",
-            "filter_fn": None,  # No filter needed
         },
         {
             "name": "DavronSherbaev/uzbekvoice-filtered",
@@ -449,26 +437,12 @@ def main():
                 ]
             ),
         },
-        {
-            "name": "bekzod123/uzbek_voice_2",
-            "filter_fn": None,  # No filter needed
-        },
-        {
-            "name": "bekzod123/uzbek_voice_3",
-            "filter_fn": None,  # No filter needed
-        },
-        {
-            "name": "bekzod123/uzbek_voice_4",
-            "filter_fn": None,  # No filter needed
-        },
-        {
-            "name": "k2speech/FeruzaSpeech",
-            "filter_fn": None,  # No filter needed
-        },
     ]
 
     # Log configured dataset filters for clarity
-    active_filters = [d["name"] for d in datasets_info if d.get("filter_fn") is not None]
+    active_filters = [
+        d["name"] for d in datasets_info if d.get("filter_fn") is not None
+    ]
     if active_filters:
         print(f"Data filters configured ({len(active_filters)}): {active_filters}")
     else:
