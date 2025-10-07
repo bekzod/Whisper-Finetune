@@ -11,7 +11,6 @@ from dataclasses import dataclass
 from itertools import chain
 from typing import Any, List, Optional, Union
 
-import librosa
 import numpy as np
 import soundfile
 from datasets import Audio, Dataset as HFDataset, DatasetDict as HFDatasetDict
@@ -111,42 +110,6 @@ def normalize_text(text):
     return normalized
 
 
-def remove_silence_librosa(
-    y: np.ndarray,
-    sr: int,
-    top_db: int = 40,
-    min_silence_ms: float = 200,
-    pad_ms: float = 50,
-) -> np.ndarray:
-    intervals = librosa.effects.split(y, top_db=top_db)
-
-    if len(intervals) == 0:
-        return np.array([], dtype=y.dtype)
-
-    def merge_intervals(iv, min_gap):
-        merged = []
-        for start, end in iv:
-            if not merged:
-                merged.append([start, end])
-                continue
-            if start - merged[-1][1] <= min_gap:
-                merged[-1][1] = end
-            else:
-                merged.append([start, end])
-        return np.array(merged, dtype=int)
-
-    min_gap = int((min_silence_ms / 1000.0) * sr)
-    intervals = merge_intervals(intervals, min_gap=min_gap)
-
-    pad = int((pad_ms / 1000.0) * sr)
-    chunks = []
-    for s, e in intervals:
-        s = max(0, s - pad)
-        e = min(len(y), e + pad)
-        chunks.append(y[s:e])
-    return np.concatenate(chunks) if chunks else np.array([], dtype=y.dtype)
-
-
 def _detect_distributed() -> bool:
     """
     Prefer PyTorch distributed init if available, fall back to env heuristics.
@@ -185,11 +148,6 @@ class CustomDataset(Dataset):
         min_sentence=1,
         max_sentence=200,
         augment_config_path=None,
-        # --- optional knobs for Example A ---
-        remove_silence: bool = False,
-        silence_top_db: int = 40,
-        silence_min_gap_ms: int = 200,
-        silence_pad_ms: int = 50,
         dataset_filters=None,
         # --- NEW: control HF Datasets multiprocessing behavior ---
         force_num_proc: Optional[int] = None,
@@ -206,8 +164,6 @@ class CustomDataset(Dataset):
             min_sentence, max_sentence: character-count bounds for transcripts
             augment_config_path: JSON file path with augmentation configs
             dataset_filters: List[{'name': str, 'filter_fn': callable(row)->bool}]
-            remove_silence: Whether to remove silence from audio (default True, non-timestamp mode only)
-            silence_*: parameters for silence removal (non-timestamp mode only)
             force_num_proc: if provided, overrides auto-detection.
                             Use 1 or None to disable multiprocessing. Use >=2 to enable.
         """
@@ -235,11 +191,6 @@ class CustomDataset(Dataset):
         self.min_sentence = min_sentence
         self.max_sentence = max_sentence
 
-        # Example A config
-        self.remove_silence = remove_silence
-        self.silence_top_db = silence_top_db
-        self.silence_min_gap_ms = silence_min_gap_ms
-        self.silence_pad_ms = silence_pad_ms
         self.dataset_filters = dataset_filters or []
 
         # --- SAFER: choose num_proc for HF Datasets map/filter ---
@@ -518,52 +469,66 @@ class CustomDataset(Dataset):
                     print(f"  No dataset-specific filter configured for '{data_path}'")
 
                 with open(data_path, "r", encoding="utf-8") as f:
-                    lines = f.readlines()
-                for line in tqdm(lines, desc=f"Reading data list from {data_path}"):
-                    if isinstance(line, str):
-                        line = json.loads(line)
-                    if not isinstance(line, dict):
-                        continue
-
-                    # Handle text/transcription columns - use 'text' as fallback
-                    if "sentence" not in line and "sentences" not in line:
-                        if "text" in line:
-                            line["sentence"] = line["text"]
-                        elif "transcription" in line:
-                            line["sentence"] = line["transcription"]
-                        elif "transcript" in line:
-                            line["sentence"] = line["transcript"]
-
-                    # Skip audio that exceeds duration limits
-                    if line["duration"] < self.min_duration:
-                        continue
-                    if self.max_duration != -1 and line["duration"] > self.max_duration:
-                        continue
-                    # Skip audio that exceeds sentence character count limits
-                    if "sentence" in line.keys():
-                        if (
-                            len(line["sentence"]) < self.min_sentence
-                            or len(line["sentence"]) > self.max_sentence
-                        ):
+                    for line_idx, raw_line in enumerate(
+                        tqdm(
+                            f, desc=f"Reading data list from {data_path}", unit="lines"
+                        ),
+                        start=1,
+                    ):
+                        line_str = raw_line.strip()
+                        if not line_str:
                             continue
-                    elif "sentences" in line.keys():
-                        sentence_len = 0
-                        for s in line["sentences"]:
-                            if isinstance(s, dict):
-                                sentence_len += len(s.get("text", ""))
-                            else:
-                                sentence_len += len(str(s))
-                        if (
-                            sentence_len < self.min_sentence
-                            or sentence_len > self.max_sentence
-                        ):
+                        try:
+                            line = json.loads(line_str)
+                        except json.JSONDecodeError as exc:
+                            raise ValueError(
+                                f"Failed to parse JSON entry at line {line_idx} in {data_path}"
+                            ) from exc
+                        if not isinstance(line, dict):
                             continue
 
-                    # Apply custom filter if available for JSON/JSONL data
-                    if filter_fn and not filter_fn(line):
-                        continue
+                        # Handle text/transcription columns - use 'text' as fallback
+                        if "sentence" not in line and "sentences" not in line:
+                            if "text" in line:
+                                line["sentence"] = line["text"]
+                            elif "transcription" in line:
+                                line["sentence"] = line["transcription"]
+                            elif "transcript" in line:
+                                line["sentence"] = line["transcript"]
 
-                    self._try_store_manifest(line)
+                        # Skip audio that exceeds duration limits
+                        if line["duration"] < self.min_duration:
+                            continue
+                        if (
+                            self.max_duration != -1
+                            and line["duration"] > self.max_duration
+                        ):
+                            continue
+                        # Skip audio that exceeds sentence character count limits
+                        if "sentence" in line.keys():
+                            if (
+                                len(line["sentence"]) < self.min_sentence
+                                or len(line["sentence"]) > self.max_sentence
+                            ):
+                                continue
+                        elif "sentences" in line.keys():
+                            sentence_len = 0
+                            for s in line["sentences"]:
+                                if isinstance(s, dict):
+                                    sentence_len += len(s.get("text", ""))
+                                else:
+                                    sentence_len += len(str(s))
+                            if (
+                                sentence_len < self.min_sentence
+                                or sentence_len > self.max_sentence
+                            ):
+                                continue
+
+                        # Apply custom filter if available for JSON/JSONL data
+                        if filter_fn and not filter_fn(line):
+                            continue
+
+                        self._try_store_manifest(line)
 
     def _load_huggingface_dataset(self, data_path, dataset_subset=None):
         """Load data from a Hugging Face dataset folder."""
@@ -1220,16 +1185,6 @@ class CustomDataset(Dataset):
         else:
             if sample.ndim == 2 and sample.shape[1] == 1:
                 sample = sample[:, 0].astype(np.float32)
-
-        # Example A: remove silence for non-timestamp training
-        if not self.timestamps and self.remove_silence:
-            sample = remove_silence_librosa(
-                sample,
-                sample_rate,
-                top_db=self.silence_top_db,
-                min_silence_ms=self.silence_min_gap_ms,
-                pad_ms=self.silence_pad_ms,
-            )
 
         if self.augmenter:
             sample, sample_rate = self.augment(sample, sample_rate)
