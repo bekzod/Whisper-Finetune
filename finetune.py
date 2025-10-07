@@ -480,105 +480,6 @@ def main():
         base = s.split(":", 1)[0]
         return ("/" in base) and (not os.path.exists(base))
 
-    def _prefetch_hf(
-        repo: str,
-        splits: list[str],
-        save_root: str,
-        revision: str | None = None,
-        subset: str | None = None,
-    ) -> list[str]:
-        materialized = []
-
-        # Special handling for google/fleurs dataset
-        if repo == "google/fleurs" and subset:
-            from huggingface_hub import snapshot_download
-
-            for sp in splits:
-                try:
-                    print(f"Prefetching google/fleurs subset {subset}, split {sp}")
-
-                    # Download the specific files for this subset
-                    cache_dir = os.getenv(
-                        "HF_DATASETS_CACHE", None
-                    ) or os.path.expanduser("~/.cache/huggingface/datasets")
-
-                    # Download the tar.gz and tsv files for the subset
-                    snapshot_download(
-                        repo_id="google/fleurs",
-                        repo_type="dataset",
-                        allow_patterns=[
-                            f"data/{subset}/audio/*.tar.gz",
-                            f"data/{subset}/*.tsv",
-                        ],
-                    )
-
-                    subset_part = f"#{subset}" if subset else ""
-                    materialized.append(f"hf://{repo}{subset_part}:{sp}")
-
-                except Exception as e:
-                    print(f"Failed to prefetch google/fleurs {subset}:{sp}: {e}")
-                    continue
-
-        # Special handling for mozilla-foundation/common_voice_17_0 dataset
-        elif repo == "mozilla-foundation/common_voice_17_0" and subset:
-            from huggingface_hub import snapshot_download
-
-            for sp in splits:
-                try:
-                    print(
-                        f"Prefetching mozilla-foundation/common_voice_17_0 subset {subset}, split {sp}"
-                    )
-
-                    # Download the specific files for this subset
-                    cache_dir = os.getenv(
-                        "HF_DATASETS_CACHE", None
-                    ) or os.path.expanduser("~/.cache/huggingface/datasets")
-
-                    # Download the audio and transcript files for the subset
-                    snapshot_download(
-                        repo_id="mozilla-foundation/common_voice_17_0",
-                        repo_type="dataset",
-                        allow_patterns=[
-                            f"audio/{subset}/*",
-                            f"transcript/{subset}/*",
-                        ],
-                    )
-
-                    subset_part = f"#{subset}" if subset else ""
-                    materialized.append(f"hf://{repo}{subset_part}:{sp}")
-
-                except Exception as e:
-                    print(
-                        f"Failed to prefetch mozilla-foundation/common_voice_17_0 {subset}:{sp}: {e}"
-                    )
-                    continue
-
-        else:
-            # Original logic for other datasets
-            for sp in splits:
-                try:
-                    # Warm HF cache (no saving to disk) with explicit subset(config) and revision
-                    adj_subset = subset
-                    adj_revision = revision
-                    # Load dataset normally
-                    _ = rate_limited_request(
-                        load_dataset,
-                        repo,
-                        name=adj_subset,
-                        revision=adj_revision,
-                        split=sp,
-                        download_mode="reuse_dataset_if_exists",
-                    )
-                except Exception as e:
-                    print(
-                        f"Failed to load dataset {repo}:{sp} (subset={adj_subset}, revision={adj_revision}) from HF Hub: {e}"
-                    )
-                    continue
-                rev_part = f"@{adj_revision}" if adj_revision else ""
-                subset_part = f"#{adj_subset}" if adj_subset else ""
-                materialized.append(f"hf://{repo}{rev_part}{subset_part}:{sp}")
-        return materialized
-
     def _collect_entries(
         entries, save_root: str, default_splits: list[str]
     ) -> list[str]:
@@ -597,11 +498,11 @@ def main():
                     [ent.get("split")] if ent.get("split") else default_splits
                 )
                 if repo:
-                    paths.extend(
-                        _prefetch_hf(
-                            repo, splits, save_root, revision=revision, subset=subset
-                        )
-                    )
+                    # Build dataset paths without prefetching
+                    rev_part = f"@{revision}" if revision else ""
+                    subset_part = f"#{subset}" if subset else ""
+                    for sp in splits:
+                        paths.append(f"hf://{repo}{rev_part}{subset_part}:{sp}")
                     continue
                 print(f"Unrecognized manifest dict entry (missing 'name'/'hf'): {ent}")
             elif isinstance(ent, str):
@@ -636,11 +537,11 @@ def main():
                     ]
                     fallback_splits = fallback_splits or ["train", "validation", "test"]
                     splits = [split] if split else fallback_splits
-                    paths.extend(
-                        _prefetch_hf(
-                            repo, splits, save_root, revision=revision, subset=subset
-                        )
-                    )
+                    # Build dataset paths without prefetching
+                    rev_part = f"@{revision}" if revision else ""
+                    subset_part = f"#{subset}" if subset else ""
+                    for sp in splits:
+                        paths.append(f"hf://{repo}{rev_part}{subset_part}:{sp}")
                 else:
                     # local file/dir (optionally with :subset handled by CustomDataset)
                     paths.append(val)
