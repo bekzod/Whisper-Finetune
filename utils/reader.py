@@ -7,7 +7,7 @@ import sys
 import tarfile
 import time
 import warnings
-from typing import List
+from typing import List, Optional
 from itertools import chain
 
 import librosa
@@ -19,6 +19,7 @@ from torch.utils.data import Dataset
 from tqdm import tqdm
 
 from utils.binary import DatasetReader
+from huggingface_hub import snapshot_download  # needed for fleurs/common_voice branches
 
 
 def rate_limited_request(func, *args, **kwargs):
@@ -82,11 +83,7 @@ def normalize_text(text):
     # Keep only alphabetical characters, comma, dot, apostrophe, and spaces
     import re
 
-    # This regex keeps:
-    # - \w matches word characters (letters, digits, underscore) - we'll refine this
-    # - \s matches whitespace
-    # - , . ' are literally those characters
-    # Better regex that keeps only letters (Latin and Cyrillic), spaces, comma, dot, apostrophe
+    # This regex keeps Latin & Cyrillic letters, spaces, comma, dot, apostrophe
     normalized = re.sub(r"[^a-zA-ZА-Яа-яЎўҚқҒғҲҳ\s,.']+", "", normalized)
 
     # Clean up multiple spaces
@@ -131,6 +128,30 @@ def remove_silence_librosa(
     return np.concatenate(chunks) if chunks else np.array([], dtype=y.dtype)
 
 
+def _detect_distributed() -> bool:
+    """
+    Prefer PyTorch distributed init if available, fall back to env heuristics.
+    """
+    # Prefer PyTorch's ground truth if initialized
+    try:
+        import torch.distributed as dist  # noqa
+
+        if dist.is_available() and dist.is_initialized():
+            return True
+    except Exception:
+        pass
+
+    # Fallback to environment heuristics
+    if os.environ.get("WORLD_SIZE", "1") not in ("", "1"):
+        return True
+    if any(
+        os.environ.get(k) is not None
+        for k in ("LOCAL_RANK", "RANK", "OMPI_COMM_WORLD_SIZE", "PMI_SIZE")
+    ):
+        return True
+    return False
+
+
 class CustomDataset(Dataset):
     def __init__(
         self,
@@ -150,40 +171,24 @@ class CustomDataset(Dataset):
         silence_min_gap_ms: int = 200,
         silence_pad_ms: int = 50,
         dataset_filters=None,
+        # --- NEW: control HF Datasets multiprocessing behavior ---
+        force_num_proc: Optional[int] = None,
     ):
         """
         Args:
-            data_list_path: Path to the data list file, or path to the binary list header file, or Hugging Face dataset folder.
-                           Supports JSON, JSONL, CSV formats, and Hugging Face dataset directories.
-                           Multiple paths can be specified separated by '+' to combine datasets,
-                           e.g., '../datasets/train.json+../datasets/cleaned.json'
-                           For Hugging Face datasets, use 'path:subset' format to specify a subset,
-                           e.g., '../dataset:train' or '../dataset:validation'
-                           If no subset is specified for HF dataset, all available data will be used.
-                           CSV format supports:
-                           - Standard format: filename,text
-                           - LJSpeech format: filename|text
-                           - Header detection for column names like 'filename', 'text', 'audio_path', etc.
-                           Hugging Face dataset folders should contain arrow/parquet files
+            data_list_path: Path(s) to dataset manifests or HF dataset specs. Supports '+' to concat.
             processor: Whisper preprocessing tool, obtained from WhisperProcessor.from_pretrained
-            mono: Whether to convert audio to mono channel, this must be True
-            language: Language of the fine-tuning data
-            timestamps: Whether to use timestamps during fine-tuning
-            sample_rate: Audio sample rate, default is 16000
-            min_duration: Audio shorter than this duration will be truncated, in seconds, cannot be less than 0.5, default 0.5s
-            max_duration: Audio longer than this duration will be truncated, in seconds, cannot be greater than 30, default 30s
-            min_sentence: Minimum sentence character count for fine-tuning, default 1
-            max_sentence: Maximum sentence character count for fine-tuning, default 200
-            augment_config_path: Path to data augmentation configuration parameter file
-            dataset_filters: List of dictionaries with 'name' and 'filter_fn' keys for dataset filtering.
-                           Each dict should have:
-                           - 'name': dataset name (partial match)
-                           - 'filter_fn': lambda function that takes a row/example and returns True to keep it
-
-            Example A params:
-            silence_top_db: energy threshold for librosa.effects.split (smaller = more aggressive)
-            silence_min_gap_ms: merge gaps shorter than this between voiced islands
-            silence_pad_ms: pad each kept island to avoid cutting phones
+            mono: Whether to convert audio to mono channel (recommended True)
+            language: Language code for fine-tuning (optional)
+            timestamps: Whether labels contain per-segment timestamps
+            sample_rate: Target sample rate (default 16k)
+            min_duration, max_duration: duration bounds in seconds (0.5 <= min <= 30)
+            min_sentence, max_sentence: character-count bounds for transcripts
+            augment_config_path: JSON file path with augmentation configs
+            dataset_filters: List[{'name': str, 'filter_fn': callable(row)->bool}]
+            silence_*: parameters for silence removal (non-timestamp mode only)
+            force_num_proc: if provided, overrides auto-detection.
+                            Use 1 or None to disable multiprocessing. Use >=2 to enable.
         """
         super(CustomDataset, self).__init__()
         assert min_duration >= 0.5, (
@@ -215,28 +220,25 @@ class CustomDataset(Dataset):
         self.silence_pad_ms = silence_pad_ms
         self.dataset_filters = dataset_filters or []
 
-        # Detect distributed training to avoid multiprocessing conflicts with CUDA
-        # Check multiple environment variables used by different distributed training frameworks
-        is_distributed = (
-            os.environ.get("WORLD_SIZE", "1") != "1"  # PyTorch DDP / DeepSpeed
-            or os.environ.get("LOCAL_RANK") is not None  # PyTorch DDP
-            or os.environ.get("RANK") is not None  # General distributed training
-            or os.environ.get("OMPI_COMM_WORLD_SIZE") is not None  # OpenMPI
-            or os.environ.get("PMI_SIZE")
-            is not None  # PMI (Process Management Interface)
-        )
-
-        # Disable multiprocessing in distributed training to prevent segmentation faults
-        if is_distributed:
-            self.num_proc = 0
-            warnings.warn(
-                "Distributed training detected. Disabling multiprocessing in dataset filtering "
-                "to prevent CUDA/fork conflicts. This may slow down dataset loading but ensures stability.",
-                UserWarning,
-            )
+        # --- SAFER: choose num_proc for HF Datasets map/filter ---
+        if force_num_proc is not None:
+            # normalize: treat <=1 as "no multiprocessing"
+            self.num_proc = None if force_num_proc <= 1 else int(force_num_proc)
         else:
-            # Use multiprocessing for faster filtering in single-GPU mode
-            self.num_proc = 4
+            is_distributed = _detect_distributed()
+            if is_distributed:
+                # Disable multiprocessing to avoid CUDA/fork conflicts in ranks
+                self.num_proc = None  # (HF treats None as single-process)
+                warnings.warn(
+                    "Distributed training detected. Disabling HF Datasets multiprocessing "
+                    "to prevent CUDA/fork conflicts. This may slow down dataset loading "
+                    "but improves stability.",
+                    UserWarning,
+                )
+            else:
+                # modest parallelism to avoid oversubscription vs DataLoader workers
+                cpu_cnt = os.cpu_count() or 4
+                self.num_proc = min(4, max(2, cpu_cnt // 4))
 
         self.vocab = self.processor.tokenizer.get_vocab()
         self.startoftranscript = self.vocab["<|startoftranscript|>"]
@@ -698,7 +700,7 @@ class CustomDataset(Dataset):
                             filtered_data = split_data.filter(
                                 filter_fn,
                                 batched=False,
-                                num_proc=self.num_proc,
+                                num_proc=self.num_proc,  # None or >=2
                                 desc=f"Filtering {split_name}",
                             )
                             filter_kept += len(filtered_data)
@@ -707,7 +709,7 @@ class CustomDataset(Dataset):
                                 desc=f"Processing filtered {split_name}",
                             ):
                                 self._process_item(item, data_entry={})
-                        except:
+                        except Exception:
                             # Fallback to item-by-item if batch fails
                             for item in tqdm(
                                 split_data, desc=f"Processing {split_name}"
@@ -722,7 +724,7 @@ class CustomDataset(Dataset):
                         filtered_data = dataset.filter(
                             filter_fn,
                             batched=False,
-                            num_proc=self.num_proc,
+                            num_proc=self.num_proc,  # None or >=2
                             desc="Filtering dataset",
                         )
                         filter_kept = len(filtered_data)
@@ -730,7 +732,7 @@ class CustomDataset(Dataset):
                             filtered_data, desc="Processing filtered data"
                         ):
                             self._process_item(item, data_entry={})
-                    except:
+                    except Exception:
                         for item in tqdm(dataset, desc="Processing dataset"):
                             if filter_fn(item):
                                 filter_kept += 1
