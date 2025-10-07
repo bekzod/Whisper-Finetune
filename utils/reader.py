@@ -343,9 +343,9 @@ class CustomDataset(Dataset):
                     cfg_name = filter_config["name"]
                     cfg_base = os.path.basename(cfg_name)
                     if (
-                        cfg_name in data_path
-                        or cfg_base in dataset_name
-                        or dataset_name in cfg_name
+                        cfg_name == data_path
+                        or cfg_base == dataset_name
+                        or dataset_name == cfg_name
                     ):
                         filter_fn = filter_config["filter_fn"]
                         print(
