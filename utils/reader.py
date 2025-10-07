@@ -252,7 +252,11 @@ class CustomDataset(Dataset):
             self.nospeech = self.vocab["<|nocaptions|>"]
             self.timestamp_begin = self.vocab["<|notimestamps|>"] + 1
 
+        # Python-side materialized entries (CSV/JSONL/etc.)
         self.data_list: List[dict] = []
+        # Lazy HF datasets: store splits to avoid 100s of thousands of Python dicts
+        # Each entry: { 'dataset': HFDataset, 'indices': Optional[List[int]], 'name': str }
+        self.hf_splits = []
         self._load_data_list()
 
         self.augmenter = None
@@ -695,100 +699,97 @@ class CustomDataset(Dataset):
             else:
                 dataset_iter = dataset
 
-            # Process the dataset entries with batch filtering for speed
-            total_original = 0
-            filter_kept = 0
-
-            # Check if we have a filter and can batch process
-            if filter_fn and not isinstance(dataset_iter, chain):
-                # Batch processing for single dataset (not chained)
-                if isinstance(dataset, DatasetDict):
-                    # Process each split separately for batch filtering
-                    for split_name in split_names:
-                        split_data = dataset[split_name]
-                        total_original += len(split_data)
-
-                        # Apply filter in batch if dataset supports it
-                        try:
-                            # Guard against non-picklable callables hanging workers
-                            safe_num_proc = self.num_proc
-                            try:
-                                import cloudpickle
-
-                                cloudpickle.dumps(filter_fn)
-                            except Exception:
-                                safe_num_proc = None
-
-                            filtered_data = split_data.filter(
-                                filter_fn,
-                                batched=False,
-                                num_proc=safe_num_proc,  # None => single process
-                                desc=f"Filtering {split_name}",
-                            )
-                            filter_kept += len(filtered_data)
-                            for item in tqdm(
-                                filtered_data,
-                                desc=f"Processing filtered {split_name}",
-                            ):
-                                self._process_item(item, data_entry={})
-                        except Exception:
-                            # Fallback to item-by-item if batch fails
-                            for item in tqdm(
-                                split_data, desc=f"Processing {split_name}"
-                            ):
-                                if filter_fn(item):
-                                    filter_kept += 1
-                                    self._process_item(item, data_entry={})
-                else:
-                    # Single dataset
-                    total_original = len(dataset)
+            # NEW: Avoid materializing massive Python dicts; keep HF splits lazily
+            def _append_lazy_split(ds_obj, split_name_label: str):
+                if filter_fn:
+                    # Try to apply filtering within HF Datasets to keep it on-disk
+                    safe_num_proc = self.num_proc
                     try:
-                        safe_num_proc = self.num_proc
-                        try:
-                            import cloudpickle
+                        import cloudpickle
 
-                            cloudpickle.dumps(filter_fn)
-                        except Exception:
-                            safe_num_proc = None
-                        filtered_data = dataset.filter(
+                        cloudpickle.dumps(filter_fn)
+                    except Exception:
+                        safe_num_proc = None
+
+                    try:
+                        before = len(ds_obj)
+                        ds_obj = ds_obj.filter(
                             filter_fn,
                             batched=False,
                             num_proc=safe_num_proc,
-                            desc="Filtering dataset",
+                            desc=f"Filtering {split_name_label}",
                         )
-                        filter_kept = len(filtered_data)
-                        for item in tqdm(
-                            filtered_data, desc="Processing filtered data"
+                        after = len(ds_obj)
+                        print(
+                            f"  Kept {after}/{before} samples after filter in {split_name_label}"
+                        )
+                    except Exception as e:
+                        # Fallback: build a compact list of indices in Python
+                        print(
+                            f"  Filter via HF failed ({e}); falling back to Python indices for {split_name_label}"
+                        )
+                        kept_idx = []
+                        for i, it in enumerate(
+                            tqdm(ds_obj, desc=f"Scanning {split_name_label}")
                         ):
-                            self._process_item(item, data_entry={})
-                    except Exception:
-                        for item in tqdm(dataset, desc="Processing dataset"):
-                            if filter_fn(item):
-                                filter_kept += 1
-                                self._process_item(item, data_entry={})
-            else:
-                # Original item-by-item processing for chained iterators or no filter
-                batch_size = 1000  # Process in batches to manage memory
+                            try:
+                                if filter_fn(it):
+                                    kept_idx.append(i)
+                            except Exception:
+                                # If user filter fails on a row, skip it
+                                pass
+                        print(
+                            f"  Kept {len(kept_idx)}/{len(ds_obj)} samples (indexed) in {split_name_label}"
+                        )
+                        self.hf_splits.append(
+                            {
+                                "dataset": ds_obj,
+                                "indices": kept_idx,
+                                "name": split_name_label,
+                            }
+                        )
+                        return
+
+                # If we reach here, we have an HF dataset object to use lazily
+                self.hf_splits.append(
+                    {"dataset": ds_obj, "indices": None, "name": split_name_label}
+                )
+
+            if isinstance(dataset, DatasetDict):
+                # Work per split lazily
+                if dataset_subset:
+                    if dataset_subset not in dataset:
+                        available_subsets = list(dataset.keys())
+                        raise ValueError(
+                            f"Subset '{dataset_subset}' not found in dataset. Available subsets: {available_subsets}"
+                        )
+                    split_names = [dataset_subset]
+                else:
+                    split_names = list(dataset.keys())
+                    print(f"No subset specified, using splits lazily: {split_names}")
+
+                for sp in split_names:
+                    _append_lazy_split(dataset[sp], f"{data_path}:{sp}")
+            elif isinstance(dataset, HFDataset):
+                _append_lazy_split(dataset, f"{data_path}")
+            elif isinstance(dataset, list) or callable(dataset):
+                # For generators or simple lists, fall back to incremental materialization
+                dataset_iter = dataset() if callable(dataset) else dataset
+                batch_size = 1000
                 for idx, item in enumerate(
                     tqdm(dataset_iter, desc=f"Processing HF dataset {data_path}")
                 ):
-                    # Count and apply dataset-level filter quickly
-                    total_original += 1
                     if filter_fn and not filter_fn(item):
                         continue
-                    if filter_fn:
-                        filter_kept += 1
                     self._process_item(item, data_entry={})
-
-                    # Periodically clear memory
                     if idx > 0 and idx % batch_size == 0:
                         gc.collect()
-
-            # After iterating, report filter stats if available
-            if filter_fn and total_original > 0:
-                print(
-                    f"  Filtered dataset: {total_original} -> {filter_kept} samples (kept {filter_kept / total_original * 100:.1f}%)"
-                )
+            else:
+                # Unknown type; best effort iteration
+                for item in tqdm(dataset_iter, desc=f"Processing HF dataset {data_path}"):
+                    if filter_fn and not filter_fn(item):
+                        continue
+                    self._process_item(item, data_entry={})
 
         except Exception as e:
             print(f"Error loading Hugging Face dataset from {data_path}: {e}")
@@ -1169,8 +1170,83 @@ class CustomDataset(Dataset):
 
     def __getitem__(self, idx):
         try:
-            # Get audio data, sample rate, and text from data list
-            sample, sample_rate, transcript, language = self._get_list_data(idx=idx)
+            # Route: materialized list first, then lazy HF splits
+            if idx < len(self.data_list):
+                sample, sample_rate, transcript, language = self._get_list_data(
+                    idx=idx
+                )
+            else:
+                # Map into HF splits
+                rem = idx - len(self.data_list)
+                ds = None
+                row_idx = None
+                language = None
+                # Find which split contains this index
+                for entry in self.hf_splits:
+                    n = (
+                        len(entry["indices"]) if entry["indices"] is not None else len(entry["dataset"])
+                    )
+                    if rem < n:
+                        ds = entry["dataset"]
+                        row_idx = (
+                            entry["indices"][rem]
+                            if entry["indices"] is not None
+                            else rem
+                        )
+                        break
+                    rem -= n
+
+                if ds is None:
+                    raise IndexError("Index out of range for dataset")
+
+                item = ds[row_idx]
+
+                # Extract audio path and text similar to _process_item
+                audio_file = None
+                if "audio" in item:
+                    audio_data = item["audio"]
+                    if isinstance(audio_data, dict):
+                        audio_file = (
+                            audio_data.get("path")
+                            or audio_data.get("filename")
+                            or audio_data.get("file")
+                        )
+                    else:
+                        audio_file = str(audio_data)
+                elif "audio_path" in item:
+                    audio_file = item["audio_path"]
+                elif "file" in item:
+                    audio_file = item["file"]
+                elif "filename" in item:
+                    audio_file = item["filename"]
+                elif "path" in item:
+                    audio_file = item["path"]
+
+                # Transcript selection
+                if self.timestamps:
+                    transcript = item.get("sentences", item.get("text", ""))
+                else:
+                    txt = None
+                    for text_key in [
+                        "sentence",
+                        "text",
+                        "transcription",
+                        "transcript",
+                        "label",
+                    ]:
+                        if text_key in item:
+                            txt = item[text_key]
+                            break
+                    transcript = normalize_text(txt) if txt else ""
+
+                language = item.get("language", None)
+
+                # Read audio from file
+                if not audio_file:
+                    raise ValueError("Missing audio path in HF item")
+                sample, sample_rate = soundfile.read(
+                    audio_file, dtype="float32", always_2d=True
+                )
 
             # Can set language for individual data
             self.processor.tokenizer.set_prefix_tokens(
@@ -1226,7 +1302,12 @@ class CustomDataset(Dataset):
             return self.__getitem__(random.randint(0, self.__len__() - 1))
 
     def __len__(self):
-        return len(self.data_list)
+        # Materialized entries
+        n = len(self.data_list)
+        # Add lazy HF splits sizes
+        for entry in self.hf_splits:
+            n += len(entry["indices"]) if entry["indices"] is not None else len(entry["dataset"])
+        return n
 
     # Split and read audio
     @staticmethod
