@@ -13,7 +13,6 @@ from itertools import chain
 import librosa
 import numpy as np
 from datasets import load_from_disk, DatasetDict, load_dataset
-from huggingface_hub import snapshot_download
 
 import soundfile
 from torch.utils.data import Dataset
@@ -695,52 +694,19 @@ class CustomDataset(Dataset):
 
                         # Apply filter in batch if dataset supports it
                         try:
-                            # For uzbekvoice-filtered, use batch filtering
-                            if "uzbekvoice" in data_path.lower():
-                                # Filter using dataset's filter method (much faster)
-                                blacklist_clients = [
-                                    "56ac8e86-b8c9-4879-a342-0eeb94f686fc",
-                                    "3d3fca02-6a07-41e2-9af4-60886ea60300",
-                                    "231d3776-2dbe-4a42-a535-c67943427e3f",
-                                    "e2716f95-70b5-4832-b903-eef2343591a4",
-                                    "2a815774-e953-4031-931a-8a28052e5cf9",
-                                    "d6fd3dc4-a55d-4a80-9bbf-b713325d05be",
-                                    "10b29e87-bf01-4b16-bead-a044076f849b",
-                                    "e3412d51-f079-4167-b3f9-311a976443ce",
-                                ]
-                                filtered_data = split_data.filter(
-                                    lambda ex: (
-                                        ex.get("reported_reasons") is None
-                                        and ex.get("downvotes_count", 0) == 0
-                                        and ex.get("reported_count", 0) == 0
-                                        and ex.get("client_id") not in blacklist_clients
-                                    ),
-                                    batched=True,
-                                    batch_size=1000,
-                                    num_proc=self.num_proc,
-                                    desc=f"Filtering {split_name}",
-                                )
-                                filter_kept += len(filtered_data)
-                                # Process filtered data
-                                for item in tqdm(
-                                    filtered_data,
-                                    desc=f"Processing filtered {split_name}",
-                                ):
-                                    self._process_item(item, data_entry={})
-                            else:
-                                # Generic batch filter
-                                filtered_data = split_data.filter(
-                                    filter_fn,
-                                    batched=False,
-                                    num_proc=self.num_proc,
-                                    desc=f"Filtering {split_name}",
-                                )
-                                filter_kept += len(filtered_data)
-                                for item in tqdm(
-                                    filtered_data,
-                                    desc=f"Processing filtered {split_name}",
-                                ):
-                                    self._process_item(item, data_entry={})
+                            # Use batch filtering with the provided filter function
+                            filtered_data = split_data.filter(
+                                filter_fn,
+                                batched=False,
+                                num_proc=self.num_proc,
+                                desc=f"Filtering {split_name}",
+                            )
+                            filter_kept += len(filtered_data)
+                            for item in tqdm(
+                                filtered_data,
+                                desc=f"Processing filtered {split_name}",
+                            ):
+                                self._process_item(item, data_entry={})
                         except:
                             # Fallback to item-by-item if batch fails
                             for item in tqdm(
@@ -752,26 +718,10 @@ class CustomDataset(Dataset):
                 else:
                     # Single dataset
                     total_original = len(dataset)
-                    if "uzbekvoice" in data_path.lower():
-                        blacklist_clients = [
-                            "56ac8e86-b8c9-4879-a342-0eeb94f686fc",
-                            "3d3fca02-6a07-41e2-9af4-60886ea60300",
-                            "231d3776-2dbe-4a42-a535-c67943427e3f",
-                            "e2716f95-70b5-4832-b903-eef2343591a4",
-                            "2a815774-e953-4031-931a-8a28052e5cf9",
-                            "d6fd3dc4-a55d-4a80-9bbf-b713325d05be",
-                            "10b29e87-bf01-4b16-bead-a044076f849b",
-                            "e3412d51-f079-4167-b3f9-311a976443ce",
-                        ]
+                    try:
                         filtered_data = dataset.filter(
-                            lambda ex: (
-                                ex.get("reported_reasons") is None
-                                and ex.get("downvotes_count", 0) == 0
-                                and ex.get("reported_count", 0) == 0
-                                and ex.get("client_id") not in blacklist_clients
-                            ),
-                            batched=True,
-                            batch_size=1000,
+                            filter_fn,
+                            batched=False,
                             num_proc=self.num_proc,
                             desc="Filtering dataset",
                         )
@@ -780,24 +730,11 @@ class CustomDataset(Dataset):
                             filtered_data, desc="Processing filtered data"
                         ):
                             self._process_item(item, data_entry={})
-                    else:
-                        try:
-                            filtered_data = dataset.filter(
-                                filter_fn,
-                                batched=False,
-                                num_proc=self.num_proc,
-                                desc="Filtering dataset",
-                            )
-                            filter_kept = len(filtered_data)
-                            for item in tqdm(
-                                filtered_data, desc="Processing filtered data"
-                            ):
+                    except:
+                        for item in tqdm(dataset, desc="Processing dataset"):
+                            if filter_fn(item):
+                                filter_kept += 1
                                 self._process_item(item, data_entry={})
-                        except:
-                            for item in tqdm(dataset, desc="Processing dataset"):
-                                if filter_fn(item):
-                                    filter_kept += 1
-                                    self._process_item(item, data_entry={})
             else:
                 # Original item-by-item processing for chained iterators or no filter
                 batch_size = 1000  # Process in batches to manage memory
