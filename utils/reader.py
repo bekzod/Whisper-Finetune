@@ -281,6 +281,44 @@ class CustomDataset(Dataset):
                 augment_configs = json.load(f)
                 self.augmenter = AudioAugmenter(augment_configs)
 
+    @staticmethod
+    def _normalize_dataset_key(name: Optional[str]) -> str:
+        """
+        Normalize dataset identifiers so filters match exact repos/paths instead of substrings.
+        Examples:
+            hf://org/name@rev#subset:split -> org/name
+            /foo/bar/ds.jsonl -> /foo/bar/ds.jsonl
+            ds.jsonl -> ds.jsonl
+        """
+        if not name:
+            return ""
+        key = str(name).strip()
+        # Strip scheme prefix
+        if key.startswith("hf://"):
+            key = key[5:]
+        # Drop split/subset/revision suffixes
+        for sep in (":", "#", "@"):
+            if sep in key:
+                key = key.split(sep, 1)[0]
+        return key.strip("/").lower()
+
+    def _get_filter_config_for_path(self, data_path: str) -> Optional[dict]:
+        """Return the filter config that exactly matches the dataset path/repo."""
+        path_norm = self._normalize_dataset_key(data_path)
+        base_norm = self._normalize_dataset_key(os.path.basename(data_path))
+
+        for filter_config in self.dataset_filters:
+            cfg_name = filter_config.get("name")
+            if not cfg_name:
+                continue
+            cfg_norm = self._normalize_dataset_key(cfg_name)
+            cfg_base_norm = self._normalize_dataset_key(os.path.basename(cfg_name))
+            if cfg_norm and (cfg_norm == path_norm or cfg_norm == base_norm):
+                return filter_config
+            if cfg_base_norm and (cfg_base_norm == path_norm or cfg_base_norm == base_norm):
+                return filter_config
+        return None
+
     # Load data list
     def _load_data_list(self):
         # Support multiple dataset paths separated by '+'
@@ -336,22 +374,16 @@ class CustomDataset(Dataset):
                 self._load_csv_data(data_path)
             else:
                 # Get data list from JSON/JSONL
-                # Find matching filter function for this dataset
+                filter_config = self._get_filter_config_for_path(data_path)
                 filter_fn = None
                 dataset_name = os.path.basename(data_path)
-                for filter_config in self.dataset_filters:
-                    cfg_name = filter_config["name"]
-                    cfg_base = os.path.basename(cfg_name)
-                    if (
-                        cfg_name == data_path
-                        or cfg_base == dataset_name
-                        or dataset_name == cfg_name
-                    ):
-                        filter_fn = filter_config["filter_fn"]
-                        print(
-                            f"  Found filter for dataset '{cfg_name}' (matched on '{dataset_name}')"
-                        )
-                        break
+                if filter_config:
+                    filter_fn = filter_config["filter_fn"]
+                    print(
+                        f"  Found filter for dataset '{filter_config['name']}' (matched '{data_path}')"
+                    )
+                else:
+                    print(f"  No dataset-specific filter configured for '{data_path}'")
 
                 with open(data_path, "r", encoding="utf-8") as f:
                     lines = f.readlines()
@@ -408,24 +440,15 @@ class CustomDataset(Dataset):
             + (f" (subset: {dataset_subset})" if dataset_subset else "")
         )
 
-        # Find matching filter function for this dataset
+        filter_config = self._get_filter_config_for_path(data_path)
         filter_fn = None
-        dataset_name = os.path.basename(data_path)
-        for filter_config in self.dataset_filters:
-            cfg_name = filter_config["name"]
-            cfg_base = os.path.basename(cfg_name)
-            if (
-                cfg_name in data_path
-                or cfg_base in dataset_name
-                or dataset_name in cfg_name
-            ):
-                filter_fn = filter_config["filter_fn"]
-                print(
-                    f"  Found filter for dataset '{cfg_name}' (matched on '{dataset_name}')"
-                )
-                break
-        if filter_fn is None:
-            print(f"  No dataset-specific filter configured for '{dataset_name}'")
+        if filter_config:
+            filter_fn = filter_config["filter_fn"]
+            print(
+                f"  Found filter for dataset '{filter_config['name']}' (matched '{data_path}')"
+            )
+        else:
+            print(f"  No dataset-specific filter configured for '{data_path}'")
 
         try:
             # Load the dataset (supports HF Hub refs via cache or local saved datasets)
@@ -834,24 +857,15 @@ class CustomDataset(Dataset):
 
     def _load_csv_data(self, data_path):
         """Load data from CSV file. Supports multiple CSV formats with proper header mapping."""
-        # Find matching filter function for this dataset
+        filter_config = self._get_filter_config_for_path(data_path)
         filter_fn = None
-        dataset_name = os.path.basename(data_path)
-        for filter_config in self.dataset_filters:
-            cfg_name = filter_config["name"]
-            cfg_base = os.path.basename(cfg_name)
-            if (
-                cfg_name in data_path
-                or cfg_base in dataset_name
-                or dataset_name in cfg_name
-            ):
-                filter_fn = filter_config["filter_fn"]
-                print(
-                    f"  Found filter for dataset '{cfg_name}' (matched on '{dataset_name}')"
-                )
-                break
-        if filter_fn is None:
-            print(f"  No dataset-specific filter configured for '{dataset_name}'")
+        if filter_config:
+            filter_fn = filter_config["filter_fn"]
+            print(
+                f"  Found filter for dataset '{filter_config['name']}' (matched '{data_path}')"
+            )
+        else:
+            print(f"  No dataset-specific filter configured for '{data_path}'")
 
         with open(data_path, "r", encoding="utf-8") as f:
             # Try to detect CSV format by reading first few lines
