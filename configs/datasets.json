@@ -49,7 +49,7 @@
     {
       "name": "mozilla-foundation/common_voice_17_0",
       "subset": "uz",
-      "splits": ["test", "validation"]
+      "splits": ["validation"]
     },
     {
       "name": "DavronSherbaev/uzbekvoice-filtered",
