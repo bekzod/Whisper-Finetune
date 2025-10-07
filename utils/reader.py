@@ -7,8 +7,9 @@ import sys
 import tarfile
 import time
 import warnings
+from dataclasses import dataclass
 from itertools import chain
-from typing import List, Optional
+from typing import Any, List, Optional, Union
 
 import librosa
 import numpy as np
@@ -21,6 +22,17 @@ from tqdm import tqdm
 
 from utils.binary import DatasetReader
 from utils.audio_augmentation import AudioAugmenter, resample
+
+
+@dataclass(slots=True)
+class ManifestEntry:
+    audio_path: str
+    sentence: Optional[str] = None
+    sentences: Optional[Any] = None
+    duration: Optional[float] = None
+    language: Optional[str] = None
+    start_time: Optional[float] = None
+    end_time: Optional[float] = None
 
 
 def rate_limited_request(func, *args, **kwargs):
@@ -258,7 +270,7 @@ class CustomDataset(Dataset):
             self.timestamp_begin = self.vocab["<|notimestamps|>"] + 1
 
         # Python-side materialized entries (CSV/JSONL/etc.)
-        self.data_list: List[dict] = []
+        self.data_list: List[Union[str, ManifestEntry]] = []
         # Lazy HF datasets: store splits to avoid 100s of thousands of Python dicts
         # Each entry: { 'dataset': HFDataset, 'indices': Optional[List[int]], 'name': str }
         self.hf_splits = []
@@ -318,6 +330,121 @@ class CustomDataset(Dataset):
             if cfg_base_norm and (cfg_base_norm == path_norm or cfg_base_norm == base_norm):
                 return filter_config
         return None
+
+    @staticmethod
+    def _coerce_optional_float(value) -> Optional[float]:
+        if value is None:
+            return None
+        try:
+            # Convert bools/ints/strings safely
+            coerced = float(value)
+        except (TypeError, ValueError):
+            return None
+        if np.isnan(coerced):
+            return None
+        return coerced
+
+    @staticmethod
+    def _transcript_length(entry: ManifestEntry) -> int:
+        if entry.sentence:
+            return len(entry.sentence)
+        sentences = entry.sentences
+        if sentences is None:
+            return 0
+        if isinstance(sentences, list):
+            total = 0
+            for segment in sentences:
+                if isinstance(segment, dict):
+                    total += len(str(segment.get("text", "")))
+                else:
+                    total += len(str(segment))
+            return total
+        return len(str(sentences))
+
+    def _validate_entry(self, entry: ManifestEntry) -> bool:
+        if not entry.audio_path:
+            return False
+
+        duration = entry.duration
+        if duration is not None:
+            if duration < self.min_duration:
+                return False
+            if self.max_duration != -1 and duration > self.max_duration:
+                return False
+
+        transcript_len = self._transcript_length(entry)
+        if transcript_len < self.min_sentence or transcript_len > self.max_sentence:
+            return False
+
+        # Require at least one textual source
+        if not entry.sentence and entry.sentences is None:
+            return False
+
+        return True
+
+    def _manifest_from_mapping(self, row: dict) -> Optional[ManifestEntry]:
+        if not isinstance(row, dict):
+            return None
+
+        audio_path = None
+        start_time = None
+        end_time = None
+
+        audio_blob = row.get("audio")
+        if isinstance(audio_blob, dict):
+            audio_path = (
+                audio_blob.get("path")
+                or audio_blob.get("filename")
+                or audio_blob.get("file")
+            )
+            start_time = audio_blob.get("start_time")
+            end_time = audio_blob.get("end_time")
+        elif audio_blob:
+            audio_path = audio_blob
+
+        if not audio_path:
+            for key in ("wav", "audio_path", "filepath", "file", "filename", "path"):
+                candidate = row.get(key)
+                if candidate:
+                    audio_path = candidate
+                    break
+
+        if not audio_path:
+            return None
+
+        sentences = row.get("sentences")
+        sentence = row.get("sentence")
+        if sentence is None:
+            for text_key in ("text", "transcription", "transcript", "label"):
+                if text_key in row and row[text_key]:
+                    sentence = row[text_key]
+                    break
+
+        duration = self._coerce_optional_float(row.get("duration"))
+        if duration is not None and duration < 0:
+            duration = None
+
+        start_time = self._coerce_optional_float(start_time)
+        end_time = self._coerce_optional_float(end_time)
+
+        language = row.get("language")
+
+        normalized_sentence = normalize_text(sentence) if sentence is not None else None
+
+        return ManifestEntry(
+            audio_path=str(audio_path),
+            sentence=normalized_sentence,
+            sentences=sentences,
+            duration=duration,
+            language=language,
+            start_time=start_time,
+            end_time=end_time,
+        )
+
+    def _try_store_manifest(self, row: dict) -> None:
+        entry = self._manifest_from_mapping(row)
+        if entry and self._validate_entry(entry):
+            self.data_list.append(entry)
 
     # Load data list
     def _load_data_list(self):
@@ -431,7 +558,7 @@ class CustomDataset(Dataset):
                     if filter_fn and not filter_fn(line):
                         continue
 
-                    self.data_list.append(line)
+                    self._try_store_manifest(line)
 
     def _load_huggingface_dataset(self, data_path, dataset_subset=None):
         """Load data from a Hugging Face dataset folder."""
@@ -839,7 +966,7 @@ class CustomDataset(Dataset):
                 ):
                     if filter_fn and not filter_fn(item):
                         continue
-                    self._process_item(item, data_entry={})
+                    self._process_item(item)
                     if idx > 0 and idx % batch_size == 0:
                         gc.collect()
             else:
@@ -849,7 +976,7 @@ class CustomDataset(Dataset):
                 ):
                     if filter_fn and not filter_fn(item):
                         continue
-                    self._process_item(item, data_entry={})
+                    self._process_item(item)
 
         except Exception as e:
             print(f"Error loading Hugging Face dataset from {data_path}: {e}")
@@ -987,13 +1114,13 @@ class CustomDataset(Dataset):
                     continue
 
                 # Create line dict in expected format
-                line = {
-                    "audio": {"path": filename},
-                    "sentence": normalize_text(text.strip()),
-                }
+                sentence = normalize_text(text.strip())
+                if not sentence:
+                    continue
 
                 # Try to get audio duration if file exists
                 try:
+                    duration_val = None
                     if os.path.isfile(filename):
                         audio_path = filename
                     else:
@@ -1002,11 +1129,10 @@ class CustomDataset(Dataset):
                         audio_path = os.path.join(csv_dir, filename)
 
                     if os.path.isfile(audio_path):
-                        line["audio"]["path"] = audio_path
                         # FAST: use soundfile.info (no full decode)
                         info = soundfile.info(audio_path)
                         duration = round(info.frames / float(info.samplerate), 2)
-                        line["duration"] = duration
+                        duration_val = duration
                     else:
                         # Skip if audio file not found
                         print(f"Warning: Audio file not found: {filename}")
@@ -1016,73 +1142,66 @@ class CustomDataset(Dataset):
                     print(f"Warning: Could not read audio file {filename}: {e}")
                     continue
 
-                # Apply filtering criteria
-                if "duration" in line:
-                    if line["duration"] < self.min_duration:
-                        continue
-                    if self.max_duration != -1 and line["duration"] > self.max_duration:
-                        continue
-
-                # Check sentence length limits
-                if (
-                    len(line["sentence"]) < self.min_sentence
-                    or len(line["sentence"]) > self.max_sentence
-                ):
-                    continue
+                candidate = {
+                    "audio": {"path": audio_path},
+                    "sentence": sentence,
+                    "duration": duration_val,
+                }
 
                 # Apply custom filter if available for CSV data
-                if filter_fn and not filter_fn(line):
+                if filter_fn and not filter_fn(candidate):
                     continue
 
-                self.data_list.append(line)
+                self._try_store_manifest(candidate)
 
     # Get audio data, sample rate, and text from data list
     def _get_list_data(self, idx):
         if self.data_list_path.endswith(".header"):
-            data_list = self.dataset_reader.get_data(self.data_list[idx])
+            raw_entry = self.dataset_reader.get_data(self.data_list[idx])
+            entry = self._manifest_from_mapping(raw_entry)
         else:
-            data_list = self.data_list[idx]
+            raw_entry = self.data_list[idx]
+            if isinstance(raw_entry, ManifestEntry):
+                entry = raw_entry
+            else:
+                entry = self._manifest_from_mapping(raw_entry)
 
-        # Always load from file path (we avoid decoded arrays for speed/memory)
-        # Split audio path and labels
-        if isinstance(data_list.get("audio"), dict):
-            audio_file = data_list["audio"]["path"]
-        else:
-            audio_file = data_list.get("wav", data_list.get("audio"))
+        if entry is None:
+            raise ValueError(f"Unable to resolve manifest entry at index {idx}")
+
+        audio_file = entry.audio_path
 
         # --------- FAST IO + CHEAP MONO ----------
-        if (
-            isinstance(data_list.get("audio"), dict)
-            and "start_time" in data_list["audio"].keys()
-        ):
-            start_time, end_time = (
-                data_list["audio"]["start_time"],
-                data_list["audio"]["end_time"],
-            )
-            # Split and read audio (ensure 2D)
+        if entry.start_time is not None and entry.end_time is not None:
             sample, sample_rate = self.slice_from_file(
-                audio_file, start=start_time, end=end_time
-            )  # shape: (N, C)
+                audio_file, start=entry.start_time, end=entry.end_time
+            )
         else:
-            # Read as (frames, channels) without decoding twice
             sample, sample_rate = soundfile.read(
                 audio_file, dtype="float32", always_2d=True
-            )  # shape: (N, C)
+            )
 
-        # Handle transcript extraction with fallback to 'text' column
         if self.timestamps:
-            transcript = data_list.get("sentences", data_list.get("text", ""))
+            transcript = entry.sentences if entry.sentences is not None else entry.sentence or ""
         else:
-            # Try 'sentence' first, then fall back to 'text'
-            transcript = data_list.get("sentence", data_list.get("text", ""))
+            transcript = entry.sentence or ""
+            if not transcript and entry.sentences is not None:
+                if isinstance(entry.sentences, list):
+                    pieces = []
+                    for seg in entry.sentences:
+                        if isinstance(seg, dict):
+                            pieces.append(normalize_text(seg.get("text", "")))
+                        else:
+                            pieces.append(normalize_text(str(seg)))
+                    transcript = " ".join(filter(None, pieces)).strip()
+                else:
+                    transcript = normalize_text(str(entry.sentences))
+            else:
+                transcript = normalize_text(transcript)
 
-        # Normalize text to use uniform apostrophe characters
-        transcript = normalize_text(transcript)
-
-        language = data_list["language"] if "language" in data_list.keys() else None
+        language = entry.language
 
         # Convert to mono channel cheaply
-        # sample shape is (N, C). If mono requested and C>1, average channels.
         if self.mono:
             if sample.ndim == 2:
                 if sample.shape[1] > 1:
@@ -1092,13 +1211,10 @@ class CustomDataset(Dataset):
             else:
                 sample = sample.astype(np.float32)
         else:
-            # keep multi-channel by flattening last dim if needed
             if sample.ndim == 2 and sample.shape[1] == 1:
                 sample = sample[:, 0].astype(np.float32)
 
-        # ------------------------------
         # Example A: remove silence for non-timestamp training
-        # ------------------------------
         if not self.timestamps:
             sample = remove_silence_librosa(
                 sample,
@@ -1108,11 +1224,9 @@ class CustomDataset(Dataset):
                 pad_ms=self.silence_pad_ms,
             )
 
-        # Data augmentation (after silence removal)
         if self.augmenter:
             sample, sample_rate = self.augment(sample, sample_rate)
 
-        # Resample - only downsample to 16000 when original sample rate is higher than 16000
         if sample_rate > 16000:
             sample = resample(sample, orig_sr=sample_rate, target_sr=16000)
             sample_rate = 16000
@@ -1150,38 +1264,37 @@ class CustomDataset(Dataset):
         data["labels"] = labels + [self.endoftext]
         return data
 
-    def _process_item(self, item, data_entry):
+    def _process_item(self, item):
         """Helper method to process a single dataset item."""
         try:
-            # Handle audio data - HF datasets often have 'audio' column with dict
-            if "audio" in item:
-                audio_data = item["audio"]
-                if isinstance(audio_data, dict):
-                    # Standard HF audio format
-                    if "path" in audio_data:
-                        data_entry["wav"] = audio_data["path"]
-                    elif "filename" in audio_data:
-                        data_entry["wav"] = audio_data["filename"]
+            audio_path = None
+            start_time = None
+            end_time = None
 
-                    # Get sample rate if available (not used here, we always read from disk)
-                    if "sampling_rate" in audio_data:
-                        pass
-                else:
-                    # Audio might be a path string
-                    data_entry["wav"] = str(audio_data)
+            audio_data = item.get("audio")
+            if isinstance(audio_data, dict):
+                audio_path = (
+                    audio_data.get("path")
+                    or audio_data.get("filename")
+                    or audio_data.get("file")
+                )
+                start_time = audio_data.get("start_time")
+                end_time = audio_data.get("end_time")
+            elif audio_data:
+                audio_path = audio_data
 
-            # Alternative audio column names
-            elif "audio_path" in item:
-                data_entry["wav"] = item["audio_path"]
-            elif "file" in item:
-                data_entry["wav"] = item["file"]
-            elif "filename" in item:
-                data_entry["wav"] = item["filename"]
-            elif "path" in item:
-                data_entry["wav"] = item["path"]
+            if not audio_path:
+                for alt_key in ("audio_path", "file", "filename", "path", "wav"):
+                    alt_value = item.get(alt_key)
+                    if alt_value:
+                        audio_path = alt_value
+                        break
 
-            # Handle transcription/text
-            text = None
+            if not audio_path:
+                return
+
+            sentences = item.get("sentences")
+            text_value = None
             for text_key in [
                 "transcription",
                 "text",
@@ -1190,41 +1303,28 @@ class CustomDataset(Dataset):
                 "label",
             ]:
                 if text_key in item:
-                    text = item[text_key]
-                    break
+                    candidate_value = item[text_key]
+                    if isinstance(candidate_value, str):
+                        text_value = candidate_value
+                        break
+                    if sentences is None and candidate_value is not None:
+                        sentences = candidate_value
 
-            if text:
-                data_entry["sentence"] = normalize_text(text)
+            audio_dict = {"path": str(audio_path)}
+            if start_time is not None:
+                audio_dict["start_time"] = start_time
+            if end_time is not None:
+                audio_dict["end_time"] = end_time
 
-            # Get or set duration if possible
-            if "duration" in item:
-                data_entry["duration"] = item["duration"]
-            else:
-                data_entry["duration"] = -1  # unknown; compute later if needed
+            candidate = {
+                "audio": audio_dict,
+                "sentence": text_value,
+                "sentences": sentences,
+                "duration": item.get("duration"),
+                "language": item.get("language"),
+            }
 
-            # Skip if we don't have both audio and text
-            if "wav" not in data_entry:
-                return
-            if "sentence" not in data_entry:
-                return
-
-            # Apply duration filters if duration is known
-            if data_entry["duration"] != -1:
-                if data_entry["duration"] < self.min_duration:
-                    return
-                if (
-                    self.max_duration != -1
-                    and data_entry["duration"] > self.max_duration
-                ):
-                    return
-
-            # Apply sentence length filters
-            if len(data_entry["sentence"]) < self.min_sentence:
-                return
-            if len(data_entry["sentence"]) > self.max_sentence:
-                return
-
-            self.data_list.append(data_entry)
+            self._try_store_manifest(candidate)
 
         except Exception as e:
             print(f"Error processing item: {e}")
