@@ -9,6 +9,26 @@
       "splits": ["train"]
     },
     {
+      "name": "islomov/podcasts_tashkent_dialect_youtube_uzbek_speech_dataset",
+      "splits": ["train"]
+    },
+    {
+      "name": "IbratDO/uzbekvoice-1K",
+      "splits": ["train"]
+    },
+    {
+      "name": "CrazyMathematician/uzbek_voice_cleaned",
+      "splits": ["train"]
+    },
+    {
+      "name": "IbratDO/uzbekvoice-2k-each-accent",
+      "splits": ["train"]
+    },
+    {
+      "name": "islomov/news_youtube_uzbek_speech_dataset",
+      "splits": ["train"]
+    },
+    {
       "name": "google/fleurs",
       "subset": "uz_uz",
       "splits": ["train", "test"]
@@ -44,6 +64,10 @@
     }
   ],
   "eval": [
+    {
+      "name": "IbratDO/uzbekvoice-1K",
+      "splits": ["test"]
+    },
     {
       "name": "google/fleurs",
       "subset": "uz_uz",
