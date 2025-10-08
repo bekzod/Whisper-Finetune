@@ -24,91 +24,103 @@ def remove_punctuation(text: str or List[str]):
 
 @dataclass
 class DataCollatorSpeechSeq2SeqWithPadding:
-    processor: Any
-    pad_to_multiple_of: Optional[int] = 8  # good for tensor cores (bf16)
+    processor: Any  # e.g., WhisperProcessor
+    label_pad_token_id: int = -100
+    remove_bos_token: bool = True
+    pad_to_multiple_of: Optional[int] = None  # e.g., 8/16 for better perf
+    audio_key: str = "input_features"  # sometimes "input_values"
+    labels_key: str = "labels"  # or "label_ids"
 
-    def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
-        # 1) audio features -> batch pad with feature_extractor
-        # Accept either precomputed "input_features" or raw "audio" dicts
-        if "input_features" in features[0]:
-            input_features = [f["input_features"] for f in features]
-            # Avoid slow torch.tensor(list_of_ndarrays); use NumPy stacking or torch.stack directly
-            first = input_features[0]
-            if torch.is_tensor(first):
-                batch = {"input_features": torch.stack(input_features, dim=0)}
-                # infer full-ones attention mask since features are precomputed/padded
-                B, _, T = batch["input_features"].shape
-                batch["attention_mask"] = torch.ones((B, T), dtype=torch.long)
+    def __call__(
+        self, features: List[Dict[str, Union[List[int], torch.Tensor]]]
+    ) -> Dict[str, torch.Tensor]:
+        # ---- 1) AUDIO ----
+        # Be resilient to datasets that wrap features as [tensor] vs tensor
+        def _extract_audio(feat):
+            x = feat[self.audio_key]
+            # Many HF datasets store as list/array of length 1
+            if isinstance(x, (list, tuple)) and len(x) == 1:
+                return x[0]
+            return x
+
+        input_features = [{self.audio_key: _extract_audio(f)} for f in features]
+
+        # Return attention mask so the model can ignore padded frames
+        batch = self.processor.feature_extractor.pad(
+            input_features, return_tensors="pt", padding=True
+        )
+        # Some feature extractors use "attention_mask" for audio, otherwise add one if missing
+        if "attention_mask" not in batch:
+            # Create mask of 1s where frames exist (non-zero length along time axis).
+            # We assume shape (B, C, T) or (B, T, F); safest is: mask by nonzero across feature dim.
+            feats = batch[self.audio_key]
+            # Reduce across non-time dims to detect non-padded frames
+            # (handles both (B, T, F) and (B, C, T) layouts by summing abs values)
+            if feats.dim() == 3:
+                # Heuristic: treat last dim as feature dim when two spatial dims exist
+                reduce_dim = -1
+                amask = (feats.abs().sum(dim=reduce_dim) != 0).to(torch.long)
             else:
-                try:
-                    if hasattr(first, "shape"):
-                        # numpy-like arrays
-                        np_batch = np.stack(input_features, axis=0).astype(
-                            np.float32, copy=False
-                        )
-                    else:
-                        # lists/tuples of floats
-                        np_batch = np.asarray(input_features, dtype=np.float32)
-                        if np_batch.dtype == object:
-                            raise ValueError(
-                                "Ragged input_features detected (dtype=object). Ensure equal shapes or provide raw 'audio' for vectorized padding."
-                            )
-                    batch = {"input_features": torch.from_numpy(np_batch)}
-                    B, _, T = batch["input_features"].shape
-                    batch["attention_mask"] = torch.ones((B, T), dtype=torch.long)
-                except Exception as e:
-                    raise ValueError(
-                        f"Failed to batch input_features; ensure all feature arrays share the same shape. Original error: {e}"
-                    )
-        else:
-            # Expect something like {"audio": {"array": np.ndarray, "sampling_rate": 16000}}
-            audio_inputs = [f["audio"] for f in features]
-            fe = self.processor.feature_extractor(
-                [a["array"] for a in audio_inputs],
-                sampling_rate=audio_inputs[0]["sampling_rate"],
-                return_tensors="pt",
-                return_attention_mask=True,
-                padding=True,  # batched pad (vectorized)
-                pad_to_multiple_of=self.pad_to_multiple_of,
-            )
-            batch = {
-                "input_features": fe.input_features,
-                "attention_mask": fe.attention_mask,
-            }
+                # Fallback: ones mask
+                amask = torch.ones(feats.shape[0], feats.shape[-1], dtype=torch.long)
+            batch["attention_mask"] = amask
 
-        # 2) labels -> prefer raw text if available; else fall back to ids
-        if "text" in features[0]:
-            texts = [f["text"] for f in features]
-            tok = self.processor.tokenizer(  # __call__ fast path
-                texts,
-                padding=True,  # vectorized padding
-                truncation=True,
-                max_length=int(
-                    min(
-                        448,
-                        getattr(self.processor.tokenizer, "model_max_length", 448)
-                        or 448,
-                    )
-                ),
-                return_tensors="pt",
-            )
-            labels = tok.input_ids
-        else:
-            # fallback if dataset already stored token ids (slower, but supported)
-            label_features = [{"input_ids": f["labels"]} for f in features]
-            tok = self.processor.tokenizer.pad(
-                label_features,
-                padding=True,
-                pad_to_multiple_of=self.pad_to_multiple_of,
-                return_tensors="pt",
-            )
-            labels = tok["input_ids"]
+        # ---- 2) LABELS ----
+        # Accept either `labels` or `label_ids` and normalize to a python list per sample
+        def _extract_labels(feat):
+            raw = feat.get(self.labels_key, feat.get("label_ids", None))
+            if raw is None:
+                raise KeyError(
+                    f"Missing '{self.labels_key}' (or 'label_ids') in features."
+                )
+            # Convert to list[int]
+            if isinstance(raw, torch.Tensor):
+                return raw.tolist()
+            return list(raw)
 
-        # HF expects -100 for ignored positions in labels
-        labels[labels == self.processor.tokenizer.pad_token_id] = -100
+        label_seqs: List[List[int]] = [_extract_labels(f) for f in features]
+
+        # Optionally strip a leading BOS on a PER-SEQUENCE basis BEFORE padding
+        if (
+            self.remove_bos_token
+            and getattr(self.processor.tokenizer, "bos_token_id", None) is not None
+        ):
+            bos_id = self.processor.tokenizer.bos_token_id
+            label_seqs = [
+                seq[1:] if len(seq) > 0 and seq[0] == bos_id else seq
+                for seq in label_seqs
+            ]
+
+        # Tokenizer pad to the longest in the batch (optionally to a multiple for speed)
+        labels_batch = self.processor.tokenizer.pad(
+            {"input_ids": label_seqs},
+            padding=True,
+            return_tensors="pt",
+            pad_to_multiple_of=self.pad_to_multiple_of,
+        )
+
+        # Replace tokenizer pad with ignore index for CE loss
+        labels = labels_batch["input_ids"]
+        if "attention_mask" in labels_batch:
+            labels = labels.masked_fill(
+                labels_batch["attention_mask"].ne(1), self.label_pad_token_id
+            )
+        else:
+            # Fallback: assume tokenizer pad token id
+            pad_id = getattr(self.processor.tokenizer, "pad_token_id", None)
+            if pad_id is None:
+                raise ValueError(
+                    "Tokenizer has no pad_token_id and no labels attention_mask was returned."
+                )
+            labels = torch.where(
+                labels == pad_id,
+                torch.full_like(labels, self.label_pad_token_id),
+                labels,
+            )
+
+        # Ensure correct dtype for CE loss
+        if labels.dtype != torch.long:
+            labels = labels.to(torch.long)
+
         batch["labels"] = labels
-
-        # Optional: decoder prompt for multilingual tasks (kept lean)
-        # Trainer/compute_metrics already manages forced_decoder_ids; nothing here.
-
         return batch
