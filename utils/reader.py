@@ -228,6 +228,8 @@ class CustomDataset(Dataset):
         # Lazy HF datasets: store splits to avoid 100s of thousands of Python dicts
         # Each entry: { 'dataset': HFDataset, 'indices': Optional[List[int]], 'name': str }
         self.hf_splits = []
+        # Track loaded audio files for Common Voice to prevent duplicates across splits
+        self._common_voice_loaded_files: Set[str] = set()
         self._load_data_list()
 
         # Summary logging to make filtering effects obvious
@@ -764,6 +766,7 @@ class CustomDataset(Dataset):
 
                     # Create a generator for Common Voice TSV files to avoid loading all in memory
                     def common_voice_generator():
+                        duplicates_skipped = 0
                         subset_aliases = {
                             "validation": ["validated"],
                             "validated": ["validation"],
@@ -908,15 +911,32 @@ class CustomDataset(Dataset):
                                     transcription = parts[sentence_idx]
                                     resolved_path = _resolve_audio_path(audio_filename)
                                     if resolved_path:
-                                        yield {
-                                            "audio": {"path": resolved_path},
-                                            "text": transcription,
-                                        }
+                                        # Check if this file has already been loaded (deduplication)
+                                        file_key = f"{resolved_path}:{transcription}"
+                                        if (
+                                            file_key
+                                            not in self._common_voice_loaded_files
+                                        ):
+                                            self._common_voice_loaded_files.add(
+                                                file_key
+                                            )
+                                            yield {
+                                                "audio": {"path": resolved_path},
+                                                "text": transcription,
+                                            }
+                                        else:
+                                            duplicates_skipped += 1
                                     elif audio_filename not in missing_logged:
                                         print(
                                             f"  Warning: audio file '{audio_filename}' not found under {audio_dir_abs}"
                                         )
                                         missing_logged.add(audio_filename)
+
+                        # Log duplicate statistics if any were skipped
+                        if duplicates_skipped > 0:
+                            print(
+                                f"  Skipped {duplicates_skipped} duplicate entries from Common Voice dataset"
+                            )
 
                     # Use the generator instead of a list
                     dataset = common_voice_generator()
