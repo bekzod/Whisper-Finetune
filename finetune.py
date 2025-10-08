@@ -209,7 +209,7 @@ add_arg(
 add_arg(
     "generation_max_length",
     type=int,
-    default=225,
+    default=228,
     help="Maximum length for generation during evaluation",
 )
 
@@ -426,7 +426,9 @@ class LayerwiseEncoderUnfreezeCallback(TrainerCallback):
         if total_groups > 0:
             approx_warmup_epochs = self.warmup_steps / self.steps_per_epoch
             if getattr(args, "local_rank", -1) in (-1, 0):
-                final_step = self.thresholds[-1] if self.thresholds else self.warmup_steps
+                final_step = (
+                    self.thresholds[-1] if self.thresholds else self.warmup_steps
+                )
                 print(
                     f"🪜 Layer-wise encoder unfreeze schedule: {total_groups} group(s), "
                     f"warmup ≈{approx_warmup_epochs:.2f} epoch(s), "
