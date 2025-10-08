@@ -101,8 +101,8 @@ def normalize_text(text):
     # Keep only alphabetical characters, comma, dot, apostrophe, and spaces
     import re
 
-    # This regex keeps Latin & Cyrillic letters, spaces, comma, dot, apostrophe
-    normalized = re.sub(r"[^a-zA-ZА-Яа-яЎўҚқҒғҲҳ0-9\s,.']+", "", normalized)
+    # This regex keeps Latin & Cyrillic letters, spaces, comma, dot, apostrophe, dash
+    normalized = re.sub(r"[^a-zA-ZА-Яа-яЎўҚқҒғҲҳ0-9\s,.'-]+", "", normalized)
 
     # Clean up multiple spaces
     normalized = re.sub(r"\s+", " ", normalized).strip()
