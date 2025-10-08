@@ -1507,7 +1507,9 @@ class CustomDataset(Dataset):
                             sample_rate = int(
                                 audio_data.get("sampling_rate", self.sample_rate)
                             )
+                            # Don't try to extract audio_file if we already have the sample
                         else:
+                            # No array present, extract path
                             audio_file = (
                                 audio_data.get("path")
                                 or audio_data.get("filename")
@@ -1515,24 +1517,44 @@ class CustomDataset(Dataset):
                             )
                     else:
                         audio_file = str(audio_data)
-                elif "audio_path" in item:
-                    audio_file = item["audio_path"]
-                elif "file" in item:
-                    audio_file = item["file"]
-                elif "filename" in item:
-                    audio_file = item["filename"]
-                elif "path" in item:
-                    # Make sure we extract string path, not a dict
-                    path_val = item["path"]
-                    if isinstance(path_val, dict):
-                        # If path is a dict, try to extract the actual path string
-                        audio_file = (
-                            path_val.get("path")
-                            or path_val.get("filename")
-                            or path_val.get("file")
-                        )
-                    else:
-                        audio_file = path_val
+
+                # Only check other fields if we don't have a sample yet
+                if sample is None and audio_file is None:
+                    if "audio_path" in item:
+                        audio_file = item["audio_path"]
+                    elif "file" in item:
+                        audio_file = item["file"]
+                    elif "filename" in item:
+                        audio_file = item["filename"]
+                    elif "path" in item:
+                        # Make sure we extract string path, not a dict
+                        path_val = item["path"]
+                        if isinstance(path_val, dict):
+                            # Check if this is actually an audio dict with array
+                            if "array" in path_val and isinstance(
+                                path_val["array"], np.ndarray
+                            ):
+                                # This is a mislabeled audio dict, process it as such
+                                arr = path_val["array"]
+                                if arr.dtype != np.float32:
+                                    arr = arr.astype(np.float32)
+                                if arr.ndim == 2 and arr.shape[1] > 1 and self.mono:
+                                    arr = arr.mean(axis=1).astype(np.float32)
+                                if arr.ndim == 2 and arr.shape[1] == 1:
+                                    arr = arr[:, 0].astype(np.float32)
+                                sample = arr
+                                sample_rate = int(
+                                    path_val.get("sampling_rate", self.sample_rate)
+                                )
+                            else:
+                                # If path is a dict without array, try to extract the actual path string
+                                audio_file = (
+                                    path_val.get("path")
+                                    or path_val.get("filename")
+                                    or path_val.get("file")
+                                )
+                        else:
+                            audio_file = path_val
 
                 # Transcript selection
                 if self.timestamps:
@@ -1560,9 +1582,18 @@ class CustomDataset(Dataset):
                     # Ensure audio_file is a string path, not a dict
                     if isinstance(audio_file, dict):
                         raise ValueError(f"Invalid file: {audio_file}")
-                    sample, sample_rate = soundfile.read(
-                        audio_file, dtype="float32", always_2d=True
-                    )
+                    if not isinstance(audio_file, str):
+                        audio_file = str(audio_file)
+
+                    try:
+                        sample, sample_rate = soundfile.read(
+                            audio_file, dtype="float32", always_2d=True
+                        )
+                    except Exception as e:
+                        # Log the actual error for debugging
+                        raise ValueError(
+                            f"Error reading audio file '{audio_file}': {e}"
+                        )
 
             # Can set language for individual data
             self.processor.tokenizer.set_prefix_tokens(
