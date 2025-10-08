@@ -11,7 +11,12 @@ export CUDA_DEVICE_MAX_CONNECTIONS=1
 export CUDA_VISIBLE_DEVICES=0,1
 export WANDB_API_KEY='2dfc22d8af7805df156e7f31ea3bc090ec99d52e'
 export RAYON_NUM_THREADS=1
-# export TOKENIZERS_PARALLELISM=false
+export TOKENIZERS_PARALLELISM=false
+export ATEN_ALLOW_TF32=1
+export TORCH_ALLOW_TF32_CUBLAS=1
+export TORCH_ALLOW_TF32_CUDNN=1
+export CUFFT_ALLOW_TF32=1
+export NCCL_NVLS_ENABLE=1
 
 # Diagnostics / stability
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
@@ -23,9 +28,9 @@ accelerate launch --multi_gpu --config_file ./configs/accelerate.yaml finetune.p
   --base_model ../models/whisper-large-v3 \
   --output_dir ../models/output-full-finetune \
   --num_train_epochs 6 \
-  --per_device_train_batch_size 40 \
-  --per_device_eval_batch_size 64 \
-  --gradient_accumulation_steps 2 \
+  --per_device_train_batch_size 64 \
+  --per_device_eval_batch_size 128 \
+  --gradient_accumulation_steps 1 \
   --freeze_encoder_epochs 1 \
   --unfreeze_finish_ratio 0.5 \
   --learning_rate 1e-5 \

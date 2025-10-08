@@ -4,10 +4,16 @@ export HUGGINGFACE_HUB_CACHE=$HF_HOME/hub
 export HF_DATASETS_CACHE=$HF_HOME/datasets
 
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export CUDA_DEVICE_MAX_CONNECTIONS=1
 export CUDA_VISIBLE_DEVICES=0,1
 export WANDB_API_KEY='2dfc22d8af7805df156e7f31ea3bc090ec99d52e'
 export TOKENIZERS_PARALLELISM=false
 export RAYON_NUM_THREADS=1
+export ATEN_ALLOW_TF32=1
+export TORCH_ALLOW_TF32_CUBLAS=1
+export TORCH_ALLOW_TF32_CUDNN=1
+export CUFFT_ALLOW_TF32=1
+export NCCL_NVLS_ENABLE=1
 
 # Diagnostics / stability
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
@@ -26,8 +32,8 @@ accelerate launch --multi_gpu --config_file ./configs/accelerate.yaml finetune.p
   --base_model ../models/whisper-large-v3 \
   --output_dir ../models/output \
   --num_train_epochs 8 \
-  --per_device_train_batch_size 60 \
-  --per_device_eval_batch_size 128 \
+  --per_device_train_batch_size 80 \
+  --per_device_eval_batch_size 192 \
   --gradient_accumulation_steps 1 \
   --learning_rate 1e-3 \
   --warmup_ratio 0.15 \
