@@ -209,7 +209,7 @@ add_arg(
 add_arg(
     "generation_max_length",
     type=int,
-    default=228,
+    default=225,
     help="Maximum length for generation during evaluation",
 )
 
