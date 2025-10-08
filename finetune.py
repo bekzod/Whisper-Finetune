@@ -682,7 +682,7 @@ def main():
 
     # TRAIN: keep decoder free; EVAL/GEN: force language/task prompt
     eval_forced_decoder_ids = processor.get_decoder_prompt_ids(
-        language=args.language, task=args.task
+        language="uz", task=args.task
     )
     model.config.forced_decoder_ids = None  # training
     model.generation_config.forced_decoder_ids = eval_forced_decoder_ids  # eval
