@@ -66,13 +66,30 @@ class DataCollatorSpeechSeq2SeqWithPadding:
             batch["attention_mask"] = amask
 
         # ---- 2) LABELS ----
-        # Accept either `labels` or `label_ids` and normalize to a python list per sample
+        # Accept either `labels` or `label_ids` and normalize to a python list per sample.
+        # If neither is present, fall back to tokenizing raw text (common for training).
         def _extract_labels(feat):
             raw = feat.get(self.labels_key, feat.get("label_ids", None))
             if raw is None:
-                raise KeyError(
-                    f"Missing '{self.labels_key}' (or 'label_ids') in features."
+                text_value = feat.get("text")
+                if text_value is None:
+                    raise KeyError(
+                        f"Missing '{self.labels_key}' (or 'label_ids') in features."
+                    )
+
+                if isinstance(text_value, list):
+                    # Join list of segments into a single string for tokenization
+                    text_value = " ".join(str(t) for t in text_value if t)
+                else:
+                    text_value = str(text_value)
+
+                tokenized = self.processor.tokenizer(
+                    text_value,
+                    add_special_tokens=True,
+                    return_attention_mask=False,
                 )
+                raw = tokenized["input_ids"]
+
             # Convert to list[int]
             if isinstance(raw, torch.Tensor):
                 return raw.tolist()
