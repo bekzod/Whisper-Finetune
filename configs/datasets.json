@@ -5,6 +5,10 @@
       "splits": ["train"]
     },
     {
+      "name": "islomov/it_youtube_uzbek_speech_dataset",
+      "splits": ["train"]
+    },
+    {
       "name": "google/fleurs",
       "subset": "uz_uz",
       "splits": ["train", "test"]
