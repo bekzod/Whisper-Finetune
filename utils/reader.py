@@ -654,40 +654,112 @@ class CustomDataset(Dataset):
 
                     # Create a generator for TSV files to avoid loading all in memory
                     def fleurs_generator():
+                        # Determine which TSV splits to process
                         if dataset_subset:
-                            tsv_file = os.path.join(data_dir, f"{dataset_subset}.tsv")
-                            if os.path.exists(tsv_file):
-                                print(f"  Processing TSV file: {tsv_file}")
-                                with open(tsv_file, "r", encoding="utf-8") as f:
-                                    # Skip header if present
-                                    next(f, None)  # Skip header line
-                                    for line in f:  # Process line by line
-                                        parts = line.strip().split("\t")
-                                        if len(parts) >= 3:
-                                            # Format: id, filename, transcription
-                                            audio_filename = parts[1]
-                                            transcription = parts[2]
+                            base = str(dataset_subset).strip().lower()
+                            split_candidates = [base]
+                            # Allow common aliasing between "dev" and "validation"
+                            if base == "dev" and "validation" not in split_candidates:
+                                split_candidates.append("validation")
+                            if base == "validation" and "dev" not in split_candidates:
+                                split_candidates.append("dev")
+                        else:
+                            # No split specified: iterate common splits
+                            split_candidates = ["train", "validation", "test"]
 
-                                            # Find the audio file in extracted directories
-                                            audio_path = None
-                                            for subdir in [
-                                                "train",
-                                                "test",
-                                                "dev",
-                                                "validation",
-                                            ]:
-                                                potential_path = os.path.join(
-                                                    audio_dir, subdir, audio_filename
-                                                )
-                                                if os.path.exists(potential_path):
-                                                    audio_path = potential_path
-                                                    break
+                        # Build a recursive index of audio files inside extracted tar folders and split subdirs
+                        path_index: Dict[str, str] = {}
+                        noext_index: Dict[str, str] = {}
+                        for root, _, files in os.walk(audio_dir):
+                            for fn in files:
+                                if fn.lower().endswith(
+                                    (".wav", ".mp3", ".flac", ".m4a", ".ogg")
+                                ):
+                                    full_path = os.path.join(root, fn)
+                                    # index by exact filename
+                                    path_index[fn] = full_path
+                                    # also index by name without extension
+                                    base_no_ext, _ = os.path.splitext(fn)
+                                    noext_index.setdefault(base_no_ext, full_path)
 
-                                            if audio_path:
-                                                yield {
-                                                    "audio": {"path": audio_path},
-                                                    "text": transcription,
-                                                }
+                        def resolve_audio(filename: str) -> Optional[str]:
+                            if not filename:
+                                return None
+                            normalized = str(filename).strip().replace("\\", os.sep)
+
+                            # Try direct relative path under audio_dir
+                            direct = os.path.join(audio_dir, normalized)
+                            if os.path.exists(direct):
+                                return direct
+
+                            # Try basename match in recursive index
+                            base = os.path.basename(normalized)
+                            if base in path_index:
+                                return path_index[base]
+
+                            # Try without extension variants
+                            base_no_ext, ext = os.path.splitext(base)
+                            if not ext:
+                                # try common suffixes
+                                for suf in (".wav", ".mp3", ".flac", ".m4a", ".ogg"):
+                                    cand = base_no_ext + suf
+                                    if cand in path_index:
+                                        return path_index[cand]
+                            # fallback: noext index
+                            if base_no_ext in noext_index:
+                                return noext_index[base_no_ext]
+
+                            return None
+
+                        for split in split_candidates:
+                            tsv_file = os.path.join(data_dir, f"{split}.tsv")
+                            if not os.path.exists(tsv_file):
+                                continue
+                            print(f"  Processing TSV file: {tsv_file}")
+                            with open(tsv_file, "r", encoding="utf-8") as f:
+                                header_line = next(f, None)
+                                audio_idx = 1
+                                text_idx = 2
+                                if header_line:
+                                    header = header_line.strip().split("\t")
+                                    # Robustly detect audio filename column
+                                    for c in (
+                                        "path",
+                                        "filename",
+                                        "file",
+                                        "audio",
+                                        "audio_filename",
+                                    ):
+                                        if c in header:
+                                            audio_idx = header.index(c)
+                                            break
+                                    # Robustly detect text/transcription column
+                                    for c in (
+                                        "text",
+                                        "transcription",
+                                        "sentence",
+                                        "transcript",
+                                        "raw_transcription",
+                                        "normalized_text",
+                                        "raw_text",
+                                    ):
+                                        if c in header:
+                                            text_idx = header.index(c)
+                                            break
+                                # Process rows
+                                for line in f:
+                                    parts = line.strip().split("\t")
+                                    if len(parts) <= max(audio_idx, text_idx):
+                                        continue
+                                    audio_filename = parts[audio_idx]
+                                    transcription = parts[text_idx]
+
+                                    audio_path = resolve_audio(audio_filename)
+                                    if audio_path:
+                                        yield {
+                                            "audio": {"path": audio_path},
+                                            "text": transcription,
+                                        }
 
                     # Use the generator instead of a list
                     dataset = fleurs_generator()
@@ -840,17 +912,24 @@ class CustomDataset(Dataset):
                                 return None
 
                             normalized = filename.strip().replace("\\", os.sep)
-                            if not os.path.splitext(normalized)[1]:
-                                normalized = f"{normalized}.mp3"
+                            has_ext = bool(os.path.splitext(normalized)[1])
+                            exts = [".mp3", ".wav", ".flac", ".ogg", ".m4a"]
 
                             cached = path_cache.get(normalized)
                             if cached is not None:
                                 return cached
 
-                            candidates = [normalized]
+                            candidates = []
+                            names = [normalized]
                             base_name = os.path.basename(normalized)
                             if base_name != normalized:
-                                candidates.append(base_name)
+                                names.append(base_name)
+                            if has_ext:
+                                candidates.extend(names)
+                            else:
+                                for nm in names:
+                                    for e in exts:
+                                        candidates.append(f"{nm}{e}")
 
                             resolved = None
                             for name in candidates:
@@ -907,21 +986,36 @@ class CustomDataset(Dataset):
                                 if not header_line:
                                     continue
                                 header = header_line.strip().split("\t")
-                                path_idx = (
-                                    header.index("path") if "path" in header else 0
-                                )
-                                sentence_idx = (
-                                    header.index("sentence")
-                                    if "sentence" in header
-                                    else 2
-                                )
+                                path_idx = 0
+                                text_idx = 2
+                                for c in (
+                                    "path",
+                                    "audio",
+                                    "audio_filename",
+                                    "filename",
+                                    "file",
+                                ):
+                                    if c in header:
+                                        path_idx = header.index(c)
+                                        break
+                                for c in (
+                                    "sentence",
+                                    "text",
+                                    "transcription",
+                                    "transcript",
+                                    "normalized_text",
+                                    "raw_text",
+                                ):
+                                    if c in header:
+                                        text_idx = header.index(c)
+                                        break
 
                                 for line in f:
                                     parts = line.strip().split("\t")
-                                    if len(parts) <= max(path_idx, sentence_idx):
+                                    if len(parts) <= max(path_idx, text_idx):
                                         continue
                                     audio_filename = parts[path_idx]
-                                    transcription = parts[sentence_idx]
+                                    transcription = parts[text_idx]
                                     resolved_path = _resolve_audio_path(audio_filename)
                                     if resolved_path:
                                         yield {
