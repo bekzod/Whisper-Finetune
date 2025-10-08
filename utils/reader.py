@@ -1583,7 +1583,7 @@ class CustomDataset(Dataset):
                         feats = feats[0]
                     elif (
                         hasattr(feats, "shape")
-                        and getattr(feets, "shape", [None])[0] == 1
+                        and getattr(feats, "shape", [None])[0] == 1
                     ):
                         feats = feats[0]
 
