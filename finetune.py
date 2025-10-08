@@ -258,7 +258,7 @@ add_arg(
 add_arg(
     "check_label_keep_ratio",
     type=bool,
-    default=True,
+    default=False,
     help="Whether to check label retention ratio during data loading",
 )
 
