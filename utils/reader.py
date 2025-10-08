@@ -228,6 +228,10 @@ class CustomDataset(Dataset):
         # Lazy HF datasets: store splits to avoid 100s of thousands of Python dicts
         # Each entry: { 'dataset': HFDataset, 'indices': Optional[List[int]], 'name': str }
         self.hf_splits = []
+
+        # Label tracking for debugging TSV/dataset issues
+        self._dataset_label_counts = {}
+        self._label_examples = {}
         self._load_data_list()
 
         # Summary logging to make filtering effects obvious
@@ -238,6 +242,24 @@ class CustomDataset(Dataset):
             print(
                 f"📊 Dataset loaded: materialized={materialized}, hf_splits={lazy_splits}, total={total}"
             )
+
+            # Print summary of label examples collected during loading
+            if self._dataset_label_counts:
+                print("📝 Label examples summary:")
+                for dataset_key, count in self._dataset_label_counts.items():
+                    examples = self._label_examples.get(dataset_key, [])
+                    print(f"   Dataset '{dataset_key}': {count} total entries")
+                    for i, example in enumerate(examples, 1):
+                        print(
+                            f"     Example {i}: chars={example['char_length']}, tokens={example['token_length']}"
+                        )
+                        if example["char_length"] > 1000 or (
+                            isinstance(example["token_length"], int)
+                            and example["token_length"] > 400
+                        ):
+                            print(
+                                f"       ⚠️  This example is very long - check TSV parsing!"
+                            )
         except Exception:
             pass
 
@@ -353,6 +375,30 @@ class CustomDataset(Dataset):
         if not entry.sentence and entry.sentences is None:
             return False
 
+        # Check token length to prevent long sequences from causing training errors
+        if self.processor and entry.sentence:
+            try:
+                tokens = self.processor.tokenizer.encode(
+                    entry.sentence, add_special_tokens=False
+                )
+                token_count = len(tokens)
+                if token_count > 448:  # Whisper's max sequence length
+                    print(f"⚠️  Dropping entry with {token_count} tokens (max: 448)")
+                    print(
+                        f"   Text preview: '{entry.sentence[:100]}{'...' if len(entry.sentence) > 100 else ''}'"
+                    )
+                    print(f"   Audio path: {entry.audio_path}")
+                    return False
+                elif token_count > 350:  # Warning for sequences getting close to limit
+                    print(
+                        f"📏 Warning: Entry has {token_count} tokens (approaching limit of 448)"
+                    )
+                    print(
+                        f"   Text preview: '{entry.sentence[:100]}{'...' if len(entry.sentence) > 100 else ''}'"
+                    )
+            except Exception as e:
+                print(f"Warning: Could not tokenize text for validation: {e}")
+
         return True
 
     def _manifest_from_mapping(self, row: dict) -> Optional[ManifestEntry]:
@@ -414,9 +460,60 @@ class CustomDataset(Dataset):
             end_time=end_time,
         )
 
-    def _try_store_manifest(self, row: dict) -> None:
+    def _try_store_manifest(self, row: dict, dataset_path: str = None) -> None:
         entry = self._manifest_from_mapping(row)
         if entry and self._validate_entry(entry):
+            # Track and log first 2 labels from each dataset for debugging
+            if dataset_path:
+                dataset_key = (
+                    os.path.basename(dataset_path) if dataset_path else "unknown"
+                )
+                if dataset_key not in self._dataset_label_counts:
+                    self._dataset_label_counts[dataset_key] = 0
+                    self._label_examples[dataset_key] = []
+
+                self._dataset_label_counts[dataset_key] += 1
+
+                # Log first 2 labels from each dataset
+                if len(self._label_examples[dataset_key]) < 2:
+                    label_text = entry.get("sentence", "")
+                    label_length = len(label_text)
+                    # Also check token length if processor is available
+                    token_length = "N/A"
+                    if self.processor and label_text:
+                        try:
+                            tokens = self.processor.tokenizer.encode(
+                                label_text, add_special_tokens=False
+                            )
+                            token_length = len(tokens)
+                        except:
+                            pass
+
+                    self._label_examples[dataset_key].append(
+                        {
+                            "text": label_text[:100] + "..."
+                            if len(label_text) > 100
+                            else label_text,
+                            "char_length": label_length,
+                            "token_length": token_length,
+                        }
+                    )
+
+                    print(
+                        f"📝 Dataset '{dataset_key}' label example #{len(self._label_examples[dataset_key])}:"
+                    )
+                    print(
+                        f"   Text: '{label_text[:100]}{'...' if len(label_text) > 100 else ''}'"
+                    )
+                    print(f"   Character length: {label_length}")
+                    print(f"   Token length: {token_length}")
+                    if label_length > 1000 or (
+                        isinstance(token_length, int) and token_length > 400
+                    ):
+                        print(
+                            f"   ⚠️  WARNING: Label seems very long! This might indicate TSV parsing issues."
+                        )
+
             self.data_list.append(entry)
 
     # Load data list
@@ -545,7 +642,7 @@ class CustomDataset(Dataset):
                         if filter_fn and not filter_fn(line):
                             continue
 
-                        self._try_store_manifest(line)
+                        self._try_store_manifest(line, data_path)
 
     def _load_huggingface_dataset(self, data_path, dataset_subset=None):
         """Load data from a Hugging Face dataset folder."""
@@ -1174,7 +1271,7 @@ class CustomDataset(Dataset):
                 ):
                     if filter_fn and not filter_fn(item):
                         continue
-                    self._process_item(item)
+                    self._process_item(item, data_path)
                     if idx > 0 and idx % batch_size == 0:
                         gc.collect()
             else:
@@ -1184,7 +1281,7 @@ class CustomDataset(Dataset):
                 ):
                     if filter_fn and not filter_fn(item):
                         continue
-                    self._process_item(item)
+                    self._process_item(item, data_path)
 
         except Exception as e:
             print(f"Error loading Hugging Face dataset from {data_path}: {e}")
@@ -1317,6 +1414,24 @@ class CustomDataset(Dataset):
                         # Standard CSV format: filename,text or audio_path,transcription
                         filename, text = row[0], row[1]
 
+                # Debug TSV parsing issues - check for suspiciously long text
+                if len(text) > 2000:  # Character count threshold
+                    print(f"🚨 POTENTIAL TSV PARSING ISSUE:")
+                    print(f"   File: {data_path}")
+                    print(f"   Row length: {len(row)}")
+                    print(f"   Text length: {len(text)} characters")
+                    print(f"   Text preview: '{text[:200]}...'")
+                    print(
+                        f"   This might indicate incorrect delimiter or column mapping"
+                    )
+                    # Count newlines and tabs in the text to detect multi-line issues
+                    newlines = text.count("\n")
+                    tabs = text.count("\t")
+                    if newlines > 0 or tabs > 10:
+                        print(
+                            f"   Contains {newlines} newlines and {tabs} tabs - likely parsing error"
+                        )
+
                 # Skip empty entries
                 if not filename or not text:
                     continue
@@ -1360,7 +1475,7 @@ class CustomDataset(Dataset):
                 if filter_fn and not filter_fn(candidate):
                     continue
 
-                self._try_store_manifest(candidate)
+                self._try_store_manifest(candidate, data_path)
 
     # Get audio data, sample rate, and text from data list
     def _get_list_data(self, idx):
@@ -1464,7 +1579,7 @@ class CustomDataset(Dataset):
         data["labels"] = labels + [self.endoftext]
         return data
 
-    def _process_item(self, item):
+    def _process_item(self, item, dataset_path=None):
         """Helper method to process a single dataset item."""
         try:
             audio_path = None
@@ -1524,7 +1639,7 @@ class CustomDataset(Dataset):
                 "language": item.get("language"),
             }
 
-            self._try_store_manifest(candidate)
+            self._try_store_manifest(candidate, dataset_path)
 
         except Exception as e:
             print(f"Error processing item: {e}")

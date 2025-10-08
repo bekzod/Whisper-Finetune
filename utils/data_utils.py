@@ -97,6 +97,28 @@ class DataCollatorSpeechSeq2SeqWithPadding:
 
         label_seqs: List[List[int]] = [_extract_labels(f) for f in features]
 
+        # Log long sequences that might cause issues
+        for i, seq in enumerate(label_seqs):
+            if len(seq) > 448:  # Whisper's typical max length
+                print(f"⚠️  WARNING: Long label sequence detected in batch!")
+                print(f"   Sequence {i}: {len(seq)} tokens (max allowed: 448)")
+                # Try to get the original text if available
+                original_text = features[i].get("text", "")
+                if original_text:
+                    print(
+                        f"   Original text preview: '{original_text[:200]}{'...' if len(original_text) > 200 else ''}'"
+                    )
+                print(
+                    f"   This might indicate TSV parsing issues or very long transcripts"
+                )
+            elif len(seq) > 300:  # Warning for sequences getting close to limit
+                print(f"📏 Long sequence warning: {len(seq)} tokens in batch item {i}")
+                original_text = features[i].get("text", "")
+                if original_text:
+                    print(
+                        f"   Text preview: '{original_text[:100]}{'...' if len(original_text) > 100 else ''}'"
+                    )
+
         # Optionally strip a leading BOS on a PER-SEQUENCE basis BEFORE padding
         if (
             self.remove_bos_token

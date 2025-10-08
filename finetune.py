@@ -712,6 +712,7 @@ def main():
 
     if eval_data_arg is None:
         print("No test data provided. Splitting train data: 92% train, 8% test")
+        print(f"🔍 Creating full dataset from: {train_data_arg}")
         full_dataset = CustomDataset(
             data_list_path=train_data_arg,
             processor=processor,
@@ -734,6 +735,7 @@ def main():
             generator=torch.Generator().manual_seed(args.seed),
         )
     else:
+        print(f"🔍 Creating training dataset from: {train_data_arg}")
         train_dataset = CustomDataset(
             data_list_path=train_data_arg,
             processor=processor,
@@ -744,6 +746,7 @@ def main():
             augment_config_path=args.augment_config_path,
             dataset_filters=datasets_info,
         )
+        print(f"🔍 Creating evaluation dataset from: {eval_data_arg}")
         eval_dataset = CustomDataset(
             data_list_path=eval_data_arg,
             processor=processor,
