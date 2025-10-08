@@ -13,10 +13,6 @@
       "splits": ["train"]
     },
     {
-      "name": "IbratDO/uzbekvoice-1K",
-      "splits": ["train"]
-    },
-    {
       "name": "CrazyMathematician/uzbek_voice_cleaned",
       "splits": ["train"]
     },
@@ -64,10 +60,6 @@
     }
   ],
   "eval": [
-    {
-      "name": "IbratDO/uzbekvoice-1K",
-      "splits": ["test"]
-    },
     {
       "name": "google/fleurs",
       "subset": "uz_uz",
