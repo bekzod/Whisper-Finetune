@@ -1078,41 +1078,63 @@ class CustomDataset(Dataset):
                                 continue
                             seen_tsv.add(tsv_file)
                             print(f"  Processing TSV file: {tsv_file}")
-                            with open(tsv_file, "r", encoding="utf-8") as f:
-                                header_line = next(f, None)
-                                if not header_line:
+                            with open(tsv_file, "r", encoding="utf-8", newline="") as f:
+                                reader = csv.DictReader(f, delimiter="\t")
+                                fieldnames = reader.fieldnames or []
+                                if not fieldnames:
                                     continue
-                                header = header_line.strip().split("\t")
-                                path_idx = 0
-                                text_idx = 2
-                                for c in (
-                                    "path",
-                                    "audio",
-                                    "audio_filename",
-                                    "filename",
-                                    "file",
-                                ):
-                                    if c in header:
-                                        path_idx = header.index(c)
-                                        break
-                                for c in (
-                                    "sentence",
-                                    "text",
-                                    "transcription",
-                                    "transcript",
-                                    "normalized_text",
-                                    "raw_text",
-                                ):
-                                    if c in header:
-                                        text_idx = header.index(c)
-                                        break
 
-                                for line in f:
-                                    parts = line.strip().split("\t")
-                                    if len(parts) <= max(path_idx, text_idx):
+                                lower_to_original = {
+                                    name.lower(): name for name in fieldnames if name
+                                }
+
+                                def _select_column(
+                                    candidates: List[str], default_idx: int
+                                ) -> str:
+                                    for candidate in candidates:
+                                        match = lower_to_original.get(candidate)
+                                        if match:
+                                            return match
+                                    # Fallback: avoid IndexError if TSV is malformed
+                                    if (
+                                        0 <= default_idx < len(fieldnames)
+                                        and fieldnames[default_idx]
+                                    ):
+                                        return fieldnames[default_idx]
+                                    for name in fieldnames:
+                                        if name:
+                                            return name
+                                    return fieldnames[0]
+
+                                path_column = _select_column(
+                                    [
+                                        "path",
+                                        "audio",
+                                        "audio_filename",
+                                        "filename",
+                                        "file",
+                                    ],
+                                    default_idx=0,
+                                )
+                                text_column = _select_column(
+                                    [
+                                        "sentence",
+                                        "text",
+                                        "transcription",
+                                        "transcript",
+                                        "normalized_text",
+                                        "raw_text",
+                                    ],
+                                    default_idx=2,
+                                )
+
+                                for row_number, row in enumerate(reader, start=2):
+                                    if not isinstance(row, dict):
                                         continue
-                                    audio_filename = parts[path_idx]
-                                    transcription = parts[text_idx]
+                                    audio_filename = (row.get(path_column) or "").strip()
+                                    if not audio_filename:
+                                        continue
+                                    transcription = row.get(text_column)
                                     resolved_path = _resolve_audio_path(audio_filename)
                                     if resolved_path:
                                         yield {
@@ -1121,7 +1143,7 @@ class CustomDataset(Dataset):
                                         }
                                     elif audio_filename not in missing_logged:
                                         print(
-                                            f"  Warning: audio file '{audio_filename}' not found under {audio_dir_abs}"
+                                            f"  Warning (line {row_number}): audio file '{audio_filename}' not found under {audio_dir_abs}"
                                         )
                                         missing_logged.add(audio_filename)
 
