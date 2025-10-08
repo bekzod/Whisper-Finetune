@@ -476,7 +476,7 @@ class CustomDataset(Dataset):
 
                 # Log first 2 labels from each dataset
                 if len(self._label_examples[dataset_key]) < 2:
-                    label_text = entry.get("sentence", "")
+                    label_text = entry.sentence or ""
                     label_length = len(label_text)
                     # Also check token length if processor is available
                     token_length = "N/A"
@@ -1582,6 +1582,25 @@ class CustomDataset(Dataset):
     def _process_item(self, item, dataset_path=None):
         """Helper method to process a single dataset item."""
         try:
+            # Handle both dict (HF datasets) and ManifestEntry objects
+            if isinstance(item, ManifestEntry):
+                # Convert ManifestEntry to dict format for consistency
+                candidate = {
+                    "audio": {"path": str(item.audio_path)},
+                    "sentence": item.sentence,
+                    "sentences": item.sentences,
+                    "duration": item.duration,
+                    "language": item.language,
+                }
+                if item.start_time is not None:
+                    candidate["audio"]["start_time"] = item.start_time
+                if item.end_time is not None:
+                    candidate["audio"]["end_time"] = item.end_time
+
+                self._try_store_manifest(candidate, dataset_path)
+                return
+
+            # Handle dict format (from HF datasets)
             audio_path = None
             start_time = None
             end_time = None
