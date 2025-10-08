@@ -31,11 +31,11 @@ accelerate launch --multi_gpu --config_file ./configs/accelerate-single.yaml fin
   --per_device_eval_batch_size 128 \
   --gradient_accumulation_steps 1 \
   --freeze_encoder_epochs 1 \
-  --unfreeze_finish_ratio 0.5 \
+  --unfreeze_finish_ratio 0.35 \
   --learning_rate 1e-5 \
   --logging_steps 200 \
-  --eval_steps 200 \
-  --save_steps 200 \
+  --eval_steps 400 \
+  --save_steps 400 \
   --warmup_ratio 0.05 \
   --lr_scheduler_type cosine \
   --use_lora False \
