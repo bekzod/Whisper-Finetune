@@ -1522,7 +1522,17 @@ class CustomDataset(Dataset):
                 elif "filename" in item:
                     audio_file = item["filename"]
                 elif "path" in item:
-                    audio_file = item["path"]
+                    # Make sure we extract string path, not a dict
+                    path_val = item["path"]
+                    if isinstance(path_val, dict):
+                        # If path is a dict, try to extract the actual path string
+                        audio_file = (
+                            path_val.get("path")
+                            or path_val.get("filename")
+                            or path_val.get("file")
+                        )
+                    else:
+                        audio_file = path_val
 
                 # Transcript selection
                 if self.timestamps:
@@ -1547,6 +1557,9 @@ class CustomDataset(Dataset):
                 if sample is None:
                     if not audio_file:
                         raise ValueError("Missing audio path in HF item")
+                    # Ensure audio_file is a string path, not a dict
+                    if isinstance(audio_file, dict):
+                        raise ValueError(f"Invalid file: {audio_file}")
                     sample, sample_rate = soundfile.read(
                         audio_file, dtype="float32", always_2d=True
                     )
