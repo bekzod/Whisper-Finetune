@@ -31,7 +31,7 @@ accelerate launch --multi_gpu --config_file ./configs/accelerate-single.yaml fin
   --per_device_eval_batch_size 128 \
   --gradient_accumulation_steps 1 \
   --freeze_encoder_epochs 1 \
-  --unfreeze_finish_ratio 0.35 \
+  --unfreeze_finish_ratio 0.3 \
   --learning_rate 1e-5 \
   --logging_steps 200 \
   --eval_steps 400 \
@@ -39,7 +39,7 @@ accelerate launch --multi_gpu --config_file ./configs/accelerate-single.yaml fin
   --warmup_ratio 0.05 \
   --lr_scheduler_type cosine \
   --use_lora False \
-  --weight_decay 0.01 \
+  --weight_decay 0.008 \
   --save_total_limit 4 \
   --wandb_project whisper-uzbek \
   --wandb_run_name whisper-v3-uzbek \
