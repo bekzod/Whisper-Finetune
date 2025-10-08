@@ -165,7 +165,7 @@ add_arg(
     "freeze_encoder_epochs",
     type=int,
     default=0,
-    help="Freeze the encoder for the first N epochs, then unfreeze.",
+    help="Freeze the encoder for the first N epochs before starting layer-wise unfreezing.",
 )
 
 # Logging / eval / saving
@@ -321,50 +321,163 @@ def freeze_encoder(model: torch.nn.Module) -> None:
         p.requires_grad = False
 
 
-def unfreeze_encoder(model: torch.nn.Module) -> None:
-    enc = _get_encoder_module(model)
-    for p in enc.parameters():
-        p.requires_grad = True
-
-
 def count_trainable(model: torch.nn.Module) -> tuple[int, int]:
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     total = sum(p.numel() for p in model.parameters())
     return trainable, total
 
 
-class UnfreezeEncoderCallback(TrainerCallback):
+def _collect_layerwise_encoder_groups(
+    model: torch.nn.Module,
+) -> list[tuple[str, list[torch.nn.Parameter]]]:
     """
-    Unfreezes the encoder at the end of epoch `unfreeze_after_epochs`, and
-    adds those params to the optimizer so they start training next epoch.
+    Build ordered parameter groups for layer-wise unfreezing, starting from the
+    top of the encoder (closest to the decoder) down to the acoustic frontend.
+    """
+
+    encoder = _get_encoder_module(model)
+    groups: list[tuple[str, list[torch.nn.Parameter]]] = []
+    seen: set[int] = set()
+
+    if hasattr(encoder, "layer_norm"):
+        params = [p for p in encoder.layer_norm.parameters()]
+        if params:
+            groups.append(("encoder.layer_norm", params))
+            seen.update(id(p) for p in params)
+
+    if hasattr(encoder, "layers"):
+        layers = list(getattr(encoder, "layers"))
+        for idx in range(len(layers) - 1, -1, -1):
+            layer = layers[idx]
+            params = [p for p in layer.parameters()]
+            if not params:
+                continue
+            name = f"encoder.layers[{idx}]"
+            groups.append((name, params))
+            seen.update(id(p) for p in params)
+    else:
+        raise ValueError(
+            "Encoder does not expose a `layers` attribute required for layer-wise unfreezing."
+        )
+
+    # Any remaining parameters (e.g., convolutional frontend / embeddings) are unfrozen last.
+    remaining = [p for p in encoder.parameters() if id(p) not in seen]
+    if remaining:
+        groups.append(("encoder.frontend", remaining))
+
+    return groups
+
+
+class LayerwiseEncoderUnfreezeCallback(TrainerCallback):
+    """
+    Gradually unfreezes encoder parameter groups after an optional warmup period.
+    Groups are ordered from decoder-adjacent layers down to the acoustic frontend.
     """
 
     def __init__(
         self,
-        unfreeze_after_epochs: int,
+        warmup_steps: int,
+        total_steps: int,
+        steps_per_epoch: int,
         lr: float | None = None,
         wd: float | None = None,
     ):
-        self.unfreeze_after_epochs = int(unfreeze_after_epochs)
+        self.warmup_steps = max(0, int(warmup_steps))
+        self.total_steps = max(int(total_steps), self.warmup_steps)
+        self.steps_per_epoch = max(1, int(steps_per_epoch))
         self.lr = lr
         self.wd = wd
-        self.did_unfreeze = False
 
-    def on_epoch_end(self, args, state, control, **kwargs):
-        if self.did_unfreeze or self.unfreeze_after_epochs <= 0:
+        self.initialized = False
+        self.layer_groups: list[tuple[str, list[torch.nn.Parameter]]] = []
+        self.thresholds: list[int] = []
+        self.next_group_idx = 0
+        self.optimizer_param_ids: set[int] = set()
+
+    def on_train_begin(self, args, state, control, **kwargs):
+        model = kwargs.get("model")
+        optimizer = kwargs.get("optimizer")
+        if model is None:
             return
 
-        # At end of epoch, HF sets state.epoch to a 1-based float (e.g., 1.0)
-        if state.epoch is not None and int(state.epoch) >= self.unfreeze_after_epochs:
-            model = kwargs["model"]
-            optimizer = kwargs.get("optimizer", None)
+        self.layer_groups = _collect_layerwise_encoder_groups(model)
+        total_groups = len(self.layer_groups)
 
-            unfreeze_encoder(model)
+        remaining_steps = max(0, self.total_steps - self.warmup_steps)
+        self.thresholds = []
+        if total_groups == 0:
+            self.thresholds = []
+        elif remaining_steps == 0:
+            self.thresholds = [self.warmup_steps] * total_groups
+        else:
+            for idx in range(total_groups):
+                fraction = (idx + 1) / total_groups
+                step = self.warmup_steps + math.ceil(fraction * remaining_steps)
+                if self.thresholds and step <= self.thresholds[-1]:
+                    step = self.thresholds[-1] + 1
+                self.thresholds.append(step)
 
-            if optimizer is not None:
-                enc = _get_encoder_module(model)
-                # Only add params that are now trainable (and not already in any group)
-                new_params = [p for p in enc.parameters() if p.requires_grad]
+        self.optimizer_param_ids = set()
+        if optimizer is not None:
+            for group in optimizer.param_groups:
+                for param in group["params"]:
+                    self.optimizer_param_ids.add(id(param))
+
+        if total_groups > 0:
+            approx_warmup_epochs = self.warmup_steps / self.steps_per_epoch
+            if getattr(args, "local_rank", -1) in (-1, 0):
+                final_step = self.thresholds[-1] if self.thresholds else self.warmup_steps
+                print(
+                    f"🪜 Layer-wise encoder unfreeze schedule: {total_groups} group(s), "
+                    f"warmup ≈{approx_warmup_epochs:.2f} epoch(s), "
+                    f"final group by step {final_step}."
+                )
+
+        self.initialized = True
+
+    def on_step_end(self, args, state, control, **kwargs):
+        if not self.initialized:
+            return
+        if self.next_group_idx >= len(self.layer_groups):
+            return
+
+        model = kwargs.get("model")
+        optimizer = kwargs.get("optimizer")
+        if model is None:
+            return
+
+        current_step = state.global_step
+        while (
+            self.next_group_idx < len(self.layer_groups)
+            and self.next_group_idx < len(self.thresholds)
+            and current_step >= self.thresholds[self.next_group_idx]
+        ):
+            self._activate_group(
+                args=args,
+                state=state,
+                model=model,
+                optimizer=optimizer,
+                group_idx=self.next_group_idx,
+            )
+            self.next_group_idx += 1
+
+    def _activate_group(
+        self,
+        *,
+        args: Seq2SeqTrainingArguments,
+        state,
+        model: torch.nn.Module,
+        optimizer: torch.optim.Optimizer | None,
+        group_idx: int,
+    ) -> None:
+        group_name, params = self.layer_groups[group_idx]
+
+        for param in params:
+            param.requires_grad = True
+
+        if optimizer is not None:
+            new_params = [p for p in params if id(p) not in self.optimizer_param_ids]
+            if new_params:
                 optimizer.add_param_group(
                     {
                         "params": new_params,
@@ -374,12 +487,16 @@ class UnfreezeEncoderCallback(TrainerCallback):
                         else args.weight_decay,
                     }
                 )
+                self.optimizer_param_ids.update(id(p) for p in new_params)
 
-            self.did_unfreeze = True
-            tr, tot = count_trainable(model)
+        should_log = getattr(args, "local_rank", -1) in (-1, 0)
+        if should_log:
+            epoch_estimate = state.global_step / self.steps_per_epoch
+            trainable, total = count_trainable(model)
             print(
-                f"🔓 Unfroze encoder at end of epoch {int(state.epoch)} "
-                f"(trainable now {tr / 1e6:.2f}M / {tot / 1e6:.2f}M params)."
+                f"🔓 Unfroze {group_name} at step {state.global_step} "
+                f"(~epoch {epoch_estimate:.2f}); "
+                f"trainable {trainable / 1e6:.2f}M / {total / 1e6:.2f}M params."
             )
 
 
@@ -770,12 +887,24 @@ def main():
         print("Using full fine-tuning (no LoRA)...")
 
     # --- Optional staged un/freezing ---
+    layerwise_unfreeze_callback: LayerwiseEncoderUnfreezeCallback | None = None
     if args.freeze_encoder_epochs > 0:
-        print(f"🧊 Freezing encoder for {args.freeze_encoder_epochs} epoch(s) ...")
+        print(
+            f"🧊 Enabling encoder warmup for {args.freeze_encoder_epochs} epoch(s) "
+            "with layer-wise unfreezing."
+        )
         freeze_encoder(model)
         tr, tot = count_trainable(model)
         print(
             f"   -> Trainable params while frozen: {tr / 1e6:.2f}M / {tot / 1e6:.2f}M"
+        )
+        warmup_steps = args.freeze_encoder_epochs * steps_per_epoch
+        layerwise_unfreeze_callback = LayerwiseEncoderUnfreezeCallback(
+            warmup_steps=warmup_steps,
+            total_steps=total_update_steps,
+            steps_per_epoch=steps_per_epoch,
+            lr=args.learning_rate,
+            wd=args.weight_decay,
         )
 
     # ----- Training args -----
@@ -838,14 +967,8 @@ def main():
         SavePeftModelCallback(),
         EarlyStoppingCallback(early_stopping_patience=args.early_stopping_patience),
     ]
-    if args.freeze_encoder_epochs > 0:
-        callbacks.append(
-            UnfreezeEncoderCallback(
-                unfreeze_after_epochs=args.freeze_encoder_epochs,
-                lr=args.learning_rate,
-                wd=args.weight_decay,
-            )
-        )
+    if layerwise_unfreeze_callback is not None:
+        callbacks.append(layerwise_unfreeze_callback)
 
     trainer = Seq2SeqTrainer(
         args=training_args,
