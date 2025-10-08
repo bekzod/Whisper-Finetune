@@ -30,6 +30,7 @@ accelerate launch --multi_gpu --num_processes=2 --config_file ./configs/accelera
   --learning_rate 1e-5 \
   --logging_steps 100 \
   --eval_steps 200 \
+  --save_steps 200 \
   --warmup_ratio 0.1 \
   --lr_scheduler_type cosine \
   --use_lora False \
