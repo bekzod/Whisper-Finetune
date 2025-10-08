@@ -44,7 +44,7 @@
     },
     {
       "name": "bekzod123/uzbek_voice_2",
-      "splits": ["train", "validated", "test"]
+      "splits": ["train", "validated", "test", "dev"]
     },
     {
       "name": "bekzod123/uzbek_voice_3",
@@ -73,10 +73,6 @@
     {
       "name": "DavronSherbaev/uzbekvoice-filtered",
       "splits": ["validate"]
-    },
-    {
-      "name": "bekzod123/uzbek_voice_2",
-      "splits": ["dev"]
     },
     {
       "name": "k2speech/FeruzaSpeech",
