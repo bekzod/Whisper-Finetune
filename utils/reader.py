@@ -228,8 +228,6 @@ class CustomDataset(Dataset):
         # Lazy HF datasets: store splits to avoid 100s of thousands of Python dicts
         # Each entry: { 'dataset': HFDataset, 'indices': Optional[List[int]], 'name': str }
         self.hf_splits = []
-        # Track loaded audio files for Common Voice to prevent duplicates across splits
-        self._common_voice_loaded_files: Set[str] = set()
         self._load_data_list()
 
         # Summary logging to make filtering effects obvious
@@ -677,270 +675,6 @@ class CustomDataset(Dataset):
                     # Use the generator instead of a list
                     dataset = fleurs_generator()
 
-                # Special handling for mozilla-foundation/common_voice_17_0 dataset
-                elif repo == "mozilla-foundation/common_voice_17_0" and subset_name:
-                    print(
-                        f"  Special handling for mozilla-foundation/common_voice_17_0 with subset {subset_name}"
-                    )
-
-                    # Download the specific files for this subset
-                    cache_dir = os.getenv(
-                        "HF_DATASETS_CACHE", None
-                    ) or os.path.expanduser("~/.cache/huggingface/datasets")
-                    local_dir = os.path.join(
-                        cache_dir, "mozilla_common_voice", subset_name
-                    )
-
-                    # Download the audio and transcript files for the subset
-                    print(
-                        f"  Downloading mozilla-foundation/common_voice_17_0 files to {local_dir}"
-                    )
-                    snapshot_download(
-                        repo_id="mozilla-foundation/common_voice_17_0",
-                        repo_type="dataset",
-                        allow_patterns=[
-                            f"audio/{subset_name}/*",
-                            f"transcript/{subset_name}/*",
-                        ],
-                        local_dir=local_dir,
-                    )
-
-                    # Process the downloaded files
-                    audio_dir = os.path.join(local_dir, "audio", subset_name)
-                    transcript_dir = os.path.join(local_dir, "transcript", subset_name)
-                    audio_dir_abs = os.path.abspath(audio_dir)
-
-                    tar_root_to_subdirs: Dict[str, Set[str]] = {}
-
-                    def _record_tar_stem(
-                        root_path: str, tar_name: str
-                    ) -> tuple[str, str]:
-                        root_abs = os.path.abspath(root_path)
-                        if tar_name.endswith(".tar.gz"):
-                            stem = tar_name[: -len(".tar.gz")]
-                        elif tar_name.endswith(".tar"):
-                            stem = tar_name[: -len(".tar")]
-                        else:
-                            stem = os.path.splitext(tar_name)[0]
-                        tar_root_to_subdirs.setdefault(root_abs, set()).add(stem)
-                        return root_abs, stem
-
-                    def _safe_extract_tarball(root_path: str, tar_name: str) -> None:
-                        root_abs, stem = _record_tar_stem(root_path, tar_name)
-                        marker_path = os.path.join(root_abs, f".{stem}_extracted")
-                        if os.path.exists(marker_path):
-                            return
-                        tar_path = os.path.join(root_abs, tar_name)
-                        print(f"  Extracting {tar_name} to {root_abs}")
-
-                        # Open with appropriate mode for better performance
-                        mode = "r:gz" if tar_name.endswith(".tar.gz") else "r:"
-                        with tarfile.open(tar_path, mode) as tar:
-                            # Pre-validate all paths in batch for security
-                            safe_members = []
-                            for member in tar:
-                                target_path = os.path.abspath(
-                                    os.path.join(root_abs, member.name)
-                                )
-                                if (
-                                    os.path.commonpath([root_abs, target_path])
-                                    != root_abs
-                                ):
-                                    raise RuntimeError(
-                                        f"Blocked path traversal while extracting {tar_name}"
-                                    )
-                                safe_members.append(member)
-
-                            # Extract all validated members at once - much faster than individual extracts
-                            tar.extractall(root_abs, members=safe_members)
-
-                        with open(marker_path, "w", encoding="utf-8") as f:
-                            f.write("extracted")
-
-                    if os.path.isdir(audio_dir_abs):
-                        for current_dir, _, files in os.walk(audio_dir_abs):
-                            current_abs = os.path.abspath(current_dir)
-                            for tar_file in files:
-                                if tar_file.endswith((".tar", ".tar.gz")):
-                                    _safe_extract_tarball(current_abs, tar_file)
-
-                    # Create a generator for Common Voice TSV files to avoid loading all in memory
-                    def common_voice_generator():
-                        duplicates_skipped = 0
-                        subset_aliases = {
-                            "validation": ["validated"],
-                            "validated": ["validation"],
-                            "dev": ["development"],
-                            "development": ["dev"],
-                        }
-
-                        subset_variants: List[str] = []
-                        if dataset_subset:
-                            base = str(dataset_subset).strip().lower()
-                            if base:
-                                subset_variants.append(base)
-                        else:
-                            subset_variants.extend(
-                                [
-                                    "train",
-                                    "validation",
-                                    "test",
-                                    "dev",
-                                    "validated",
-                                    "invalidated",
-                                    "other",
-                                ]
-                            )
-
-                        for variant in list(subset_variants):
-                            for alias in subset_aliases.get(variant, []):
-                                if alias not in subset_variants:
-                                    subset_variants.append(alias)
-
-                        candidate_dirs: List[str] = []
-                        seen_dirs: Set[str] = set()
-
-                        def _add_candidate(dir_path: str) -> None:
-                            abs_path = os.path.abspath(dir_path)
-                            if os.path.isdir(abs_path) and abs_path not in seen_dirs:
-                                seen_dirs.add(abs_path)
-                                candidate_dirs.append(abs_path)
-
-                        _add_candidate(audio_dir_abs)
-                        for variant in subset_variants:
-                            _add_candidate(os.path.join(audio_dir_abs, variant))
-
-                        for base_dir in list(candidate_dirs):
-                            for suffix in tar_root_to_subdirs.get(base_dir, set()):
-                                _add_candidate(os.path.join(base_dir, suffix))
-                            clips_dir = os.path.join(base_dir, "clips")
-                            _add_candidate(clips_dir)
-
-                        if not candidate_dirs:
-                            candidate_dirs.append(audio_dir_abs)
-
-                        path_cache: Dict[str, Optional[str]] = {}
-                        missing_logged: Set[str] = set()
-
-                        def _resolve_audio_path(filename: str) -> Optional[str]:
-                            if not filename:
-                                return None
-
-                            normalized = filename.strip().replace("\\", os.sep)
-                            if not os.path.splitext(normalized)[1]:
-                                normalized = f"{normalized}.mp3"
-
-                            cached = path_cache.get(normalized)
-                            if cached is not None:
-                                return cached
-
-                            candidates = [normalized]
-                            base_name = os.path.basename(normalized)
-                            if base_name != normalized:
-                                candidates.append(base_name)
-
-                            resolved = None
-                            for name in candidates:
-                                if os.path.isabs(name):
-                                    if os.path.exists(name):
-                                        resolved = name
-                                        break
-                                    continue
-                                for base_dir in candidate_dirs:
-                                    direct_path = os.path.join(base_dir, name)
-                                    if os.path.exists(direct_path):
-                                        resolved = direct_path
-                                        break
-                                    for suffix in tar_root_to_subdirs.get(
-                                        base_dir, set()
-                                    ):
-                                        nested_path = os.path.join(
-                                            base_dir, suffix, os.path.basename(name)
-                                        )
-                                        if os.path.exists(nested_path):
-                                            resolved = nested_path
-                                            break
-                                    if resolved:
-                                        break
-                                if resolved:
-                                    break
-
-                            if resolved is None and os.sep in normalized:
-                                for base_dir in candidate_dirs:
-                                    fallback_path = os.path.join(base_dir, base_name)
-                                    if os.path.exists(fallback_path):
-                                        resolved = fallback_path
-                                        break
-
-                            if resolved:
-                                resolved = os.path.abspath(resolved)
-
-                            path_cache[normalized] = resolved
-                            return resolved
-
-                        seen_tsv: Set[str] = set()
-                        for variant in subset_variants or [
-                            "train",
-                            "validation",
-                            "test",
-                        ]:
-                            tsv_file = os.path.join(transcript_dir, f"{variant}.tsv")
-                            if not os.path.exists(tsv_file) or tsv_file in seen_tsv:
-                                continue
-                            seen_tsv.add(tsv_file)
-                            print(f"  Processing TSV file: {tsv_file}")
-                            with open(tsv_file, "r", encoding="utf-8") as f:
-                                header_line = next(f, None)
-                                if not header_line:
-                                    continue
-                                header = header_line.strip().split("\t")
-                                path_idx = (
-                                    header.index("path") if "path" in header else 0
-                                )
-                                sentence_idx = (
-                                    header.index("sentence")
-                                    if "sentence" in header
-                                    else 2
-                                )
-
-                                for line in f:
-                                    parts = line.strip().split("\t")
-                                    if len(parts) <= max(path_idx, sentence_idx):
-                                        continue
-                                    audio_filename = parts[path_idx]
-                                    transcription = parts[sentence_idx]
-                                    resolved_path = _resolve_audio_path(audio_filename)
-                                    if resolved_path:
-                                        # Check if this file has already been loaded (deduplication)
-                                        file_key = f"{resolved_path}:{transcription}"
-                                        if (
-                                            file_key
-                                            not in self._common_voice_loaded_files
-                                        ):
-                                            self._common_voice_loaded_files.add(
-                                                file_key
-                                            )
-                                            yield {
-                                                "audio": {"path": resolved_path},
-                                                "text": transcription,
-                                            }
-                                        else:
-                                            duplicates_skipped += 1
-                                    elif audio_filename not in missing_logged:
-                                        print(
-                                            f"  Warning: audio file '{audio_filename}' not found under {audio_dir_abs}"
-                                        )
-                                        missing_logged.add(audio_filename)
-
-                        # Log duplicate statistics if any were skipped
-                        if duplicates_skipped > 0:
-                            print(
-                                f"  Skipped {duplicates_skipped} duplicate entries from Common Voice dataset"
-                            )
-
-                    # Use the generator instead of a list
-                    dataset = common_voice_generator()
-
                 else:
                     # Original loading logic for other datasets
                     if dataset_subset:
@@ -974,19 +708,9 @@ class CustomDataset(Dataset):
                             cache_dir=os.getenv("HF_DATASETS_CACHE", None),
                         )
 
-            # ---- IMPORTANT: Disable audio decoding at the dataset level ----
-            def _cast_audio_decode_false(ds):
-                if isinstance(ds, HFDatasetDict):
-                    for sp in ds.keys():
-                        if "audio" in ds[sp].column_names:
-                            ds[sp] = ds[sp].cast_column("audio", Audio(decode=False))
-                elif isinstance(ds, HFDataset):
-                    if "audio" in ds.column_names:
-                        ds = ds.cast_column("audio", Audio(decode=False))
-                return ds
-
-            if isinstance(dataset, (HFDataset, HFDatasetDict)):
-                dataset = _cast_audio_decode_false(dataset)
+            # ---- IMPORTANT: Keep audio decoding ENABLED for proper loading ----
+            # We want HuggingFace to handle audio loading and decoding for us
+            # This ensures audio files are properly downloaded and decoded
 
             # Build iterator across splits; avoid concatenation/materialization
             if isinstance(dataset, DatasetDict):
@@ -1490,10 +1214,11 @@ class CustomDataset(Dataset):
                     audio_data = item["audio"]
                     if isinstance(audio_data, dict):
                         # Prefer already-decoded array from HF datasets to avoid path issues
-                        if "array" in audio_data and isinstance(
-                            audio_data["array"], np.ndarray
-                        ):
+                        if "array" in audio_data and audio_data["array"] is not None:
                             arr = audio_data["array"]
+                            # Handle both numpy arrays and lists
+                            if not isinstance(arr, np.ndarray):
+                                arr = np.array(arr, dtype=np.float32)
                             # Ensure float32
                             if arr.dtype != np.float32:
                                 arr = arr.astype(np.float32)
