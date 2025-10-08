@@ -317,6 +317,23 @@ class CustomDataset(Dataset):
             return total
         return len(str(sentences))
 
+    @staticmethod
+    def _ensure_2d_features(features: Any):
+        """
+        Whisper expects log-Mel features shaped (mel_bins, frames). Drop any
+        leading singleton batch/channel dimensions that may sneak in.
+        """
+        if isinstance(features, (list, tuple)):
+            if not features:
+                raise ValueError("Received empty input_features sequence.")
+            features = features[0]
+
+        if hasattr(features, "ndim") and hasattr(features, "shape"):
+            while getattr(features, "ndim", 0) >= 3 and features.shape[0] == 1:
+                features = features[0]
+
+        return features
+
     def _validate_entry(self, entry: ManifestEntry) -> bool:
         if not entry.audio_path:
             return False
@@ -1333,36 +1350,24 @@ class CustomDataset(Dataset):
                     feats = self.processor(
                         audio=sample, sampling_rate=self.sample_rate
                     ).input_features
-                    # normalize to single example (drop possible batch dim)
-                    if isinstance(feats, list):
-                        feats = feats[0]
-                    elif (
-                        hasattr(feats, "shape")
-                        and getattr(feats, "shape", [None])[0] == 1
-                    ):
-                        feats = feats[0]
-                    data["input_features"] = feats
+                    data["input_features"] = self._ensure_2d_features(feats)
                 else:
                     # -------- non-timestamps training: return features + RAW TEXT --------
                     feats = self.processor(
                         audio=sample, sampling_rate=self.sample_rate
                     ).input_features
-                    # normalize to single example (drop possible batch dim)
-                    if isinstance(feats, list):
-                        feats = feats[0]
-                    elif (
-                        hasattr(feats, "shape")
-                        and getattr(feats, "shape", [None])[0] == 1
-                    ):
-                        feats = feats[0]
-
                     data = {
-                        "input_features": feats,  # (80, T) or torch tensor of same
+                        "input_features": self._ensure_2d_features(
+                            feats
+                        ),  # (80, T) or torch tensor of same
                         "text": transcript,  # <-- collator will batch-tokenize
                     }
             else:
                 # If there's no text, use <|nospeech|> token (kept as IDs; collator pads)
                 data = self.processor(audio=sample, sampling_rate=self.sample_rate)
+                data["input_features"] = self._ensure_2d_features(
+                    data["input_features"]
+                )
                 data["labels"] = [self.startoftranscript, self.nospeech, self.endoftext]
 
             return data
