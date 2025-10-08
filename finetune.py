@@ -167,6 +167,13 @@ add_arg(
     default=0,
     help="Freeze the encoder for the first N epochs before starting layer-wise unfreezing.",
 )
+# NEW: when should unfreezing finish?
+add_arg(
+    "unfreeze_finish_ratio",
+    type=float,
+    default=0.5,
+    help="Fraction of total training (after warmup) by which the final encoder group is unfrozen (0<r<=1).",
+)
 
 # Logging / eval / saving
 add_arg("logging_steps", type=int, default=None, help="Number of steps between logging")
@@ -293,9 +300,6 @@ if USE_WANDB:
     os.environ["WANDB_RESUME"] = "never"
 
 
-# -------------------- Rate Limiting Helper --------------------
-
-
 # -------------------- Freeze / unfreeze helpers --------------------
 def _unwrap_to_base(model: torch.nn.Module) -> torch.nn.Module:
     """Return the underlying WhisperForConditionalGeneration even if wrapped by PEFT."""
@@ -372,6 +376,9 @@ class LayerwiseEncoderUnfreezeCallback(TrainerCallback):
     """
     Gradually unfreezes encoder parameter groups after an optional warmup period.
     Groups are ordered from decoder-adjacent layers down to the acoustic frontend.
+
+    NEW: unfreeze_completion_ratio controls by when the last group must be unfrozen
+    (as a fraction of training after warmup).
     """
 
     def __init__(
@@ -381,12 +388,14 @@ class LayerwiseEncoderUnfreezeCallback(TrainerCallback):
         steps_per_epoch: int,
         lr: float | None = None,
         wd: float | None = None,
+        unfreeze_completion_ratio: float = 1.0,  # 0 < r <= 1
     ):
         self.warmup_steps = max(0, int(warmup_steps))
         self.total_steps = max(int(total_steps), self.warmup_steps)
         self.steps_per_epoch = max(1, int(steps_per_epoch))
         self.lr = lr
         self.wd = wd
+        self.unfreeze_completion_ratio = float(unfreeze_completion_ratio)
 
         self.initialized = False
         self.layer_groups: list[tuple[str, list[torch.nn.Parameter]]] = []
@@ -403,11 +412,20 @@ class LayerwiseEncoderUnfreezeCallback(TrainerCallback):
         self.layer_groups = _collect_layerwise_encoder_groups(model)
         total_groups = len(self.layer_groups)
 
-        remaining_steps = max(0, self.total_steps - self.warmup_steps)
+        # Choose the step by which the last group must be unfrozen.
+        # Linearly interpolate between warmup_steps and total_steps using ratio r.
+        r = max(0.0, min(1.0, self.unfreeze_completion_ratio))
+        end_step = self.warmup_steps + math.floor(
+            r * (self.total_steps - self.warmup_steps)
+        )
+        end_step = max(end_step, self.warmup_steps)  # clamp
+
+        remaining_steps = max(0, end_step - self.warmup_steps)
         self.thresholds = []
         if total_groups == 0:
             self.thresholds = []
         elif remaining_steps == 0:
+            # All groups scheduled at warmup end (effectively stays frozen if end_step==warmup_steps and nothing triggers)
             self.thresholds = [self.warmup_steps] * total_groups
         else:
             for idx in range(total_groups):
@@ -425,14 +443,13 @@ class LayerwiseEncoderUnfreezeCallback(TrainerCallback):
 
         if total_groups > 0:
             approx_warmup_epochs = self.warmup_steps / self.steps_per_epoch
+            final_step = self.thresholds[-1] if self.thresholds else self.warmup_steps
+            approx_finish_epoch = final_step / self.steps_per_epoch
             if getattr(args, "local_rank", -1) in (-1, 0):
-                final_step = (
-                    self.thresholds[-1] if self.thresholds else self.warmup_steps
-                )
                 print(
                     f"🪜 Layer-wise encoder unfreeze schedule: {total_groups} group(s), "
                     f"warmup ≈{approx_warmup_epochs:.2f} epoch(s), "
-                    f"final group by step {final_step}."
+                    f"finish by step {final_step} (≈epoch {approx_finish_epoch:.2f})."
                 )
 
         self.initialized = True
@@ -568,14 +585,6 @@ def main():
         print("No dataset-specific filters configured (all pass-through).")
 
     # ----- Build dataset specs (supports JSON manifest and HF Hub prefetch) -----
-    # If train_data points to a JSON file, treat it as a manifest:
-    # - Dict form: {"train": [...], "eval": [...]} where entries can be:
-    #     - local file/dir paths (optionally "path:subset" for HF saved datasets)
-    #     - HF hub refs as "hf://org/name:split" or "org/name:split" or {"hf": "org/name", "split": "train"}
-    # - List form: [...], treated as training entries only
-    #
-    # HF hub entries are materialized to disk under "<output_dir>/prefetched/<org__name>/<split>"
-    # and then referenced as "<path>:<split>" for our CustomDataset loader.
     def _is_hf_repo_spec(s: str) -> bool:
         base = s.split(":", 1)[0]
         return ("/" in base) and (not os.path.exists(base))
@@ -588,9 +597,6 @@ def main():
         paths = []
         for ent in entries:
             if isinstance(ent, dict):
-                # Support:
-                # - {"hf": "org/name", "split": "train"}
-                # - {"name": "org/name", "subset": "uz_uz", "revision": "refs/convert/parquet", "splits": ["train","validation"]}
                 repo = ent.get("hf") or ent.get("huggingface") or ent.get("name")
                 revision = ent.get("revision")
                 subset = ent.get("subset")
@@ -598,7 +604,6 @@ def main():
                     [ent.get("split")] if ent.get("split") else default_splits
                 )
                 if repo:
-                    # Build dataset paths without prefetching
                     rev_part = f"@{revision}" if revision else ""
                     subset_part = f"#{subset}" if subset else ""
                     for sp in splits:
@@ -607,17 +612,11 @@ def main():
                 print(f"Unrecognized manifest dict entry (missing 'name'/'hf'): {ent}")
             elif isinstance(ent, str):
                 val = ent.strip()
-                # Accept forms:
-                # - hf://org/name:split
-                # - hf://org/name@rev#subset:split
-                # - org/name:split
-                # - org/name@rev#subset:split
                 val_no_proto = val[5:] if val.startswith("hf://") else val
                 if ":" in val_no_proto:
                     base, split = val_no_proto.split(":", 1)
                 else:
                     base, split = val_no_proto, None
-                # Parse repo@revision#subset
                 repo = base
                 revision = None
                 subset = None
@@ -637,13 +636,11 @@ def main():
                     ]
                     fallback_splits = fallback_splits or ["train", "validation", "test"]
                     splits = [split] if split else fallback_splits
-                    # Build dataset paths without prefetching
                     rev_part = f"@{revision}" if revision else ""
                     subset_part = f"#{subset}" if subset else ""
                     for sp in splits:
                         paths.append(f"hf://{repo}{rev_part}{subset_part}:{sp}")
                 else:
-                    # local file/dir (optionally with :subset handled by CustomDataset)
                     paths.append(val)
             else:
                 print(f"Unrecognized manifest entry: {ent}")
@@ -805,7 +802,6 @@ def main():
     )
     model.config.forced_decoder_ids = None  # training
     model.generation_config.forced_decoder_ids = eval_forced_decoder_ids  # eval
-    # Optional clarity (Whisper respects forced ids; these help downstream tools)
     try:
         model.generation_config.language = "<|uz|>"
         model.generation_config.task = "transcribe"
@@ -907,6 +903,7 @@ def main():
             steps_per_epoch=steps_per_epoch,
             lr=args.learning_rate,
             wd=args.weight_decay,
+            unfreeze_completion_ratio=args.unfreeze_finish_ratio,  # NEW
         )
 
     # ----- Training args -----
@@ -1059,7 +1056,7 @@ def main():
         try:
             processor.push_to_hub(hub_model_id)
         except Exception as e:
-            warnings.warn(f"Pushing processor to Hub skipped: {e}")
+            warnings.warn(f"Posting processor to Hub skipped: {e}")
 
 
 if __name__ == "__main__":
