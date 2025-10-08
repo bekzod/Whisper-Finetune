@@ -16,7 +16,7 @@
     {
       "name": "mozilla-foundation/common_voice_17_0",
       "subset": "uz",
-      "splits": ["train", "test", "validated"]
+      "splits": ["train", "test"]
     },
     {
       "name": "DavronSherbaev/uzbekvoice-filtered",
