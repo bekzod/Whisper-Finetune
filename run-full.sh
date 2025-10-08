@@ -23,7 +23,7 @@ export TORCH_NCCL_BLOCKING_WAIT=1
 export NCCL_TIMEOUT=600
 export NCCL_IB_DISABLE=1             # single-node hygiene
 
-accelerate launch --multi_gpu --config_file ./configs/accelerate.yaml finetune.py \
+accelerate launch --multi_gpu --config_file ./configs/accelerate-single.yaml finetune.py \
   --base_model ../models/whisper-large-v3 \
   --output_dir ../models/output-full-finetune \
   --num_train_epochs 6 \
