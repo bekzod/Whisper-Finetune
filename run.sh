@@ -22,7 +22,7 @@ export NCCL_IB_DISABLE=1             # single-node hygiene
 # export WANDB_API_KEY="<NEW_KEY>"
 # python -c "import os,wandb; wandb.login(key=os.environ['WANDB_API_KEY'])"
 
-accelerate launch --multi_gpu --num_processes=2 --config_file ./configs/accelerate.yaml finetune.py \
+accelerate launch --multi_gpu --config_file ./configs/accelerate.yaml finetune.py \
   --base_model ../models/whisper-large-v3 \
   --output_dir ../models/output \
   --num_train_epochs 8 \
