@@ -198,7 +198,7 @@ add_arg(
 add_arg(
     "early_stopping_patience",
     type=int,
-    default=3,
+    default=4,
     help="Number of evaluations with no improvement before stopping",
 )
 add_arg(
