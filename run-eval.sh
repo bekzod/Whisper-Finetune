@@ -4,8 +4,7 @@ export CUDA_VISIBLE_DEVICES=0
 
 python ./evaluation.py \
   --test_data ../datasets/dataset_for_stt_ttsmodels/metadata.csv \
-  --model_path ../models/whisper-large-v3 \
-  --adapter_path ../models/output/whisper-large-v3-1/checkpoint-best \
+  --model_path ../models/models/output-full-finetune/whisper-large-v3-20251008-1047/best-checkpoint \
   --batch_size 16 \
   --num_workers 8 \
   --language Uzbek \
@@ -19,3 +18,4 @@ python ./evaluation.py \
   --kenlm_path /workspace/models/uzbek.o5.arpa \
   --kenlm_alpha 0.6 \
   --kenlm_top_k 200
+  # --adapter_path ../models/output/whisper-large-v3-1/checkpoint-best \
