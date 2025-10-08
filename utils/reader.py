@@ -710,7 +710,9 @@ class CustomDataset(Dataset):
 
                     tar_root_to_subdirs: Dict[str, Set[str]] = {}
 
-                    def _record_tar_stem(root_path: str, tar_name: str) -> tuple[str, str]:
+                    def _record_tar_stem(
+                        root_path: str, tar_name: str
+                    ) -> tuple[str, str]:
                         root_abs = os.path.abspath(root_path)
                         if tar_name.endswith(".tar.gz"):
                             stem = tar_name[: -len(".tar.gz")]
@@ -728,16 +730,28 @@ class CustomDataset(Dataset):
                             return
                         tar_path = os.path.join(root_abs, tar_name)
                         print(f"  Extracting {tar_name} to {root_abs}")
-                        with tarfile.open(tar_path, "r:*") as tar:
+
+                        # Open with appropriate mode for better performance
+                        mode = "r:gz" if tar_name.endswith(".tar.gz") else "r:"
+                        with tarfile.open(tar_path, mode) as tar:
+                            # Pre-validate all paths in batch for security
+                            safe_members = []
                             for member in tar:
                                 target_path = os.path.abspath(
                                     os.path.join(root_abs, member.name)
                                 )
-                                if os.path.commonpath([root_abs, target_path]) != root_abs:
+                                if (
+                                    os.path.commonpath([root_abs, target_path])
+                                    != root_abs
+                                ):
                                     raise RuntimeError(
                                         f"Blocked path traversal while extracting {tar_name}"
                                     )
-                                tar.extract(member, root_abs)
+                                safe_members.append(member)
+
+                            # Extract all validated members at once - much faster than individual extracts
+                            tar.extractall(root_abs, members=safe_members)
+
                         with open(marker_path, "w", encoding="utf-8") as f:
                             f.write("extracted")
 
@@ -834,7 +848,9 @@ class CustomDataset(Dataset):
                                     if os.path.exists(direct_path):
                                         resolved = direct_path
                                         break
-                                    for suffix in tar_root_to_subdirs.get(base_dir, set()):
+                                    for suffix in tar_root_to_subdirs.get(
+                                        base_dir, set()
+                                    ):
                                         nested_path = os.path.join(
                                             base_dir, suffix, os.path.basename(name)
                                         )
@@ -860,7 +876,11 @@ class CustomDataset(Dataset):
                             return resolved
 
                         seen_tsv: Set[str] = set()
-                        for variant in subset_variants or ["train", "validation", "test"]:
+                        for variant in subset_variants or [
+                            "train",
+                            "validation",
+                            "test",
+                        ]:
                             tsv_file = os.path.join(transcript_dir, f"{variant}.tsv")
                             if not os.path.exists(tsv_file) or tsv_file in seen_tsv:
                                 continue
@@ -871,7 +891,9 @@ class CustomDataset(Dataset):
                                 if not header_line:
                                     continue
                                 header = header_line.strip().split("\t")
-                                path_idx = header.index("path") if "path" in header else 0
+                                path_idx = (
+                                    header.index("path") if "path" in header else 0
+                                )
                                 sentence_idx = (
                                     header.index("sentence")
                                     if "sentence" in header
