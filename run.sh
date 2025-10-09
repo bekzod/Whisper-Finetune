@@ -12,7 +12,10 @@ export ATEN_ALLOW_TF32=1
 export TORCH_ALLOW_TF32_CUBLAS=1
 export TORCH_ALLOW_TF32_CUDNN=1
 export CUFFT_ALLOW_TF32=1
-export NCCL_NVLS_ENABLE=1
+export NCCL_NVLS_ENABLE=0           # avoid NVLink/NVSwitch fast path (forces PCIe fallback)
+export NCCL_P2P_DISABLE=1           # fully disable peer-to-peer BAR/NVLink access
+export NCCL_NVLINK_DISABLE=1        # guard against accidental NVLink activation
+export NCCL_P2P_LEVEL=PXB           # only allow PCIe (PXB) level communication
 
 # Diagnostics / stability
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
