@@ -150,7 +150,7 @@ add_arg(
 add_arg(
     "warmup_ratio",
     type=float,
-    default=0.05,
+    default=0.08,
     help="Warmup ratio for learning rate scheduler",
 )
 add_arg(

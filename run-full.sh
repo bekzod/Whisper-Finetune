@@ -36,7 +36,7 @@ accelerate launch --multi_gpu --config_file ./configs/accelerate-single.yaml fin
   --logging_steps 200 \
   --eval_steps 600 \
   --save_steps 600 \
-  --warmup_ratio 0.05 \
+  --warmup_ratio 0.08 \
   --lr_scheduler_type cosine \
   --use_lora False \
   --weight_decay 0.008 \
