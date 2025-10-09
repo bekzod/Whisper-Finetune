@@ -1030,6 +1030,14 @@ class CustomDataset(Dataset):
                                 if not header_keys:
                                     continue
 
+                                dict_rows = iter(dict_rows)
+                                try:
+                                    first_item = next(dict_rows)
+                                except StopIteration:
+                                    continue
+                                dict_rows = chain([first_item], dict_rows)
+                                _, first_row = first_item
+
                                 def _resolve_column(
                                     candidates: Sequence[str], default_idx: int
                                 ) -> Optional[str]:
@@ -1065,6 +1073,49 @@ class CustomDataset(Dataset):
                                     if len(header_keys) > 2
                                     else len(header_keys) - 1,
                                 )
+
+                                def _looks_like_audio_path(value: str) -> bool:
+                                    if not value:
+                                        return False
+                                    lowered = str(value).lower()
+                                    audio_exts = (".wav", ".mp3", ".flac", ".m4a", ".ogg")
+                                    return lowered.endswith(audio_exts)
+
+                                header_is_synthetic = all(
+                                    key.startswith("column_")
+                                    and header_lookup.get(key) == key
+                                    for key in header_keys
+                                )
+                                if header_is_synthetic:
+                                    first_col_value = (
+                                        first_row.get(header_keys[0], "")
+                                        if header_keys
+                                        else ""
+                                    )
+                                    second_col_value = (
+                                        first_row.get(header_keys[1], "")
+                                        if len(header_keys) > 1
+                                        else ""
+                                    )
+                                    third_col_value = (
+                                        first_row.get(header_keys[2], "")
+                                        if len(header_keys) > 2
+                                        else ""
+                                    )
+                                    # google/fleurs TSV exports sometimes omit the header row.
+                                    # The first column is an ID, the second is the audio path, and the third is text.
+                                    if (
+                                        len(header_keys) > 1
+                                        and not _looks_like_audio_path(first_col_value)
+                                        and _looks_like_audio_path(second_col_value)
+                                    ):
+                                        audio_column = header_keys[1]
+                                    if (
+                                        len(header_keys) > 2
+                                        and third_col_value
+                                        and not _looks_like_audio_path(third_col_value)
+                                    ):
+                                        text_column = header_keys[2]
 
                                 if audio_column is None or text_column is None:
                                     print(
