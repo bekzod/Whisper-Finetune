@@ -1038,6 +1038,35 @@ class CustomDataset(Dataset):
                                 dict_rows = chain([first_item], dict_rows)
                                 _, first_row = first_item
 
+                                def _peek_resolved_audio_column() -> Optional[str]:
+                                    candidates: List[str] = []
+                                    for key in header_keys:
+                                        candidate_value = first_row.get(key, "")
+                                        if not candidate_value:
+                                            continue
+                                        resolved = resolve_audio(str(candidate_value))
+                                        if resolved:
+                                            candidates.append(key)
+                                    return candidates[0] if candidates else None
+
+                                def _pick_text_column(existing_audio_col: Optional[str]) -> Optional[str]:
+                                    best_key: Optional[str] = None
+                                    best_score = -1
+                                    for key in header_keys:
+                                        if key == existing_audio_col:
+                                            continue
+                                        value = str(first_row.get(key, "")).strip()
+                                        if not value:
+                                            continue
+                                        score = 0
+                                        if " " in value:
+                                            score += 2
+                                        score += min(len(value), 120) / 40.0
+                                        if score > best_score:
+                                            best_score = score
+                                            best_key = key
+                                    return best_key
+
                                 def _resolve_column(
                                     candidates: Sequence[str], default_idx: int
                                 ) -> Optional[str]:
@@ -1081,6 +1110,10 @@ class CustomDataset(Dataset):
                                     audio_exts = (".wav", ".mp3", ".flac", ".m4a", ".ogg")
                                     return lowered.endswith(audio_exts)
 
+                                resolved_audio_col = _peek_resolved_audio_column()
+                                if resolved_audio_col and resolved_audio_col in header_keys:
+                                    audio_column = resolved_audio_col
+
                                 header_is_synthetic = all(
                                     key.startswith("column_")
                                     and header_lookup.get(key) == key
@@ -1116,6 +1149,29 @@ class CustomDataset(Dataset):
                                         and not _looks_like_audio_path(third_col_value)
                                     ):
                                         text_column = header_keys[2]
+                                    if text_column is None:
+                                        text_column = _pick_text_column(audio_column)
+
+                                if text_column is None:
+                                    text_column = _pick_text_column(audio_column)
+
+                                if header_is_synthetic:
+                                    if (
+                                        len(header_keys) > 1
+                                        and audio_column == header_keys[0]
+                                    ):
+                                        audio_column = header_keys[1]
+                                    if len(header_keys) > 2:
+                                        if text_column is None or text_column == audio_column:
+                                            text_column = header_keys[2]
+                                    elif (
+                                        text_column == audio_column
+                                        and len(header_keys) > 1
+                                    ):
+                                        text_column = header_keys[1]
+
+                                if text_column == audio_column:
+                                    text_column = _pick_text_column(audio_column)
 
                                 if audio_column is None or text_column is None:
                                     print(
