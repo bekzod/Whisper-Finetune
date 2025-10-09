@@ -27,7 +27,7 @@
     {
       "name": "google/fleurs",
       "subset": "uz_uz",
-      "splits": ["train", "test"]
+      "splits": ["train", "test", "dev"]
     },
     {
       "name": "bekzod123/uzbek_voice",
@@ -60,11 +60,6 @@
     }
   ],
   "eval": [
-    {
-      "name": "google/fleurs",
-      "subset": "uz_uz",
-      "splits": ["dev"]
-    },
     {
       "name": "mozilla-foundation/common_voice_17_0",
       "subset": "uz",
