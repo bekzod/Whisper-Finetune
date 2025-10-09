@@ -15,7 +15,8 @@ export ATEN_ALLOW_TF32=1
 export TORCH_ALLOW_TF32_CUBLAS=1
 export TORCH_ALLOW_TF32_CUDNN=1
 export CUFFT_ALLOW_TF32=1
-# export NCCL_NVLS_ENABLE=1
+export NCCL_NVLS_ENABLE=0
+export NCCL_P2P_DISABLE=1   # disable peer-to-peer GPU direct (forces PCIe instead of NVLink)
 
 # Diagnostics / stability
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
