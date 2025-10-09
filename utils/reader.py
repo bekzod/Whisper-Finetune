@@ -8,8 +8,9 @@ import tarfile
 import time
 import warnings
 from dataclasses import dataclass
-from itertools import chain
-from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Set, TextIO, Union
+from itertools import chain, zip_longest
+from typing import Any, Dict, Iterator, List, Optional, Sequence, Set, TextIO, Union
+import re
 
 import numpy as np
 import soundfile
@@ -27,6 +28,9 @@ try:
 except (OverflowError, AttributeError):
     # Fall back to a large but safe limit if sys.maxsize is not accepted
     csv.field_size_limit(2**31 - 1)
+
+MAX_TRANSCRIPT_CHAR_LIMIT = 800
+
 
 @dataclass(slots=True)
 class ManifestEntry:
@@ -103,9 +107,6 @@ def normalize_text(text):
     for variant in apostrophe_variants:
         normalized = normalized.replace(variant, "'")
 
-    # Keep only alphabetical characters, comma, dot, apostrophe, and spaces
-    import re
-
     # This regex keeps Latin & Cyrillic letters, spaces, comma, dot, apostrophe, dash
     normalized = re.sub(r"[^a-zA-ZА-Яа-яЎўҚқҒғҲҳ0-9\s,.'-]+", "", normalized)
 
@@ -171,7 +172,9 @@ def _iter_tsv_rows(
                 cell = _strip_bom(cell.strip()) if isinstance(cell, str) else cell
                 row.append(cell)
         else:
-            row = [_strip_bom(cell) if isinstance(cell, str) else cell for cell in raw_row]
+            row = [
+                _strip_bom(cell) if isinstance(cell, str) else cell for cell in raw_row
+            ]
         if skip_comments:
             for cell in row:
                 if not cell:
@@ -182,6 +185,135 @@ def _iter_tsv_rows(
             if not row:
                 continue
         yield row
+
+
+def _prepare_tsv_header(raw_header: Sequence[str]) -> List[str]:
+    """
+    Normalize TSV header names to lowercase unique keys for robust lookups.
+    Empty headers are replaced with positional placeholders.
+    """
+    normalized: List[str] = []
+    seen: Dict[str, int] = {}
+    for idx, cell in enumerate(raw_header):
+        if isinstance(cell, str):
+            header_name = _strip_bom(cell).strip().lower()
+        elif cell is None:
+            header_name = ""
+        else:
+            header_name = str(cell).strip().lower()
+
+        if not header_name:
+            header_name = f"column_{idx}"
+
+        base = header_name
+        count = seen.get(base, 0)
+        if count > 0:
+            header_name = f"{base}_{count + 1}"
+        seen[base] = count + 1
+        normalized.append(header_name)
+
+    return normalized
+
+
+def _iter_tsv_dict_rows(
+    file_obj: TextIO,
+    *,
+    delimiter: str = "\t",
+    strip_cells: bool = True,
+    skip_comments: bool = True,
+) -> tuple[List[str], Dict[str, str], Iterator[tuple[int, Dict[str, str]]]]:
+    """
+    Yield TSV rows as dictionaries keyed by normalized lowercase header names.
+
+    Returns:
+        header_keys: normalized lowercase header names.
+        header_lookup: mapping of normalized names to their original header string.
+        row_iter: iterator yielding (line_number, row_dict) pairs.
+    """
+    row_iter = _iter_tsv_rows(
+        file_obj,
+        delimiter=delimiter,
+        strip_cells=strip_cells,
+        skip_comments=skip_comments,
+    )
+    header_row = next(row_iter, None)
+    if not header_row:
+        return [], {}, iter(())
+
+    original_header: List[str] = []
+    normalized_header_lower: List[str] = []
+    for idx, cell in enumerate(header_row):
+        if isinstance(cell, str):
+            cleaned = _strip_bom(cell).strip()
+        elif cell is None:
+            cleaned = ""
+        else:
+            cleaned = str(cell).strip()
+        original_header.append(cleaned)
+        normalized_header_lower.append(cleaned.lower())
+
+    header_hint_substrings = (
+        "path",
+        "audio",
+        "filename",
+        "file",
+        "text",
+        "sentence",
+        "transcript",
+        "transcription",
+        "normalized",
+        "raw",
+        "duration",
+        "language",
+        "id",
+    )
+    header_present = any(
+        any(hint in cell for hint in header_hint_substrings) and cell
+        for cell in normalized_header_lower
+    )
+
+    if header_present:
+        header_keys = _prepare_tsv_header(original_header)
+        header_lookup = {
+            header_keys[idx]: (original_header[idx] or header_keys[idx])
+            for idx in range(len(header_keys))
+        }
+        data_iter: Iterator[List[str]] = row_iter
+        first_data_line_number = 2
+    else:
+        header_keys = [f"column_{idx}" for idx in range(len(original_header))]
+        header_lookup = {key: key for key in header_keys}
+        data_iter = chain([original_header], row_iter)
+        first_data_line_number = 1
+        source_desc = getattr(file_obj, "name", "<tsv>")
+        print(f"  Info: No header detected in {source_desc}; using positional columns.")
+
+    def generator() -> Iterator[tuple[int, Dict[str, str]]]:
+        extras_warning_emitted = False
+        for line_number, row in enumerate(data_iter, start=first_data_line_number):
+            if not row:
+                continue
+            if len(row) > len(header_keys) and not extras_warning_emitted:
+                extras_warning_emitted = True
+                ignored = len(row) - len(header_keys)
+                print(
+                    f"  Warning: detected {ignored} extra columns starting at line {line_number}; ignoring surplus values."
+                )
+
+            row_dict: Dict[str, str] = {}
+            for key, value in zip_longest(header_keys, row, fillvalue=""):
+                if key is None:
+                    continue
+                if value is None:
+                    cell_value = ""
+                elif isinstance(value, str):
+                    cell_value = value
+                else:
+                    cell_value = str(value)
+                row_dict[key] = cell_value
+            yield line_number, row_dict
+
+    return header_keys, header_lookup, generator()
 
 
 def _detect_column_index(
@@ -432,7 +564,19 @@ class CustomDataset(Dataset):
                 return False
 
         transcript_len = self._transcript_length(entry)
-        if transcript_len < self.min_sentence or transcript_len > self.max_sentence:
+        if transcript_len < self.min_sentence:
+            return False
+        if self.max_sentence != -1 and transcript_len > self.max_sentence:
+            return False
+        if transcript_len > MAX_TRANSCRIPT_CHAR_LIMIT:
+            print(
+                f"⚠️  Dropping entry with {transcript_len} characters (limit: {MAX_TRANSCRIPT_CHAR_LIMIT})."
+            )
+            if entry.sentence:
+                print(
+                    f"   Text preview: '{entry.sentence[:100]}{'...' if len(entry.sentence) > 100 else ''}'"
+                )
+            print(f"   Audio path: {entry.audio_path}")
             return False
 
         # Require at least one textual source
@@ -872,26 +1016,43 @@ class CustomDataset(Dataset):
 
                             return None
 
+                        missing_logged: Set[str] = set()
+
                         for split in split_candidates:
                             tsv_file = os.path.join(data_dir, f"{split}.tsv")
                             if not os.path.exists(tsv_file):
                                 continue
                             print(f"  Processing TSV file: {tsv_file}")
                             with open(tsv_file, "r", encoding="utf-8", newline="") as f:
-                                row_iter = _iter_tsv_rows(f)
-                                audio_idx = 1
-                                text_idx = 2
-                                data_rows: Iterable[List[str]]
-                                first_row = next(row_iter, None)
-                                if first_row:
-                                    audio_candidates = (
+                                header_keys, header_lookup, dict_rows = (
+                                    _iter_tsv_dict_rows(f)
+                                )
+                                if not header_keys:
+                                    continue
+
+                                def _resolve_column(
+                                    candidates: Sequence[str], default_idx: int
+                                ) -> Optional[str]:
+                                    for candidate in candidates:
+                                        cand_key = candidate.strip().lower()
+                                        if cand_key in header_lookup:
+                                            return cand_key
+                                    if 0 <= default_idx < len(header_keys):
+                                        return header_keys[default_idx]
+                                    return None
+
+                                audio_column = _resolve_column(
+                                    [
                                         "path",
                                         "filename",
                                         "file",
                                         "audio",
                                         "audio_filename",
-                                    )
-                                    text_candidates = (
+                                    ],
+                                    default_idx=0,
+                                )
+                                text_column = _resolve_column(
+                                    [
                                         "text",
                                         "transcription",
                                         "sentence",
@@ -899,30 +1060,45 @@ class CustomDataset(Dataset):
                                         "raw_transcription",
                                         "normalized_text",
                                         "raw_text",
-                                    )
-                                    detected_audio_idx = _detect_column_index(
-                                        first_row, audio_candidates, None
-                                    )
-                                    detected_text_idx = _detect_column_index(
-                                        first_row, text_candidates, None
-                                    )
+                                    ],
+                                    default_idx=2
+                                    if len(header_keys) > 2
+                                    else len(header_keys) - 1,
+                                )
 
-                                    if detected_audio_idx is not None or detected_text_idx is not None:
-                                        if detected_audio_idx is not None:
-                                            audio_idx = detected_audio_idx
-                                        if detected_text_idx is not None:
-                                            text_idx = detected_text_idx
-                                        data_rows: Iterable[List[str]] = row_iter
-                                    else:
-                                        data_rows = chain([first_row], row_iter)
-                                else:
-                                    data_rows = []
+                                if audio_column is None or text_column is None:
+                                    print(
+                                        f"  Warning: could not detect audio/text columns in {tsv_file}. Header: {list(header_lookup.values())}"
+                                    )
+                                    continue
 
-                                for row in data_rows:
-                                    if len(row) <= max(audio_idx, text_idx):
+                                skipped_long = 0
+
+                                for line_number, row_dict in dict_rows:
+                                    audio_filename = (
+                                        row_dict.get(audio_column) or ""
+                                    ).strip()
+                                    if not audio_filename:
                                         continue
-                                    audio_filename = row[audio_idx]
-                                    transcription = row[text_idx]
+
+                                    transcription_value = row_dict.get(text_column, "")
+                                    if transcription_value is None:
+                                        transcription = ""
+                                    else:
+                                        transcription = str(transcription_value).strip()
+
+                                    if not transcription:
+                                        continue
+                                    if len(transcription) > MAX_TRANSCRIPT_CHAR_LIMIT:
+                                        skipped_long += 1
+                                        preview = transcription[:120].replace("\n", " ")
+                                        msg = (
+                                            f"  Dropping line {line_number} in {os.path.basename(tsv_file)}: "
+                                            f"transcript has {len(transcription)} chars (limit {MAX_TRANSCRIPT_CHAR_LIMIT}). "
+                                            f"Preview: '{preview}{'...' if len(transcription) > 120 else ''}'"
+                                        )
+                                        print(msg)
+                                        continue
 
                                     audio_path = resolve_audio(audio_filename)
                                     if audio_path:
@@ -930,6 +1106,16 @@ class CustomDataset(Dataset):
                                             "audio": {"path": audio_path},
                                             "text": transcription,
                                         }
+                                    elif audio_filename not in missing_logged:
+                                        print(
+                                            f"  Warning (line {line_number}): audio file '{audio_filename}' not found under {audio_dir}"
+                                        )
+                                        missing_logged.add(audio_filename)
+
+                                if skipped_long:
+                                    print(
+                                        f"  Skipped {skipped_long} entries in {os.path.basename(tsv_file)} due to transcripts longer than {MAX_TRANSCRIPT_CHAR_LIMIT} characters."
+                                    )
 
                     # Use the generator instead of a list
                     dataset = fleurs_generator()
@@ -1152,33 +1338,24 @@ class CustomDataset(Dataset):
                             seen_tsv.add(tsv_file)
                             print(f"  Processing TSV file: {tsv_file}")
                             with open(tsv_file, "r", encoding="utf-8", newline="") as f:
-                                row_iter = _iter_tsv_rows(f)
-                                header = next(row_iter, None)
-                                if not header:
+                                header_keys, header_lookup, dict_rows = (
+                                    _iter_tsv_dict_rows(f)
+                                )
+                                if not header_keys:
                                     continue
-                                fieldnames = [_strip_bom(name) if isinstance(name, str) else name for name in header]
-
-                                lower_to_original = {
-                                    name.lower(): name for name in fieldnames if isinstance(name, str) and name
-                                }
 
                                 def _select_column(
-                                    candidates: List[str], default_idx: int
-                                ) -> str:
+                                    candidates: Sequence[str], default_idx: int
+                                ) -> Optional[str]:
                                     for candidate in candidates:
-                                        match = lower_to_original.get(candidate)
-                                        if match:
-                                            return match
-                                    # Fallback: avoid IndexError if TSV is malformed
-                                    if (
-                                        0 <= default_idx < len(fieldnames)
-                                        and fieldnames[default_idx]
-                                    ):
-                                        return fieldnames[default_idx]
-                                    for name in fieldnames:
-                                        if name:
-                                            return name
-                                    return fieldnames[0]
+                                        cand_key = candidate.strip().lower()
+                                        if cand_key in header_lookup:
+                                            return cand_key
+                                    if 0 <= default_idx < len(header_keys):
+                                        return header_keys[default_idx]
+                                    if header_keys:
+                                        return header_keys[0]
+                                    return None
 
                                 path_column = _select_column(
                                     [
@@ -1196,21 +1373,49 @@ class CustomDataset(Dataset):
                                         "text",
                                         "transcription",
                                         "transcript",
+                                        "text_latin",
                                         "normalized_text",
                                         "raw_text",
                                     ],
-                                    default_idx=2,
+                                    default_idx=2
+                                    if len(header_keys) > 2
+                                    else len(header_keys) - 1,
                                 )
 
-                                for row_number, row in enumerate(row_iter, start=2):
-                                    row_dict = {
-                                        fieldnames[idx]: row[idx] if idx < len(row) else ""
-                                        for idx in range(len(fieldnames))
-                                    }
-                                    audio_filename = (row_dict.get(path_column) or "").strip()
+                                if path_column is None or text_column is None:
+                                    print(
+                                        f"  Warning: could not detect required columns in {tsv_file}. Header: {list(header_lookup.values())}"
+                                    )
+                                    continue
+
+                                skipped_long = 0
+
+                                for row_number, row_dict in dict_rows:
+                                    audio_filename = (
+                                        row_dict.get(path_column) or ""
+                                    ).strip()
                                     if not audio_filename:
                                         continue
-                                    transcription = row_dict.get(text_column)
+
+                                    transcription_value = row_dict.get(text_column, "")
+                                    if transcription_value is None:
+                                        transcription = ""
+                                    else:
+                                        transcription = str(transcription_value).strip()
+
+                                    if not transcription:
+                                        continue
+                                    if len(transcription) > MAX_TRANSCRIPT_CHAR_LIMIT:
+                                        skipped_long += 1
+                                        preview = transcription[:120].replace("\n", " ")
+                                        msg = (
+                                            f"  Dropping line {row_number} in {os.path.basename(tsv_file)}: "
+                                            f"transcript has {len(transcription)} chars (limit {MAX_TRANSCRIPT_CHAR_LIMIT}). "
+                                            f"Preview: '{preview}{'...' if len(transcription) > 120 else ''}'"
+                                        )
+                                        print(msg)
+                                        continue
+
                                     resolved_path = _resolve_audio_path(audio_filename)
                                     if resolved_path:
                                         yield {
@@ -1222,6 +1427,11 @@ class CustomDataset(Dataset):
                                             f"  Warning (line {row_number}): audio file '{audio_filename}' not found under {audio_dir_abs}"
                                         )
                                         missing_logged.add(audio_filename)
+
+                                if skipped_long:
+                                    print(
+                                        f"  Skipped {skipped_long} rows in {os.path.basename(tsv_file)} due to transcripts longer than {MAX_TRANSCRIPT_CHAR_LIMIT} characters."
+                                    )
 
                     # Use the generator instead of a list
                     dataset = common_voice_generator()
@@ -1537,6 +1747,13 @@ class CustomDataset(Dataset):
                 # Create line dict in expected format
                 sentence = normalize_text(text.strip())
                 if not sentence:
+                    continue
+                if len(sentence) > MAX_TRANSCRIPT_CHAR_LIMIT:
+                    preview = sentence[:120]
+                    print(
+                        f"Skipping row in {data_path}: transcript exceeds {MAX_TRANSCRIPT_CHAR_LIMIT} characters "
+                        f"(got {len(sentence)}). Preview: '{preview}{'...' if len(sentence) > 120 else ''}'"
+                    )
                     continue
 
                 # Try to get audio duration if file exists
