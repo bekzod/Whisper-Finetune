@@ -9,7 +9,7 @@ import time
 import warnings
 from dataclasses import dataclass
 from itertools import chain
-from typing import Any, Dict, List, Optional, Set, Union
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Set, TextIO, Union
 
 import numpy as np
 import soundfile
@@ -22,6 +22,11 @@ from tqdm import tqdm
 from utils.binary import DatasetReader
 from utils.audio_augmentation import AudioAugmenter, resample
 
+try:
+    csv.field_size_limit(sys.maxsize)
+except (OverflowError, AttributeError):
+    # Fall back to a large but safe limit if sys.maxsize is not accepted
+    csv.field_size_limit(2**31 - 1)
 
 @dataclass(slots=True)
 class ManifestEntry:
@@ -132,6 +137,65 @@ def _detect_distributed() -> bool:
     ):
         return True
     return False
+
+
+def _strip_bom(value: str) -> str:
+    """Remove a UTF-8 BOM prefix if present."""
+    if value and value[0] == "\ufeff":
+        return value[1:]
+    return value
+
+
+def _iter_tsv_rows(
+    file_obj: TextIO,
+    *,
+    delimiter: str = "\t",
+    strip_cells: bool = True,
+    skip_comments: bool = True,
+) -> Iterator[List[str]]:
+    """
+    Yield TSV rows using the csv module to honor quoting and embedded delimiters.
+    """
+    reader = csv.reader(
+        file_obj,
+        delimiter=delimiter,
+        quoting=csv.QUOTE_MINIMAL,
+        skipinitialspace=False,
+    )
+    for raw_row in reader:
+        if not raw_row:
+            continue
+        if strip_cells:
+            row = []
+            for cell in raw_row:
+                cell = _strip_bom(cell.strip()) if isinstance(cell, str) else cell
+                row.append(cell)
+        else:
+            row = [_strip_bom(cell) if isinstance(cell, str) else cell for cell in raw_row]
+        if skip_comments:
+            for cell in row:
+                if not cell:
+                    continue
+                if isinstance(cell, str) and cell.startswith("#"):
+                    row = []
+                break
+            if not row:
+                continue
+        yield row
+
+
+def _detect_column_index(
+    header: Sequence[str], candidates: Sequence[str], default_idx: Optional[int]
+) -> Optional[int]:
+    """
+    Locate the index of the first matching candidate column in a normalized header.
+    """
+    normalized = {col.strip().lower(): idx for idx, col in enumerate(header) if col}
+    for candidate in candidates:
+        idx = normalized.get(candidate)
+        if idx is not None:
+            return idx
+    return default_idx
 
 
 class CustomDataset(Dataset):
@@ -814,25 +878,20 @@ class CustomDataset(Dataset):
                                 continue
                             print(f"  Processing TSV file: {tsv_file}")
                             with open(tsv_file, "r", encoding="utf-8", newline="") as f:
-                                reader = csv.reader(f, delimiter="\t")
+                                row_iter = _iter_tsv_rows(f)
                                 audio_idx = 1
                                 text_idx = 2
-                                header = next(reader, None)
-                                if header:
-                                    header = [h.strip() for h in header]
-                                    # Robustly detect audio filename column
-                                    for c in (
+                                data_rows: Iterable[List[str]]
+                                first_row = next(row_iter, None)
+                                if first_row:
+                                    audio_candidates = (
                                         "path",
                                         "filename",
                                         "file",
                                         "audio",
                                         "audio_filename",
-                                    ):
-                                        if c in header:
-                                            audio_idx = header.index(c)
-                                            break
-                                    # Robustly detect text/transcription column
-                                    for c in (
+                                    )
+                                    text_candidates = (
                                         "text",
                                         "transcription",
                                         "sentence",
@@ -840,17 +899,29 @@ class CustomDataset(Dataset):
                                         "raw_transcription",
                                         "normalized_text",
                                         "raw_text",
-                                    ):
-                                        if c in header:
-                                            text_idx = header.index(c)
-                                            break
-                                # Process rows
-                                for row in reader:
-                                    if not row:
-                                        continue
+                                    )
+                                    detected_audio_idx = _detect_column_index(
+                                        first_row, audio_candidates, None
+                                    )
+                                    detected_text_idx = _detect_column_index(
+                                        first_row, text_candidates, None
+                                    )
+
+                                    if detected_audio_idx is not None or detected_text_idx is not None:
+                                        if detected_audio_idx is not None:
+                                            audio_idx = detected_audio_idx
+                                        if detected_text_idx is not None:
+                                            text_idx = detected_text_idx
+                                        data_rows: Iterable[List[str]] = row_iter
+                                    else:
+                                        data_rows = chain([first_row], row_iter)
+                                else:
+                                    data_rows = []
+
+                                for row in data_rows:
                                     if len(row) <= max(audio_idx, text_idx):
                                         continue
-                                    audio_filename = row[audio_idx].strip()
+                                    audio_filename = row[audio_idx]
                                     transcription = row[text_idx]
 
                                     audio_path = resolve_audio(audio_filename)
@@ -1081,13 +1152,14 @@ class CustomDataset(Dataset):
                             seen_tsv.add(tsv_file)
                             print(f"  Processing TSV file: {tsv_file}")
                             with open(tsv_file, "r", encoding="utf-8", newline="") as f:
-                                reader = csv.DictReader(f, delimiter="\t")
-                                fieldnames = reader.fieldnames or []
-                                if not fieldnames:
+                                row_iter = _iter_tsv_rows(f)
+                                header = next(row_iter, None)
+                                if not header:
                                     continue
+                                fieldnames = [_strip_bom(name) if isinstance(name, str) else name for name in header]
 
                                 lower_to_original = {
-                                    name.lower(): name for name in fieldnames if name
+                                    name.lower(): name for name in fieldnames if isinstance(name, str) and name
                                 }
 
                                 def _select_column(
@@ -1130,13 +1202,15 @@ class CustomDataset(Dataset):
                                     default_idx=2,
                                 )
 
-                                for row_number, row in enumerate(reader, start=2):
-                                    if not isinstance(row, dict):
-                                        continue
-                                    audio_filename = (row.get(path_column) or "").strip()
+                                for row_number, row in enumerate(row_iter, start=2):
+                                    row_dict = {
+                                        fieldnames[idx]: row[idx] if idx < len(row) else ""
+                                        for idx in range(len(fieldnames))
+                                    }
+                                    audio_filename = (row_dict.get(path_column) or "").strip()
                                     if not audio_filename:
                                         continue
-                                    transcription = row.get(text_column)
+                                    transcription = row_dict.get(text_column)
                                     resolved_path = _resolve_audio_path(audio_filename)
                                     if resolved_path:
                                         yield {
