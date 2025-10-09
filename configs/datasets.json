@@ -40,7 +40,7 @@
     },
     {
       "name": "DavronSherbaev/uzbekvoice-filtered",
-      "splits": ["train"]
+      "splits": ["train", "validate"]
     },
     {
       "name": "bekzod123/uzbek_voice_2",
@@ -64,10 +64,6 @@
       "name": "mozilla-foundation/common_voice_17_0",
       "subset": "uz",
       "splits": ["validation"]
-    },
-    {
-      "name": "DavronSherbaev/uzbekvoice-filtered",
-      "splits": ["validate"]
     },
     {
       "name": "k2speech/FeruzaSpeech",
