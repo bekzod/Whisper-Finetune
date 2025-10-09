@@ -35,7 +35,7 @@ accelerate launch --multi_gpu --config_file ./configs/accelerate-single.yaml fin
   --per_device_eval_batch_size 186 \
   --gradient_accumulation_steps 1 \
   --freeze_encoder_epochs 1 \
-  --unfreeze_finish_ratio 0.25 \
+  --unfreeze_finish_ratio 0.26 \
   --learning_rate 1.5e-5 \
   --logging_steps 200 \
   --eval_steps 800 \
