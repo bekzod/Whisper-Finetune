@@ -4,16 +4,6 @@ deepspeed_config:
   gradient_clipping: 1.0
   bf16:
     enabled: true
-  zero_optimization:
-    stage: 2
-    overlap_comm: true
-    reduce_scatter: true
-    allgather_partitions: true
-    contiguous_gradients: true
-    offload_optimizer:
-      device: none
-    offload_param:
-      device: none
 distributed_type: DEEPSPEED
 downcast_bf16: "no"
 enable_cpu_affinity: false
