@@ -32,11 +32,11 @@ accelerate launch --multi_gpu --config_file ./configs/accelerate-single.yaml fin
   --gradient_accumulation_steps 1 \
   --freeze_encoder_epochs 1 \
   --unfreeze_finish_ratio 0.3 \
-  --learning_rate 1e-5 \
+  --learning_rate 1.5e-5 \
   --logging_steps 200 \
   --eval_steps 600 \
   --save_steps 600 \
-  --warmup_ratio 0.08 \
+  --warmup_ratio 0.06 \
   --lr_scheduler_type cosine \
   --use_lora False \
   --weight_decay 0.008 \
