@@ -813,12 +813,13 @@ class CustomDataset(Dataset):
                             if not os.path.exists(tsv_file):
                                 continue
                             print(f"  Processing TSV file: {tsv_file}")
-                            with open(tsv_file, "r", encoding="utf-8") as f:
-                                header_line = next(f, None)
+                            with open(tsv_file, "r", encoding="utf-8", newline="") as f:
+                                reader = csv.reader(f, delimiter="\t")
                                 audio_idx = 1
                                 text_idx = 2
-                                if header_line:
-                                    header = header_line.strip().split("\t")
+                                header = next(reader, None)
+                                if header:
+                                    header = [h.strip() for h in header]
                                     # Robustly detect audio filename column
                                     for c in (
                                         "path",
@@ -844,12 +845,13 @@ class CustomDataset(Dataset):
                                             text_idx = header.index(c)
                                             break
                                 # Process rows
-                                for line in f:
-                                    parts = line.strip().split("\t")
-                                    if len(parts) <= max(audio_idx, text_idx):
+                                for row in reader:
+                                    if not row:
                                         continue
-                                    audio_filename = parts[audio_idx]
-                                    transcription = parts[text_idx]
+                                    if len(row) <= max(audio_idx, text_idx):
+                                        continue
+                                    audio_filename = row[audio_idx].strip()
+                                    transcription = row[text_idx]
 
                                     audio_path = resolve_audio(audio_filename)
                                     if audio_path:
