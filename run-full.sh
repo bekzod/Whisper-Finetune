@@ -11,14 +11,14 @@ export CUDA_DEVICE_MAX_CONNECTIONS=1
 export CUDA_VISIBLE_DEVICES=0,1
 export RAYON_NUM_THREADS=1
 export TOKENIZERS_PARALLELISM=false
-export ATEN_ALLOW_TF32=1
-export TORCH_ALLOW_TF32_CUBLAS=1
-export TORCH_ALLOW_TF32_CUDNN=1
-export CUFFT_ALLOW_TF32=1
-export NCCL_NVLS_ENABLE=0
-export NCCL_P2P_DISABLE=1           # disable peer-to-peer GPU direct (forces PCIe instead of NVLink)
-export NCCL_NVLINK_DISABLE=1        # guard against NVLink path getting re-enabled
-export NCCL_P2P_LEVEL=PXB           # ensure NCCL routes over PCIe
+# export ATEN_ALLOW_TF32=1
+# export TORCH_ALLOW_TF32_CUBLAS=1
+# export TORCH_ALLOW_TF32_CUDNN=1
+# export CUFFT_ALLOW_TF32=1
+# export NCCL_NVLS_ENABLE=0
+# export NCCL_P2P_DISABLE=1           # disable peer-to-peer GPU direct (forces PCIe instead of NVLink)
+# export NCCL_NVLINK_DISABLE=1        # guard against NVLink path getting re-enabled
+# export NCCL_P2P_LEVEL=PXB           # ensure NCCL routes over PCIe
 
 # Diagnostics / stability
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
