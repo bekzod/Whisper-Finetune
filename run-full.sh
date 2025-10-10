@@ -37,9 +37,9 @@ accelerate launch --config_file ./configs/accelerate-single.yaml finetune.py \
   --freeze_encoder_epochs 1 \
   --unfreeze_finish_ratio 0.3 \
   --learning_rate 1.5e-5 \
-  --logging_steps 200 \
-  --eval_steps 800 \
-  --save_steps 800 \
+  --logging_steps 250 \
+  --eval_steps 1000 \
+  --save_steps 1000 \
   --warmup_ratio 0.06 \
   --lr_scheduler_type cosine \
   --use_lora False \
