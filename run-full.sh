@@ -31,13 +31,13 @@ accelerate launch --config_file ./configs/accelerate-single.yaml finetune.py \
   --base_model ../models/whisper-large-v3 \
   --output_dir ../models/output-full-finetune \
   --num_train_epochs 5 \
-  --per_device_train_batch_size 20 \
-  --per_device_eval_batch_size 40 \
+  --per_device_train_batch_size 22 \
+  --per_device_eval_batch_size 44 \
   --gradient_accumulation_steps 5 \
   --freeze_encoder_epochs 1 \
   --unfreeze_finish_ratio 0.28 \
   --learning_rate 1.6e-5 \
-  --logging_steps 250 \
+  --logging_steps 200 \
   --eval_steps 1000 \
   --save_steps 2000 \
   --warmup_ratio 0.06 \
