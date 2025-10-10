@@ -30,6 +30,7 @@ except (OverflowError, AttributeError):
     csv.field_size_limit(2**31 - 1)
 
 MAX_TRANSCRIPT_CHAR_LIMIT = 800
+MAX_TRANSCRIPT_TOKEN_LIMIT = 448
 
 
 @dataclass(slots=True)
@@ -552,7 +553,111 @@ class CustomDataset(Dataset):
 
         return features
 
-    def _validate_entry(self, entry: ManifestEntry) -> bool:
+    def _flatten_transcript_text(self, transcript: Any) -> str:
+        """
+        Normalize and flatten transcript content into a single string for validation.
+        Supports raw strings, dict segments, and sequences of segments.
+        """
+        if transcript is None:
+            return ""
+
+        if isinstance(transcript, str):
+            return normalize_text(transcript)
+
+        if isinstance(transcript, dict):
+            return normalize_text(str(transcript.get("text", "")))
+
+        if isinstance(transcript, Sequence) and not isinstance(
+            transcript, (str, bytes, bytearray)
+        ):
+            parts: List[str] = []
+            for segment in transcript:
+                flattened = self._flatten_transcript_text(segment)
+                if flattened:
+                    parts.append(flattened)
+            return " ".join(parts).strip()
+
+        return normalize_text(str(transcript))
+
+    def _check_transcript_limits(
+        self,
+        transcript: Any,
+        *,
+        audio_path: Optional[str] = None,
+        dataset_source: Optional[str] = None,
+        enforce_dataset_bounds: bool = False,
+    ) -> bool:
+        """
+        Validate transcript length and token count, optionally enforcing dataset-level min/max sentence bounds.
+        Returns True when the transcript passes all checks; otherwise logs a warning and returns False.
+        """
+        cleaned_text = self._flatten_transcript_text(transcript)
+        if not cleaned_text:
+            return False
+
+        char_length = len(cleaned_text)
+
+        def format_context() -> str:
+            parts: List[str] = []
+            if dataset_source:
+                parts.append(str(dataset_source))
+            if audio_path:
+                basename = os.path.basename(str(audio_path))
+                parts.append(basename or str(audio_path))
+            return f" [{' | '.join(parts)}]" if parts else ""
+
+        context = format_context()
+        preview = cleaned_text[:120].replace("\n", " ")
+        if len(cleaned_text) > 120:
+            preview += "..."
+
+        if enforce_dataset_bounds:
+            if char_length < self.min_sentence:
+                return False
+            if self.max_sentence != -1 and char_length > self.max_sentence:
+                print(
+                    f"⚠️  Dropping entry{context}: transcript has {char_length} characters "
+                    f"(dataset max_sentence limit {self.max_sentence}). Preview: '{preview}'"
+                )
+                return False
+
+        if char_length > MAX_TRANSCRIPT_CHAR_LIMIT:
+            print(
+                f"⚠️  Dropping entry{context}: transcript has {char_length} characters "
+                f"(limit {MAX_TRANSCRIPT_CHAR_LIMIT}). Preview: '{preview}'"
+            )
+            return False
+
+        if not self.processor:
+            return True
+
+        try:
+            token_count = len(
+                self.processor.tokenizer.encode(
+                    cleaned_text, add_special_tokens=False
+                )
+            )
+        except Exception as exc:
+            print(f"Warning: Could not tokenize text for validation: {exc}")
+            return False
+
+        if token_count > MAX_TRANSCRIPT_TOKEN_LIMIT:
+            print(
+                f"⚠️  Dropping entry{context}: transcript has {token_count} tokens "
+                f"(limit {MAX_TRANSCRIPT_TOKEN_LIMIT}). Preview: '{preview}'"
+            )
+            return False
+        if token_count > MAX_TRANSCRIPT_TOKEN_LIMIT - 80:
+            print(
+                f"📏 Warning{context}: transcript has {token_count} tokens "
+                f"(approaching limit {MAX_TRANSCRIPT_TOKEN_LIMIT}). Preview: '{preview}'"
+            )
+
+        return True
+
+    def _validate_entry(
+        self, entry: ManifestEntry, dataset_source: Optional[str] = None
+    ) -> bool:
         if not entry.audio_path:
             return False
 
@@ -568,44 +673,18 @@ class CustomDataset(Dataset):
             return False
         if self.max_sentence != -1 and transcript_len > self.max_sentence:
             return False
-        if transcript_len > MAX_TRANSCRIPT_CHAR_LIMIT:
-            print(
-                f"⚠️  Dropping entry with {transcript_len} characters (limit: {MAX_TRANSCRIPT_CHAR_LIMIT})."
-            )
-            if entry.sentence:
-                print(
-                    f"   Text preview: '{entry.sentence[:100]}{'...' if len(entry.sentence) > 100 else ''}'"
-                )
-            print(f"   Audio path: {entry.audio_path}")
+        transcript_source = entry.sentence if entry.sentence else entry.sentences
+        if not self._check_transcript_limits(
+            transcript_source,
+            audio_path=entry.audio_path,
+            dataset_source=dataset_source,
+            enforce_dataset_bounds=False,
+        ):
             return False
 
         # Require at least one textual source
         if not entry.sentence and entry.sentences is None:
             return False
-
-        # Check token length to prevent long sequences from causing training errors
-        if self.processor and entry.sentence:
-            try:
-                tokens = self.processor.tokenizer.encode(
-                    entry.sentence, add_special_tokens=False
-                )
-                token_count = len(tokens)
-                if token_count > 448:  # Whisper's max sequence length
-                    print(f"⚠️  Dropping entry with {token_count} tokens (max: 448)")
-                    print(
-                        f"   Text preview: '{entry.sentence[:100]}{'...' if len(entry.sentence) > 100 else ''}'"
-                    )
-                    print(f"   Audio path: {entry.audio_path}")
-                    return False
-                elif token_count > 350:  # Warning for sequences getting close to limit
-                    print(
-                        f"📏 Warning: Entry has {token_count} tokens (approaching limit of 448)"
-                    )
-                    print(
-                        f"   Text preview: '{entry.sentence[:100]}{'...' if len(entry.sentence) > 100 else ''}'"
-                    )
-            except Exception as e:
-                print(f"Warning: Could not tokenize text for validation: {e}")
 
         return True
 
@@ -670,7 +749,7 @@ class CustomDataset(Dataset):
 
     def _try_store_manifest(self, row: dict, dataset_path: str = None) -> None:
         entry = self._manifest_from_mapping(row)
-        if entry and self._validate_entry(entry):
+        if entry and self._validate_entry(entry, dataset_source=dataset_path):
             # Track and log first 2 labels from each dataset for debugging
             if dataset_path:
                 dataset_key = (
@@ -774,6 +853,8 @@ class CustomDataset(Dataset):
                 )
                 current_data_list = dataset_reader.get_keys()
                 self.data_list.extend(current_data_list)
+            elif data_path.endswith(".tsv"):
+                self._load_csv_data(data_path, delimiter="\t")
             elif data_path.endswith(".csv"):
                 # Load CSV file
                 self._load_csv_data(data_path)
@@ -1702,7 +1783,7 @@ class CustomDataset(Dataset):
             print(f"Error loading Hugging Face dataset from {data_path}: {e}")
             raise
 
-    def _load_csv_data(self, data_path):
+    def _load_csv_data(self, data_path, delimiter: Optional[str] = None):
         """Load data from CSV file. Supports multiple CSV formats with proper header mapping."""
         filter_config = self._get_filter_config_for_path(data_path)
         filter_fn = None
@@ -1723,10 +1804,10 @@ class CustomDataset(Dataset):
                     break
 
         # Reset file pointer
-        with open(data_path, "r", encoding="utf-8") as f:
+        with open(data_path, "r", encoding="utf-8", newline="") as f:
             # Detect delimiter and format
             has_header = False
-            delimiter = ","
+            detected_delimiter = delimiter or ","
 
             # Check if first line looks like a header
             first_line = sample_lines[0] if sample_lines else ""
@@ -1746,10 +1827,13 @@ class CustomDataset(Dataset):
                 has_header = True
 
             # Check for pipe delimiter (LJSpeech format)
-            if "|" in first_line and "," not in first_line:
-                delimiter = "|"
+            if delimiter is None:
+                if "|" in first_line and "," not in first_line:
+                    detected_delimiter = "|"
+                elif "\t" in first_line and "," not in first_line:
+                    detected_delimiter = "\t"
 
-            reader = csv.reader(f, delimiter=delimiter)
+            reader = csv.reader(f, delimiter=detected_delimiter)
 
             # Read and process header if present
             header_mapping = {}
@@ -1819,7 +1903,7 @@ class CustomDataset(Dataset):
                         continue
                 else:
                     # Fallback to old logic for headerless or unrecognized formats
-                    if delimiter == "|":
+                    if detected_delimiter == "|":
                         # LJSpeech format: filename|text
                         if "|" in row[0] and len(row) == 1:
                             filename, text = row[0].split("|", 1)
@@ -2096,6 +2180,7 @@ class CustomDataset(Dataset):
                 ds = None
                 row_idx = None
                 language = None
+                dataset_source = None
                 # Find which split contains this index
                 for entry in self.hf_splits:
                     n = (
@@ -2115,6 +2200,7 @@ class CustomDataset(Dataset):
 
                 if ds is None:
                     raise IndexError("Index out of range for dataset")
+                dataset_source = entry.get("name")
 
                 item = ds[row_idx]
 
@@ -2122,6 +2208,7 @@ class CustomDataset(Dataset):
                 audio_file = None
                 sample = None
                 sample_rate = None
+                audio_reference = None
                 if "audio" in item:
                     audio_data = item["audio"]
                     if isinstance(audio_data, dict):
@@ -2144,6 +2231,11 @@ class CustomDataset(Dataset):
                             sample_rate = int(
                                 audio_data.get("sampling_rate", self.sample_rate)
                             )
+                            audio_reference = (
+                                audio_data.get("path")
+                                or audio_data.get("filename")
+                                or audio_data.get("file")
+                            )
                             # Don't try to extract audio_file if we already have the sample
                         else:
                             # No array present, extract path
@@ -2152,17 +2244,22 @@ class CustomDataset(Dataset):
                                 or audio_data.get("filename")
                                 or audio_data.get("file")
                             )
+                            audio_reference = audio_file
                     else:
                         audio_file = str(audio_data)
+                        audio_reference = audio_file
 
                 # Only check other fields if we don't have a sample yet
                 if sample is None and audio_file is None:
                     if "audio_path" in item:
                         audio_file = item["audio_path"]
+                        audio_reference = audio_file
                     elif "file" in item:
                         audio_file = item["file"]
+                        audio_reference = audio_file
                     elif "filename" in item:
                         audio_file = item["filename"]
+                        audio_reference = audio_file
                     elif "path" in item:
                         # Make sure we extract string path, not a dict
                         path_val = item["path"]
@@ -2190,8 +2287,10 @@ class CustomDataset(Dataset):
                                     or path_val.get("filename")
                                     or path_val.get("file")
                                 )
+                                audio_reference = audio_file
                         else:
                             audio_file = path_val
+                            audio_reference = audio_file
 
                 # Transcript selection
                 if self.timestamps:
@@ -2211,6 +2310,14 @@ class CustomDataset(Dataset):
                     transcript = normalize_text(txt) if txt else ""
 
                 language = item.get("language", None)
+
+                if not self._check_transcript_limits(
+                    transcript,
+                    audio_path=audio_reference,
+                    dataset_source=dataset_source,
+                    enforce_dataset_bounds=True,
+                ):
+                    return self.__getitem__(random.randint(0, self.__len__() - 1))
 
                 # Read audio from file only if no decoded array available
                 if sample is None:
