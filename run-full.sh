@@ -35,8 +35,8 @@ accelerate launch --config_file ./configs/accelerate-single.yaml finetune.py \
   --per_device_eval_batch_size 40 \
   --gradient_accumulation_steps 5 \
   --freeze_encoder_epochs 1 \
-  --unfreeze_finish_ratio 0.3 \
-  --learning_rate 1.5e-5 \
+  --unfreeze_finish_ratio 0.28 \
+  --learning_rate 1.6e-5 \
   --logging_steps 250 \
   --eval_steps 1000 \
   --save_steps 1000 \
