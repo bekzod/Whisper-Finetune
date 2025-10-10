@@ -343,7 +343,7 @@ class CustomDataset(Dataset):
         min_duration=0.5,
         max_duration=30,
         min_sentence=1,
-        max_sentence=200,
+        max_sentence=450,
         augment_config_path=None,
         dataset_filters=None,
         # --- NEW: control HF Datasets multiprocessing behavior ---
@@ -633,9 +633,7 @@ class CustomDataset(Dataset):
 
         try:
             token_count = len(
-                self.processor.tokenizer.encode(
-                    cleaned_text, add_special_tokens=False
-                )
+                self.processor.tokenizer.encode(cleaned_text, add_special_tokens=False)
             )
         except Exception as exc:
             print(f"Warning: Could not tokenize text for validation: {exc}")
@@ -1130,7 +1128,9 @@ class CustomDataset(Dataset):
                                             candidates.append(key)
                                     return candidates[0] if candidates else None
 
-                                def _pick_text_column(existing_audio_col: Optional[str]) -> Optional[str]:
+                                def _pick_text_column(
+                                    existing_audio_col: Optional[str],
+                                ) -> Optional[str]:
                                     best_key: Optional[str] = None
                                     best_score = -1
                                     for key in header_keys:
@@ -1188,11 +1188,20 @@ class CustomDataset(Dataset):
                                     if not value:
                                         return False
                                     lowered = str(value).lower()
-                                    audio_exts = (".wav", ".mp3", ".flac", ".m4a", ".ogg")
+                                    audio_exts = (
+                                        ".wav",
+                                        ".mp3",
+                                        ".flac",
+                                        ".m4a",
+                                        ".ogg",
+                                    )
                                     return lowered.endswith(audio_exts)
 
                                 resolved_audio_col = _peek_resolved_audio_column()
-                                if resolved_audio_col and resolved_audio_col in header_keys:
+                                if (
+                                    resolved_audio_col
+                                    and resolved_audio_col in header_keys
+                                ):
                                     audio_column = resolved_audio_col
 
                                 header_is_synthetic = all(
@@ -1243,7 +1252,10 @@ class CustomDataset(Dataset):
                                     ):
                                         audio_column = header_keys[1]
                                     if len(header_keys) > 2:
-                                        if text_column is None or text_column == audio_column:
+                                        if (
+                                            text_column is None
+                                            or text_column == audio_column
+                                        ):
                                             text_column = header_keys[2]
                                     elif (
                                         text_column == audio_column
