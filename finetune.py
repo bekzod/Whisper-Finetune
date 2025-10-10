@@ -816,10 +816,10 @@ def main():
     # Make Whisper’s conv1 track gradients (safer AMP/bf16)
     model.model.encoder.conv1.register_forward_hook(make_inputs_require_grad)
 
-    # Gradient checkpointing
-    model.gradient_checkpointing_enable(
-        gradient_checkpointing_kwargs={"use_reentrant": False}
-    )
+    # # Gradient checkpointing
+    # model.gradient_checkpointing_enable(
+    #     gradient_checkpointing_kwargs={"use_reentrant": False}
+    # )
 
     # ----- Calculate steps for logging/eval and AdaLoRA -----
     eff_batch = (

@@ -27,13 +27,13 @@ export TORCH_NCCL_BLOCKING_WAIT=1
 export NCCL_TIMEOUT=600
 export NCCL_IB_DISABLE=1             # single-node hygiene
 
-accelerate launch --multi_gpu --config_file ./configs/accelerate-single.yaml finetune.py \
+accelerate launch --config_file ./configs/accelerate-single.yaml finetune.py \
   --base_model ../models/whisper-large-v3 \
   --output_dir ../models/output-full-finetune \
   --num_train_epochs 5 \
-  --per_device_train_batch_size 94 \
-  --per_device_eval_batch_size 188 \
-  --gradient_accumulation_steps 1 \
+  --per_device_train_batch_size 16 \
+  --per_device_eval_batch_size 32 \
+  --gradient_accumulation_steps 4 \
   --freeze_encoder_epochs 1 \
   --unfreeze_finish_ratio 0.3 \
   --learning_rate 1.5e-5 \
