@@ -935,6 +935,7 @@ def main():
         "torch_compile": args.use_compile,
         "ddp_find_unused_parameters": False if ddp else None,
         "dataloader_num_workers": args.num_workers,
+        "dataloader_prefetch_factor": 4,
         "dataloader_pin_memory": True,
         "dataloader_persistent_workers": True if args.num_workers > 0 else False,
         "remove_unused_columns": False,
