@@ -32,6 +32,12 @@ except (OverflowError, AttributeError):
 MAX_TRANSCRIPT_CHAR_LIMIT = 800
 
 
+def _preview_text(text: str, limit: int = 120) -> str:
+    """Return a single-line preview of the given text, capped at `limit` characters."""
+    snippet = text[:limit].replace("\n", " ")
+    return f"{snippet}..." if len(text) > limit else snippet
+
+
 @dataclass(slots=True)
 class ManifestEntry:
     audio_path: str
@@ -559,6 +565,19 @@ class CustomDataset(Dataset):
 
         return normalize_text(str(transcript))
 
+    def _enforce_char_limit(self, text: str, *, message_prefix: str) -> bool:
+        """
+        Ensure `text` stays within the global transcript length cap; log a message when exceeded.
+        """
+        if len(text) <= MAX_TRANSCRIPT_CHAR_LIMIT:
+            return True
+        preview = _preview_text(text)
+        print(
+            f"{message_prefix} transcript has {len(text)} chars "
+            f"(limit {MAX_TRANSCRIPT_CHAR_LIMIT}). Preview: '{preview}'"
+        )
+        return False
+
     def _check_transcript_limits(
         self,
         transcript: Any,
@@ -587,25 +606,24 @@ class CustomDataset(Dataset):
             return f" [{' | '.join(parts)}]" if parts else ""
 
         context = format_context()
-        preview = cleaned_text[:120].replace("\n", " ")
-        if len(cleaned_text) > 120:
-            preview += "..."
+        preview = _preview_text(cleaned_text)
 
-        if enforce_dataset_bounds:
-            if char_length < self.min_sentence:
-                return False
-            if self.max_sentence != -1 and char_length > self.max_sentence:
-                print(
-                    f"⚠️  Dropping entry{context}: transcript has {char_length} characters "
-                    f"(dataset max_sentence limit {self.max_sentence}). Preview: '{preview}'"
-                )
-                return False
-
-        if char_length > MAX_TRANSCRIPT_CHAR_LIMIT:
+        if enforce_dataset_bounds and char_length < self.min_sentence:
+            return False
+        if (
+            enforce_dataset_bounds
+            and self.max_sentence != -1
+            and char_length > self.max_sentence
+        ):
             print(
                 f"⚠️  Dropping entry{context}: transcript has {char_length} characters "
-                f"(limit {MAX_TRANSCRIPT_CHAR_LIMIT}). Preview: '{preview}'"
+                f"(dataset max_sentence limit {self.max_sentence}). Preview: '{preview}'"
             )
+            return False
+
+        if not self._enforce_char_limit(
+            cleaned_text, message_prefix=f"⚠️  Dropping entry{context}:"
+        ):
             return False
 
         return True
@@ -1238,23 +1256,22 @@ class CustomDataset(Dataset):
                                     if not audio_filename:
                                         continue
 
-                                    transcription_value = row_dict.get(text_column, "")
-                                    if transcription_value is None:
-                                        transcription = ""
-                                    else:
-                                        transcription = str(transcription_value).strip()
-
+                                    transcription_raw = row_dict.get(text_column, "")
+                                    transcription = (
+                                        str(transcription_raw).strip()
+                                        if transcription_raw is not None
+                                        else ""
+                                    )
                                     if not transcription:
                                         continue
-                                    if len(transcription) > MAX_TRANSCRIPT_CHAR_LIMIT:
+                                    if not self._enforce_char_limit(
+                                        transcription,
+                                        message_prefix=(
+                                            f"  Dropping line {line_number} in "
+                                            f"{os.path.basename(tsv_file)}:"
+                                        ),
+                                    ):
                                         skipped_long += 1
-                                        preview = transcription[:120].replace("\n", " ")
-                                        msg = (
-                                            f"  Dropping line {line_number} in {os.path.basename(tsv_file)}: "
-                                            f"transcript has {len(transcription)} chars (limit {MAX_TRANSCRIPT_CHAR_LIMIT}). "
-                                            f"Preview: '{preview}{'...' if len(transcription) > 120 else ''}'"
-                                        )
-                                        print(msg)
                                         continue
 
                                     audio_path = resolve_audio(audio_filename)
@@ -1554,23 +1571,22 @@ class CustomDataset(Dataset):
                                     if not audio_filename:
                                         continue
 
-                                    transcription_value = row_dict.get(text_column, "")
-                                    if transcription_value is None:
-                                        transcription = ""
-                                    else:
-                                        transcription = str(transcription_value).strip()
-
+                                    transcription_raw = row_dict.get(text_column, "")
+                                    transcription = (
+                                        str(transcription_raw).strip()
+                                        if transcription_raw is not None
+                                        else ""
+                                    )
                                     if not transcription:
                                         continue
-                                    if len(transcription) > MAX_TRANSCRIPT_CHAR_LIMIT:
+                                    if not self._enforce_char_limit(
+                                        transcription,
+                                        message_prefix=(
+                                            f"  Dropping line {row_number} in "
+                                            f"{os.path.basename(tsv_file)}:"
+                                        ),
+                                    ):
                                         skipped_long += 1
-                                        preview = transcription[:120].replace("\n", " ")
-                                        msg = (
-                                            f"  Dropping line {row_number} in {os.path.basename(tsv_file)}: "
-                                            f"transcript has {len(transcription)} chars (limit {MAX_TRANSCRIPT_CHAR_LIMIT}). "
-                                            f"Preview: '{preview}{'...' if len(transcription) > 120 else ''}'"
-                                        )
-                                        print(msg)
                                         continue
 
                                     resolved_path = _resolve_audio_path(audio_filename)
@@ -1909,10 +1925,10 @@ class CustomDataset(Dataset):
                 if not sentence:
                     continue
                 if len(sentence) > MAX_TRANSCRIPT_CHAR_LIMIT:
-                    preview = sentence[:120]
+                    preview = _preview_text(sentence)
                     print(
                         f"Skipping row in {data_path}: transcript exceeds {MAX_TRANSCRIPT_CHAR_LIMIT} characters "
-                        f"(got {len(sentence)}). Preview: '{preview}{'...' if len(sentence) > 120 else ''}'"
+                        f"(got {len(sentence)}). Preview: '{preview}'"
                     )
                     continue
 
