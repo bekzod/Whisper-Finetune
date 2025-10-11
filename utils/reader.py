@@ -375,7 +375,7 @@ class CustomDataset(Dataset):
         assert min_sentence >= 1, (
             f"min_sentence cannot be less than 1, current value: {min_sentence}"
         )
-        assert max_sentence <= 300, (
+        assert max_sentence <= 320, (
             f"max_sentence cannot be greater than 300, current value: {max_sentence}"
         )
         self.data_list_path = data_list_path
