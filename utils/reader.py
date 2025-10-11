@@ -2347,15 +2347,37 @@ class CustomDataset(Dataset):
                     ).input_features
                     data["input_features"] = self._ensure_2d_features(feats)
                 else:
-                    # -------- non-timestamps training: return features + RAW TEXT --------
-                    feats = self.processor(
-                        audio=sample, sampling_rate=self.sample_rate
-                    ).input_features
+                    # -------- non-timestamps training: use processor to build labels --------
+                    processed = self.processor(
+                        audio=sample, sampling_rate=self.sample_rate, text=transcript
+                    )
+                    feats = processed.get("input_features")
+                    if feats is None:
+                        raise ValueError(
+                            "Processor returned no input_features for non-timestamp sample."
+                        )
+
+                    raw_labels = processed.get("labels")
+                    if raw_labels is None:
+                        raw_labels = processed.get("label_ids")
+                    if raw_labels is None:
+                        raise ValueError(
+                            "Processor returned neither 'labels' nor 'label_ids'."
+                        )
+
+                    # Flatten any nested structures from single-sample processor calls
+                    if isinstance(raw_labels, (list, tuple)) and raw_labels:
+                        first_elem = raw_labels[0]
+                        if isinstance(first_elem, (list, tuple, np.ndarray)):
+                            raw_labels = first_elem
+                    if hasattr(raw_labels, "tolist"):
+                        raw_labels = raw_labels.tolist()
+                    labels = list(raw_labels)
+
                     data = {
-                        "input_features": self._ensure_2d_features(
-                            feats
-                        ),  # (80, T) or torch tensor of same
-                        "text": transcript,  # <-- collator will batch-tokenize
+                        "input_features": self._ensure_2d_features(feats),
+                        "labels": labels,
+                        "text": transcript,
                     }
             else:
                 # If there's no text, use <|nospeech|> token (kept as IDs; collator pads)
