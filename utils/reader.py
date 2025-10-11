@@ -343,7 +343,7 @@ class CustomDataset(Dataset):
         min_duration=0.5,
         max_duration=30,
         min_sentence=1,
-        max_sentence=200,
+        max_sentence=300,
         augment_config_path=None,
         dataset_filters=None,
     ):
@@ -370,8 +370,8 @@ class CustomDataset(Dataset):
         assert min_sentence >= 1, (
             f"min_sentence cannot be less than 1, current value: {min_sentence}"
         )
-        assert max_sentence <= 200, (
-            f"max_sentence cannot be greater than 200, current value: {max_sentence}"
+        assert max_sentence <= 300, (
+            f"max_sentence cannot be greater than 300, current value: {max_sentence}"
         )
         self.data_list_path = data_list_path
         self.processor = processor
