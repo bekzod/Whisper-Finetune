@@ -343,7 +343,7 @@ class CustomDataset(Dataset):
         min_duration=0.5,
         max_duration=30,
         min_sentence=1,
-        max_sentence=300,
+        max_sentence=320,
         augment_config_path=None,
         dataset_filters=None,
     ):
