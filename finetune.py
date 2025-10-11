@@ -806,7 +806,6 @@ def main():
     model.config.forced_decoder_ids = None  # training
     model.generation_config.forced_decoder_ids = eval_forced_decoder_ids  # eval
     try:
-        model.generation_config.language = "<|uz|>"
         model.generation_config.task = "transcribe"
         model.generation_config.no_timestamps = not args.timestamps
         model.config.suppress_tokens = []
@@ -817,9 +816,9 @@ def main():
     model.model.encoder.conv1.register_forward_hook(make_inputs_require_grad)
 
     # # Gradient checkpointing
-    # model.gradient_checkpointing_enable(
-    #     gradient_checkpointing_kwargs={"use_reentrant": False}
-    # )
+    model.gradient_checkpointing_enable(
+        gradient_checkpointing_kwargs={"use_reentrant": False}
+    )
 
     # ----- Calculate steps for logging/eval and AdaLoRA -----
     eff_batch = (
