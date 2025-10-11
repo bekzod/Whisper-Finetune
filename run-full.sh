@@ -32,7 +32,7 @@ accelerate launch --config_file ./configs/accelerate-single.yaml finetune.py \
   --output_dir ../models/output-full-finetune \
   --num_train_epochs 5 \
   --per_device_train_batch_size 130 \
-  --per_device_eval_batch_size 264 \
+  --per_device_eval_batch_size 240 \
   --gradient_accumulation_steps 1 \
   --freeze_encoder_epochs 1 \
   --unfreeze_finish_ratio 0.28 \
