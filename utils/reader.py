@@ -343,11 +343,9 @@ class CustomDataset(Dataset):
         min_duration=0.5,
         max_duration=30,
         min_sentence=1,
-        max_sentence=450,
+        max_sentence=200,
         augment_config_path=None,
         dataset_filters=None,
-        # --- NEW: control HF Datasets multiprocessing behavior ---
-        force_num_proc: Optional[int] = None,
     ):
         """
         Args:
@@ -361,8 +359,6 @@ class CustomDataset(Dataset):
             min_sentence, max_sentence: character-count bounds for transcripts
             augment_config_path: JSON file path with augmentation configs
             dataset_filters: List[{'name': str, 'filter_fn': callable(row)->bool}]
-            force_num_proc: if provided, overrides auto-detection.
-                            Use 1 or None to disable multiprocessing. Use >=2 to enable.
         """
         super(CustomDataset, self).__init__()
         assert min_duration >= 0.5, (
@@ -391,23 +387,8 @@ class CustomDataset(Dataset):
         self.dataset_filters = dataset_filters or []
 
         # --- SAFER: choose num_proc for HF Datasets map/filter ---
-        if force_num_proc is not None:
-            # normalize: treat <=1 as "no multiprocessing"
-            self.num_proc = None if force_num_proc <= 1 else int(force_num_proc)
-        else:
-            # is_distributed = _detect_distributed()
-            # if is_distributed:
-            #     # Disable multiprocessing to avoid CUDA/fork conflicts in ranks
-            #     self.num_proc = None  # (HF treats None as single-process)
-            #     warnings.warn(
-            #         "Distributed training detected. Disabling HF Datasets multiprocessing "
-            #         "to prevent CUDA/fork conflicts. This may slow down dataset loading "
-            #         "but improves stability.",
-            #         UserWarning,
-            #     )
-            # else:
-            cpu_cnt = os.cpu_count() or 4
-            self.num_proc = min(4, max(2, cpu_cnt // 4))
+        cpu_cnt = os.cpu_count() or 4
+        self.num_proc = min(6, max(2, cpu_cnt // 4))
 
         self.vocab = self.processor.tokenizer.get_vocab()
         self.startoftranscript = self.vocab["<|startoftranscript|>"]
