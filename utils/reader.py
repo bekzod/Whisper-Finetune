@@ -30,7 +30,6 @@ except (OverflowError, AttributeError):
     csv.field_size_limit(2**31 - 1)
 
 MAX_TRANSCRIPT_CHAR_LIMIT = 800
-MAX_TRANSCRIPT_TOKEN_LIMIT = 448
 
 
 @dataclass(slots=True)
@@ -569,7 +568,7 @@ class CustomDataset(Dataset):
         enforce_dataset_bounds: bool = False,
     ) -> bool:
         """
-        Validate transcript length and token count, optionally enforcing dataset-level min/max sentence bounds.
+        Validate transcript character length, optionally enforcing dataset-level min/max sentence bounds.
         Returns True when the transcript passes all checks; otherwise logs a warning and returns False.
         """
         cleaned_text = self._flatten_transcript_text(transcript)
@@ -608,29 +607,6 @@ class CustomDataset(Dataset):
                 f"(limit {MAX_TRANSCRIPT_CHAR_LIMIT}). Preview: '{preview}'"
             )
             return False
-
-        if not self.processor:
-            return True
-
-        try:
-            token_count = len(
-                self.processor.tokenizer.encode(cleaned_text, add_special_tokens=False)
-            )
-        except Exception as exc:
-            print(f"Warning: Could not tokenize text for validation: {exc}")
-            return False
-
-        if token_count > MAX_TRANSCRIPT_TOKEN_LIMIT:
-            print(
-                f"⚠️  Dropping entry{context}: transcript has {token_count} tokens "
-                f"(limit {MAX_TRANSCRIPT_TOKEN_LIMIT}). Preview: '{preview}'"
-            )
-            return False
-        if token_count > MAX_TRANSCRIPT_TOKEN_LIMIT - 80:
-            print(
-                f"📏 Warning{context}: transcript has {token_count} tokens "
-                f"(approaching limit {MAX_TRANSCRIPT_TOKEN_LIMIT}). Preview: '{preview}'"
-            )
 
         return True
 
