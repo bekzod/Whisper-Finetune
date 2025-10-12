@@ -300,11 +300,12 @@ def main():
         if hasattr(model, "merge_and_unload"):
             model = model.merge_and_unload()
 
-    model.generation_config.task = "transcribe"
-    model.generation_config.language = "<|uz|>"
-    model.generation_config.forced_decoder_ids = None
-    model.eval()
+    # build the proper prompt once (requires your processor)
+    prompt_ids = processor.get_decoder_prompt_ids(language="uz", task="transcribe")
 
+    model.generation_config.forced_decoder_ids = prompt_ids
+    model.generation_config.no_timestamps = True  # or False, depending on your need
+    model.eval()
     # Build logits processors list
     processors = []
 
