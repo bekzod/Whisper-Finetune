@@ -1,6 +1,11 @@
 {
   "train": [
     {
+      "name": "mozilla-foundation/common_voice_17_0",
+      "subset": "uz",
+      "splits": ["train", "test"]
+    },
+    {
       "name": "islomov/it_youtube_uzbek_speech_dataset",
       "splits": ["train"]
     },
@@ -28,11 +33,6 @@
     {
       "name": "bekzod123/uzbek_voice",
       "splits": ["train"]
-    },
-    {
-      "name": "mozilla-foundation/common_voice_17_0",
-      "subset": "uz",
-      "splits": ["train", "test"]
     },
     {
       "name": "DavronSherbaev/uzbekvoice-filtered",
