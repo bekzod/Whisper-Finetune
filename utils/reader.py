@@ -393,7 +393,7 @@ class CustomDataset(Dataset):
 
         # --- SAFER: choose num_proc for HF Datasets map/filter ---
         cpu_cnt = os.cpu_count() or 4
-        self.num_proc = min(6, max(2, cpu_cnt // 4))
+        self.num_proc = min(8, max(2, cpu_cnt // 4))
 
         self.vocab = self.processor.tokenizer.get_vocab()
         self.startoftranscript = self.vocab["<|startoftranscript|>"]
