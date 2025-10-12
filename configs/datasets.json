@@ -52,7 +52,7 @@
     },
     {
       "name": "k2speech/FeruzaSpeech",
-      "splits": ["train", "test"]
+      "splits": ["train", "test", "dev"]
     },
     {
       "name": "Beehzod/dataset_for_STT_TTSmodels",
@@ -63,10 +63,6 @@
     {
       "name": "mozilla-foundation/common_voice_17_0",
       "subset": "uz",
-      "splits": ["validation"]
-    },
-    {
-      "name": "k2speech/FeruzaSpeech",
       "splits": ["validation"]
     }
   ]
