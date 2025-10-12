@@ -30,7 +30,7 @@ except (OverflowError, AttributeError):
     # Fall back to a large but safe limit if sys.maxsize is not accepted
     csv.field_size_limit(2**31 - 1)
 
-MAX_TRANSCRIPT_CHAR_LIMIT = 700
+MAX_TRANSCRIPT_CHAR_LIMIT = 600
 
 
 def _preview_text(text: str, limit: int = 120) -> str:
