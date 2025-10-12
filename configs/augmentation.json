@@ -16,14 +16,6 @@
     "prob": 0.2
   },
   {
-    "type": "gaussian",
-    "params": {
-      "min_snr_dB": 15,
-      "max_snr_dB": 40
-    },
-    "prob": 0.0
-  },
-  {
     "type": "speed",
     "params": {
       "min_speed_rate": 0.9,
