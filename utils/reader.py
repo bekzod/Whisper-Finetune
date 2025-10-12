@@ -628,6 +628,152 @@ class CustomDataset(Dataset):
 
         return True
 
+    def _extract_transcript_source(self, sample: Dict[str, Any]) -> Any:
+        """
+        Determine the most appropriate transcript-like field from a dataset sample.
+        Handles both plain text and timestamped segmentation formats.
+        """
+        if not isinstance(sample, dict):
+            return None
+
+        if self.timestamps:
+            return sample.get("sentences") or sample.get("text")
+
+        for key in ("sentence", "text", "transcription", "transcript", "label"):
+            value = sample.get(key)
+            if value:
+                return value
+
+        return sample.get("sentences")
+
+    @staticmethod
+    def _extract_audio_reference(sample: Dict[str, Any]) -> Optional[str]:
+        """
+        Extract a representative audio path reference from a dataset sample when available.
+        """
+        if not isinstance(sample, dict):
+            return None
+
+        audio_blob = sample.get("audio")
+        if isinstance(audio_blob, dict):
+            for key in ("path", "filename", "file"):
+                candidate = audio_blob.get(key)
+                if candidate:
+                    return str(candidate)
+
+        for key in ("audio_path", "path", "filename", "file"):
+            candidate = sample.get(key)
+            if isinstance(candidate, dict):
+                for nested_key in ("path", "filename", "file"):
+                    nested = candidate.get(nested_key)
+                    if nested:
+                        return str(nested)
+            elif candidate:
+                return str(candidate)
+
+        return None
+
+    def _hf_item_is_valid(
+        self, sample: Dict[str, Any], dataset_source: Optional[str]
+    ) -> bool:
+        """
+        Validate a Hugging Face dataset sample against duration and transcript limits.
+        """
+        if not isinstance(sample, dict):
+            return False
+
+        duration = self._coerce_optional_float(sample.get("duration"))
+        if duration is not None:
+            if duration < self.min_duration:
+                return False
+            if self.max_duration != -1 and duration > self.max_duration:
+                return False
+
+        transcript_source = self._extract_transcript_source(sample)
+        if transcript_source is None:
+            return False
+
+        audio_reference = self._extract_audio_reference(sample)
+
+        return self._check_transcript_limits(
+            transcript_source,
+            audio_path=audio_reference,
+            dataset_source=dataset_source,
+            enforce_dataset_bounds=True,
+        )
+
+    def _collect_valid_hf_indices(
+        self,
+        ds_obj: HFDataset,
+        split_name_label: str,
+        *,
+        base_indices: Optional[List[int]] = None,
+    ) -> Optional[List[int]]:
+        """
+        Evaluate HF dataset entries once during load time and collect indices that pass validation.
+        Returns None when no items are dropped so the entire split can be used directly.
+        """
+        label = split_name_label or "<unnamed>"
+
+        try:
+            scan_dataset = (
+                ds_obj.cast_column("audio", Audio(decode=False))
+                if "audio" in ds_obj.column_names
+                else ds_obj
+            )
+        except Exception:
+            scan_dataset = ds_obj
+
+        if base_indices is None:
+            index_iterable = range(len(ds_obj))
+        else:
+            index_iterable = base_indices
+
+        total_candidates = len(index_iterable)
+        if total_candidates == 0:
+            raise ValueError(f"No samples available to validate in split '{label}'.")
+
+        print(
+            f"  Pre-filtering split '{label}': validating {total_candidates} samples prior to training."
+        )
+
+        valid_indices: List[int] = []
+        rejected = 0
+        iterator = tqdm(index_iterable, desc=f"Validating {label}", unit="samples")
+        for original_idx in iterator:
+            try:
+                sample = scan_dataset[original_idx]
+            except Exception:
+                rejected += 1
+                continue
+
+            if self._hf_item_is_valid(sample, dataset_source=label):
+                valid_indices.append(original_idx)
+            else:
+                rejected += 1
+
+        if rejected:
+            kept = len(valid_indices)
+            print(
+                f"  Validation for split '{label}' kept {kept}/{total_candidates} samples "
+                f"({total_candidates - kept} removed)."
+            )
+        else:
+            print(f"  Validation for split '{label}' kept all {total_candidates} samples.")
+
+        if not valid_indices:
+            raise ValueError(
+                f"All samples were filtered out during validation for split '{label}'."
+            )
+
+        if base_indices is None and rejected == 0:
+            return None
+
+        if base_indices is not None and rejected == 0:
+            return base_indices
+
+        return valid_indices
+
     def _validate_entry(
         self, entry: ManifestEntry, dataset_source: Optional[str] = None
     ) -> bool:
@@ -1671,6 +1817,8 @@ class CustomDataset(Dataset):
 
             # NEW: Avoid materializing massive Python dicts; keep HF splits lazily
             def _append_lazy_split(ds_obj, split_name_label: str):
+                indices_override: Optional[List[int]] = None
+
                 if filter_fn:
                     print(f"  Applying filter to split: {split_name_label}")
                     # Try to apply filtering within HF Datasets to keep it on-disk
@@ -1712,18 +1860,19 @@ class CustomDataset(Dataset):
                         print(
                             f"  Kept {len(kept_idx)}/{len(ds_obj)} samples (indexed) in {split_name_label}"
                         )
-                        self.hf_splits.append(
-                            {
-                                "dataset": ds_obj,
-                                "indices": kept_idx,
-                                "name": split_name_label,
-                            }
-                        )
-                        return
+                        indices_override = kept_idx
+
+                validated_indices = self._collect_valid_hf_indices(
+                    ds_obj, split_name_label, base_indices=indices_override
+                )
 
                 # If we reach here, we have an HF dataset object to use lazily
                 self.hf_splits.append(
-                    {"dataset": ds_obj, "indices": None, "name": split_name_label}
+                    {
+                        "dataset": ds_obj,
+                        "indices": validated_indices,
+                        "name": split_name_label,
+                    }
                 )
 
             if isinstance(dataset, DatasetDict):
@@ -2302,7 +2451,11 @@ class CustomDataset(Dataset):
                     dataset_source=dataset_source,
                     enforce_dataset_bounds=True,
                 ):
-                    return self.__getitem__(random.randint(0, self.__len__() - 1))
+                    raise ValueError(
+                        "Transcript constraints should be enforced before training; "
+                        f"found invalid sample in dataset '{dataset_source}' "
+                        f"with audio reference '{audio_reference}'."
+                    )
 
                 # Read audio from file only if no decoded array available
                 if sample is None:
@@ -2382,10 +2535,9 @@ class CustomDataset(Dataset):
             return data
 
         except Exception as e:
-            print(
-                f"Error reading data, index: {idx}, error message: {e}", file=sys.stderr
-            )
-            return self.__getitem__(random.randint(0, self.__len__() - 1))
+            raise RuntimeError(
+                f"Error reading data at index {idx}: {e}"
+            ) from e
 
     def __len__(self):
         # Materialized entries
