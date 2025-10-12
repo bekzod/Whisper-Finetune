@@ -301,7 +301,7 @@ def main():
             model = model.merge_and_unload()
 
     model.generation_config.task = "transcribe"
-    model.generation_config.language = args.language.lower()
+    model.generation_config.language = "<|uz|>"
     model.generation_config.forced_decoder_ids = None
     model.eval()
 
