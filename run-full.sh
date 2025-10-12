@@ -39,7 +39,7 @@ accelerate launch --config_file ./configs/accelerate-single.yaml finetune.py \
   --learning_rate 1.5e-5 \
   --logging_steps 200 \
   --eval_steps 4000 \
-  --save_steps 2000 \
+  --save_steps 4000 \
   --warmup_ratio 0.06 \
   --lr_scheduler_type cosine \
   --use_lora False \
