@@ -31,10 +31,10 @@ accelerate launch --config_file ./configs/accelerate-single.yaml finetune.py \
   --base_model ../models/whisper-large-v3 \
   --output_dir ../models/output-full-finetune \
   --num_train_epochs 5 \
-  --per_device_train_batch_size 24 \
-  --per_device_eval_batch_size 52 \
+  --per_device_train_batch_size 22 \
+  --per_device_eval_batch_size 50 \
   --gradient_accumulation_steps 4 \
-  --resume_from_checkpoint ../workspace/models/output-full-finetune/whisper-large-v3-20251012-0355/checkpoint-8000 \
+  --resume_from_checkpoint ../models/output-full-finetune/whisper-large-v3-20251012-0355/checkpoint-8000 \
   --freeze_encoder_epochs 1 \
   --unfreeze_finish_ratio 0.28 \
   --learning_rate 1.5e-5 \
