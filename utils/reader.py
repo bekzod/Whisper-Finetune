@@ -31,6 +31,7 @@ except (OverflowError, AttributeError):
     csv.field_size_limit(2**31 - 1)
 
 MAX_TRANSCRIPT_CHAR_LIMIT = 600
+DEFAULT_HF_SAMPLING_SEED = 3407
 
 
 def _preview_text(text: str, limit: int = 120) -> str:
@@ -162,6 +163,7 @@ class CustomDataset(Dataset):
         max_sentence=320,
         augment_config_path=None,
         dataset_filters=None,
+        hf_sampling_config=None,
     ):
         """
         Args:
@@ -175,6 +177,8 @@ class CustomDataset(Dataset):
             min_sentence, max_sentence: character-count bounds for transcripts
             augment_config_path: JSON file path with augmentation configs
             dataset_filters: List[{'name': str, 'filter_fn': callable(row)->bool}]
+            hf_sampling_config: Optional mapping of split identifiers to sampling directives
+                (e.g., {'hf://org/name:train': {'percentage': 25}}).
         """
         super(CustomDataset, self).__init__()
         assert min_duration >= 0.5, (
@@ -201,6 +205,41 @@ class CustomDataset(Dataset):
         self.max_sentence = max_sentence
 
         self.dataset_filters = dataset_filters or []
+
+        self.hf_sampling_config: Dict[str, Dict[str, float]] = {}
+        if hf_sampling_config:
+            for key, cfg in hf_sampling_config.items():
+                if not cfg:
+                    continue
+                normalized_key = str(key).strip()
+                if not normalized_key:
+                    continue
+                cfg_copy = dict(cfg)
+                percentage = cfg_copy.get("percentage")
+                if percentage is None:
+                    continue
+                try:
+                    pct_value = float(percentage)
+                except (TypeError, ValueError):
+                    raise ValueError(
+                        f"Invalid percentage value '{percentage}' for HF sampling config key '{key}'."
+                    ) from None
+                if not (0 < pct_value <= 100):
+                    raise ValueError(
+                        f"Percentage for HF sampling config key '{key}' must be within (0, 100], got {pct_value}."
+                    )
+                cfg_copy["percentage"] = pct_value
+                if "seed" in cfg_copy and cfg_copy["seed"] is not None:
+                    try:
+                        cfg_copy["seed"] = int(cfg_copy["seed"])
+                    except (TypeError, ValueError):
+                        raise ValueError(
+                            f"Seed override for HF sampling config key '{key}' must be an integer, got {cfg_copy['seed']!r}."
+                        ) from None
+                self.hf_sampling_config[normalized_key] = cfg_copy
+                if normalized_key.startswith("hf://"):
+                    alt_key = normalized_key[5:]
+                    self.hf_sampling_config.setdefault(alt_key, cfg_copy)
 
         # --- SAFER: choose num_proc for HF Datasets map/filter ---
         cpu_cnt = os.cpu_count() or 4
@@ -586,6 +625,58 @@ class CustomDataset(Dataset):
             return base_indices
 
         return valid_indices
+
+    def _apply_hf_sampling(
+        self,
+        ds_obj: HFDataset,
+        split_label: str,
+        candidate_indices: Optional[List[int]],
+        sampling_cfg: Dict[str, Any],
+    ) -> Optional[List[int]]:
+        """
+        Apply percentage-based random sampling to a HuggingFace dataset split.
+        """
+        percentage = float(sampling_cfg.get("percentage", 100))
+        if percentage >= 100:
+            return candidate_indices
+        if percentage <= 0:
+            raise ValueError(
+                f"Percentage for HF sampling on split '{split_label}' must be > 0."
+            )
+        if not hasattr(ds_obj, "__len__"):
+            raise ValueError(
+                f"Cannot apply percentage sampling to non-indexable dataset split '{split_label}'."
+            )
+
+        pool = (
+            list(range(len(ds_obj)))
+            if candidate_indices is None
+            else list(candidate_indices)
+        )
+        total = len(pool)
+        if total == 0:
+            return candidate_indices
+
+        target = int(total * (percentage / 100.0))
+        if target <= 0:
+            target = 1
+        if target >= total:
+            return candidate_indices
+
+        seed_override = sampling_cfg.get("seed")
+        seed_value = (
+            int(seed_override)
+            if seed_override is not None
+            else DEFAULT_HF_SAMPLING_SEED
+        )
+
+        rng = random.Random(seed_value)
+        selected = rng.sample(pool, target)
+        selected.sort()
+        print(
+            f"  Sampling {target}/{total} entries (~{percentage:.2f}%) from split '{split_label}' with seed {seed_value}."
+        )
+        return selected
 
     def _validate_entry(
         self, entry: ManifestEntry, dataset_source: Optional[str] = None
@@ -1631,6 +1722,16 @@ class CustomDataset(Dataset):
             # NEW: Avoid materializing massive Python dicts; keep HF splits lazily
             def _append_lazy_split(ds_obj, split_name_label: str):
                 indices_override: Optional[List[int]] = None
+                sampling_cfg = None
+                if self.hf_sampling_config:
+                    sampling_cfg = self.hf_sampling_config.get(split_name_label)
+                    if (
+                        sampling_cfg is None
+                        and split_name_label.startswith("hf://")
+                    ):
+                        sampling_cfg = self.hf_sampling_config.get(
+                            split_name_label[5:]
+                        )
 
                 if filter_fn:
                     print(f"  Applying filter to split: {split_name_label}")
@@ -1678,6 +1779,10 @@ class CustomDataset(Dataset):
                 validated_indices = self._collect_valid_hf_indices(
                     ds_obj, split_name_label, base_indices=indices_override
                 )
+                if sampling_cfg:
+                    validated_indices = self._apply_hf_sampling(
+                        ds_obj, split_name_label, validated_indices, sampling_cfg
+                    )
 
                 # If we reach here, we have an HF dataset object to use lazily
                 self.hf_splits.append(

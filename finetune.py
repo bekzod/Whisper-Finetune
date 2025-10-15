@@ -610,10 +610,11 @@ def main():
 
     def _collect_entries(
         entries, save_root: str, default_splits: list[str]
-    ) -> list[str]:
+    ) -> tuple[list[str], dict[str, dict[str, float]]]:
         if not entries:
-            return []
+            return [], {}
         paths = []
+        sampling: dict[str, dict[str, float]] = {}
         for ent in entries:
             if isinstance(ent, dict):
                 repo = ent.get("hf") or ent.get("huggingface") or ent.get("name")
@@ -622,11 +623,27 @@ def main():
                 splits = ent.get("splits") or (
                     [ent.get("split")] if ent.get("split") else default_splits
                 )
+                percentage = ent.get("percentage")
+                percentage_value = None
+                if percentage is not None:
+                    try:
+                        percentage_value = float(percentage)
+                    except (TypeError, ValueError):
+                        raise ValueError(
+                            f"Invalid percentage value '{percentage}' for entry {ent}"
+                        ) from None
+                    if not (0 < percentage_value <= 100):
+                        raise ValueError(
+                            f"Percentage must be within (0, 100], got {percentage_value} for entry {ent}"
+                        )
                 if repo:
                     rev_part = f"@{revision}" if revision else ""
                     subset_part = f"#{subset}" if subset else ""
                     for sp in splits:
-                        paths.append(f"hf://{repo}{rev_part}{subset_part}:{sp}")
+                        path = f"hf://{repo}{rev_part}{subset_part}:{sp}"
+                        paths.append(path)
+                        if percentage_value is not None:
+                            sampling[path] = {"percentage": percentage_value}
                     continue
                 print(f"Unrecognized manifest dict entry (missing 'name'/'hf'): {ent}")
             elif isinstance(ent, str):
@@ -663,11 +680,13 @@ def main():
                     paths.append(val)
             else:
                 print(f"Unrecognized manifest entry: {ent}")
-        return paths
+        return paths, sampling
 
     # Defaults
     train_data_arg = None
     eval_data_arg = None
+    train_sampling_map: dict[str, dict[str, float]] = {}
+    eval_sampling_map: dict[str, dict[str, float]] = {}
 
     # If a manifest is provided via train_data path, parse it; otherwise keep CLI paths.
     manifest_prefetch_root = os.path.join(output_dir, "prefetched")
@@ -695,12 +714,13 @@ def main():
                     "Manifest must be a dict with 'train'/'eval' keys or a list"
                 )
 
-            train_paths = _collect_entries(
+            train_paths, train_sampling_map = _collect_entries(
                 train_entries,
                 save_root=manifest_prefetch_root,
                 default_splits=["train", "validation", "test", "dev", "validated"],
             )
-            eval_paths = _collect_entries(
+
+            eval_paths, eval_sampling_map = _collect_entries(
                 eval_entries,
                 save_root=manifest_prefetch_root,
                 default_splits=["train", "validation", "test", "dev", "validated"],
@@ -741,6 +761,7 @@ def main():
             max_duration=args.max_audio_len,
             augment_config_path=args.augment_config_path,
             dataset_filters=datasets_info,
+            hf_sampling_config=train_sampling_map,
         )
         print(
             f"Loaded full dataset of size {len(full_dataset)} before split (filters applied during load)"
@@ -764,6 +785,7 @@ def main():
             max_duration=args.max_audio_len,
             augment_config_path=args.augment_config_path,
             dataset_filters=datasets_info,
+            hf_sampling_config=train_sampling_map,
         )
         print(f"🔍 Creating evaluation dataset from: {eval_data_arg}")
         eval_dataset = CustomDataset(
@@ -774,6 +796,7 @@ def main():
             min_duration=args.min_audio_len,
             max_duration=args.max_audio_len,
             dataset_filters=datasets_info,
+            hf_sampling_config=eval_sampling_map,
         )
 
     print(f"Training data: {len(train_dataset)}, Eval data: {len(eval_dataset)}")
