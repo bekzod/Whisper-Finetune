@@ -3,7 +3,8 @@
     {
       "name": "mozilla-foundation/common_voice_17_0",
       "subset": "uz",
-      "splits": ["train", "test"]
+      "splits": ["train", "test"],
+      "percentage": 100
     },
     {
       "name": "islomov/it_youtube_uzbek_speech_dataset",
@@ -64,7 +65,7 @@
       "name": "mozilla-foundation/common_voice_17_0",
       "subset": "uz",
       "splits": ["validation"],
-      "percentage": 30
+      "percentage": 25
     }
   ]
 }
