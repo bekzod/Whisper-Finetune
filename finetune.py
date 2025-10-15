@@ -286,8 +286,27 @@ base_model_name = os.path.basename(base_name)
 user_name = args.wandb_run_name or base_model_name
 unique_name = f"{user_name}-{dt_suffix}"
 
-output_dir = os.path.join(args.output_dir, f"{base_model_name}-{dt_suffix}")
-os.makedirs(output_dir, exist_ok=True)
+resume_root: Path | None = None
+if args.resume_from_checkpoint:
+    checkpoint_path = Path(args.resume_from_checkpoint).expanduser()
+    checkpoint_dir = (
+        checkpoint_path.parent
+        if checkpoint_path.is_file()
+        else checkpoint_path
+    )
+    # If pointing to a checkpoint folder, take its parent as the project root.
+    if checkpoint_dir.name.startswith("checkpoint"):
+        resume_root = checkpoint_dir.parent
+    else:
+        resume_root = checkpoint_dir
+
+if resume_root is not None:
+    output_dir = str(resume_root)
+    os.makedirs(output_dir, exist_ok=True)
+    print(f"Resuming training using existing output directory: {output_dir}")
+else:
+    output_dir = os.path.join(args.output_dir, f"{base_model_name}-{dt_suffix}")
+    os.makedirs(output_dir, exist_ok=True)
 
 if USE_WANDB:
     os.environ["WANDB_RUN_NAME"] = unique_name
