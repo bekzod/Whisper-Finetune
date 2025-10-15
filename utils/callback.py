@@ -1,8 +1,11 @@
 import os
 import shutil
-from typing import Any
+import warnings
+from pathlib import Path
+from typing import Any, Optional
 
 import torch
+from peft import PeftModel
 from transformers import (
     TrainerCallback,
     TrainingArguments,
@@ -17,6 +20,10 @@ from .data_utils import DataCollatorSpeechSeq2SeqWithPadding
 
 # Callback invoked when saving the model
 class SavePeftModelCallback(TrainerCallback):
+    def __init__(self) -> None:
+        super().__init__()
+        self._last_recorded_best: Optional[str] = None
+
     def on_save(
         self,
         args: TrainingArguments,
@@ -24,22 +31,72 @@ class SavePeftModelCallback(TrainerCallback):
         control: TrainerControl,
         **kwargs,
     ):
-        if args.local_rank == 0 or args.local_rank == -1:
-            # Save the best-performing checkpoint
-            best_checkpoint_folder = os.path.join(
-                args.output_dir, f"{PREFIX_CHECKPOINT_DIR}-best"
+        if args.local_rank not in (0, -1):
+            return control
+
+        best_checkpoint = state.best_model_checkpoint
+        if not best_checkpoint or not os.path.exists(best_checkpoint):
+            return control
+
+        model = kwargs.get("model")
+        if model is None:
+            return control
+
+        # unwrap DeepSpeed/Accelerate containers
+        peft_model = getattr(model, "module", model)
+        if not isinstance(peft_model, PeftModel):
+            # Avoid copying multi-gigabyte full fine-tune checkpoints; just log best path.
+            self._record_best_path(args.output_dir, best_checkpoint)
+            return control
+
+        if self._last_recorded_best == best_checkpoint:
+            return control
+
+        best_checkpoint_folder = Path(args.output_dir) / f"{PREFIX_CHECKPOINT_DIR}-best"
+        try:
+            if best_checkpoint_folder.exists():
+                shutil.rmtree(best_checkpoint_folder)
+            best_checkpoint_folder.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            warnings.warn(f"Failed to refresh best-checkpoint folder: {exc}")
+            return control
+
+        try:
+            peft_model.save_pretrained(
+                best_checkpoint_folder, safe_serialization=True
             )
-            # Since only the latest 5 checkpoints are kept, ensure it's not an older checkpoint
-            if state.best_model_checkpoint is not None and os.path.exists(
-                state.best_model_checkpoint
-            ):
-                if os.path.exists(best_checkpoint_folder):
-                    shutil.rmtree(best_checkpoint_folder)
-                shutil.copytree(state.best_model_checkpoint, best_checkpoint_folder)
-            print(
-                f"Best checkpoint: {state.best_model_checkpoint}, eval metric: {state.best_metric}"
-            )
+        except Exception as exc:  # pragma: no cover - defensive
+            warnings.warn(f"Failed to export PEFT adapters for best checkpoint: {exc}")
+            return control
+
+        # Preserve trainer metadata and create a pointer back to the full checkpoint.
+        trainer_state_src = Path(best_checkpoint) / "trainer_state.json"
+        if trainer_state_src.exists():
+            try:
+                shutil.copy2(
+                    trainer_state_src, best_checkpoint_folder / "trainer_state.json"
+                )
+            except OSError as exc:
+                warnings.warn(f"Failed to copy trainer_state.json: {exc}")
+
+        self._record_best_path(args.output_dir, best_checkpoint)
+        self._last_recorded_best = best_checkpoint
+        print(
+            f"Best checkpoint: {state.best_model_checkpoint}, eval metric: {state.best_metric}"
+        )
         return control
+
+    def _record_best_path(
+        self,
+        output_dir: str,
+        checkpoint_path: str,
+    ) -> None:
+        """Persist the latest best checkpoint path for tooling."""
+        pointer_file = Path(output_dir) / "best_checkpoint_path.txt"
+        try:
+            pointer_file.write_text(f"{checkpoint_path}\n")
+        except OSError as exc:
+            warnings.warn(f"Failed to record best checkpoint path: {exc}")
 
 
 class WandbPredictionLogger(TrainerCallback):
