@@ -65,7 +65,7 @@
       "name": "mozilla-foundation/common_voice_17_0",
       "subset": "uz",
       "splits": ["validation"],
-      "percentage": 25
+      "percentage": 30
     }
   ]
 }
