@@ -37,7 +37,7 @@ accelerate launch --config_file ./configs/accelerate-single.yaml finetune.py \
   --resume_from_checkpoint ../models/output-full-finetune/whisper-large-v3-20251012-0355/checkpoint-8000 \
   --freeze_encoder_epochs 1 \
   --unfreeze_finish_ratio 0.28 \
-  --learning_rate 1.5e-5 \
+  --learning_rate 1.3e-5 \
   --logging_steps 200 \
   --eval_steps 5000 \
   --save_steps 5000 \
