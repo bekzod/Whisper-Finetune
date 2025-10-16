@@ -23,5 +23,4 @@ kenlm
 hf_transfer
 cloudpickle
 torchcodec
-functools
 accelerate
