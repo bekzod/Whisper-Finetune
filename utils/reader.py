@@ -1,16 +1,16 @@
 import csv
+import functools
 import gc
 import json
 import os
 import random
+import re
 import sys
 import tarfile
 import time
-import warnings
 from dataclasses import dataclass
 from itertools import chain
-from typing import Any, Dict, Iterator, List, Optional, Sequence, Set, TextIO, Union
-import re
+from typing import Any, Dict, Iterator, List, Optional, Sequence, Set, Union
 
 import numpy as np
 import soundfile
@@ -32,6 +32,22 @@ except (OverflowError, AttributeError):
 
 MAX_TRANSCRIPT_CHAR_LIMIT = 600
 DEFAULT_HF_SAMPLING_SEED = 3407
+ORIGINAL_INDEX_COLUMN = "__orig_idx__"
+
+_APOSTROPHE_TRANSLATION = str.maketrans(
+    {
+        "\u2019": "'",
+        "\u02bc": "'",
+        "\u02bb": "'",
+        "`": "'",
+        "´": "'",
+        "ʻ": "'",
+        "ʼ": "'",
+        "‛": "'",
+    }
+)
+_ALLOWED_TEXT_RE = re.compile(r"[^a-zA-ZА-Яа-яЎўҚқҒғҲҳ0-9\s,.'-]+")
+_MULTISPACE_RE = re.compile(r"\s+")
 
 
 def _preview_text(text: str, limit: int = 120) -> str:
@@ -84,7 +100,7 @@ def rate_limited_request(func, *args, **kwargs):
 def normalize_text(text):
     """
     Normalize text by replacing various apostrophe-like characters with a uniform apostrophe
-    and keeping only alphabetical characters, commas, dots, spaces and apostrophes.
+    and keeping only alphanumeric characters plus commas, dots, spaces, apostrophes, and dashes.
     This handles Uzbek text like "ko'p" to ensure consistent character usage.
     """
     if text is None:
@@ -97,29 +113,14 @@ def normalize_text(text):
         # As a last resort, return empty string if conversion fails
         return ""
 
-    # Various apostrophe-like characters that might appear
-    apostrophe_variants = [
-        "\u2019",  # Right single quotation mark
-        "\u0027",  # Apostrophe
-        "\u02bc",  # Modifier letter apostrophe
-        "\u02bb",  # Modifier letter turned comma
-        "`",  # Grave accent
-        "´",  # Acute accent
-        "ʻ",  # Modifier letter turned comma (another variant)
-        "ʼ",  # Modifier letter apostrophe (another variant)
-        "'",  # Right single quotation mark (direct)
-        "‛",  # Single high-reversed-9 quotation mark
-    ]
+    # Replace apostrophe-like characters with standard apostrophe
+    normalized = normalized.translate(_APOSTROPHE_TRANSLATION)
 
-    # Replace all variants with standard apostrophe (')
-    for variant in apostrophe_variants:
-        normalized = normalized.replace(variant, "'")
-
-    # This regex keeps Latin & Cyrillic letters, spaces, comma, dot, apostrophe, dash
-    normalized = re.sub(r"[^a-zA-ZА-Яа-яЎўҚқҒғҲҳ0-9\s,.'-]+", "", normalized)
+    # This regex keeps Latin & Cyrillic letters, digits, spaces, comma, dot, apostrophe, dash
+    normalized = _ALLOWED_TEXT_RE.sub("", normalized)
 
     # Clean up multiple spaces
-    normalized = re.sub(r"\s+", " ", normalized).strip()
+    normalized = _MULTISPACE_RE.sub(" ", normalized).strip()
 
     return normalized
 
@@ -575,11 +576,11 @@ class CustomDataset(Dataset):
             scan_dataset = ds_obj
 
         if base_indices is None:
-            index_iterable = range(len(ds_obj))
+            index_selection = list(range(len(ds_obj)))
         else:
-            index_iterable = base_indices
+            index_selection = list(base_indices)
 
-        total_candidates = len(index_iterable)
+        total_candidates = len(index_selection)
         if total_candidates == 0:
             raise ValueError(f"No samples available to validate in split '{label}'.")
 
@@ -587,43 +588,97 @@ class CustomDataset(Dataset):
             f"  Pre-filtering split '{label}': validating {total_candidates} samples prior to training."
         )
 
-        valid_indices: List[int] = []
-        rejected = 0
-        iterator = tqdm(index_iterable, desc=f"Validating {label}", unit="samples")
-        for original_idx in iterator:
-            try:
-                sample = scan_dataset[original_idx]
-            except Exception:
-                rejected += 1
-                continue
+        candidate_ds = (
+            scan_dataset
+            if base_indices is None
+            else scan_dataset.select(index_selection)
+        )
+        candidate_ds = candidate_ds.add_column(ORIGINAL_INDEX_COLUMN, index_selection)
 
-            if self._hf_item_is_valid(sample, dataset_source=label):
-                valid_indices.append(original_idx)
+        validator = functools.partial(self._hf_item_is_valid, dataset_source=label)
+        num_proc = None
+        if total_candidates > 500 and getattr(self, "num_proc", None):
+            try:
+                import cloudpickle
+
+                cloudpickle.dumps(validator)
+                num_proc = self.num_proc
+            except Exception:
+                num_proc = None
+
+        try:
+            filtered_ds = candidate_ds.filter(
+                validator,
+                batched=False,
+                with_indices=False,
+                num_proc=num_proc,
+                desc=f"Validating {label}",
+            )
+        except Exception as filter_error:
+            print(
+                f"  HF fast filter failed ({filter_error}); falling back to Python validation for split '{label}'."
+            )
+            valid_indices: List[int] = []
+            rejected = 0
+            iterator = tqdm(index_selection, desc=f"Validating {label}", unit="samples")
+            for original_idx in iterator:
+                try:
+                    sample = scan_dataset[original_idx]
+                except Exception:
+                    rejected += 1
+                    continue
+
+                if self._hf_item_is_valid(sample, dataset_source=label):
+                    valid_indices.append(original_idx)
+                else:
+                    rejected += 1
+
+            if rejected:
+                kept = len(valid_indices)
+                print(
+                    f"  Validation for split '{label}' kept {kept}/{total_candidates} samples "
+                    f"({rejected} removed)."
+                )
             else:
-                rejected += 1
+                print(
+                    f"  Validation for split '{label}' kept all {total_candidates} samples."
+                )
+
+            if not valid_indices:
+                raise ValueError(
+                    f"All samples were filtered out during validation for split '{label}'."
+                )
+
+            if base_indices is None and rejected == 0:
+                return None
+            if base_indices is not None and rejected == 0:
+                return index_selection
+            return valid_indices
+
+        kept = len(filtered_ds)
+        rejected = total_candidates - kept
+
+        if kept == 0:
+            raise ValueError(
+                f"All samples were filtered out during validation for split '{label}'."
+            )
 
         if rejected:
-            kept = len(valid_indices)
             print(
                 f"  Validation for split '{label}' kept {kept}/{total_candidates} samples "
-                f"({total_candidates - kept} removed)."
+                f"({rejected} removed)."
             )
         else:
             print(
                 f"  Validation for split '{label}' kept all {total_candidates} samples."
             )
 
-        if not valid_indices:
-            raise ValueError(
-                f"All samples were filtered out during validation for split '{label}'."
-            )
+        if rejected == 0:
+            if base_indices is None:
+                return None
+            return index_selection
 
-        if base_indices is None and rejected == 0:
-            return None
-
-        if base_indices is not None and rejected == 0:
-            return base_indices
-
+        valid_indices = list(filtered_ds[ORIGINAL_INDEX_COLUMN])
         return valid_indices
 
     def _apply_hf_sampling(
@@ -1725,13 +1780,8 @@ class CustomDataset(Dataset):
                 sampling_cfg = None
                 if self.hf_sampling_config:
                     sampling_cfg = self.hf_sampling_config.get(split_name_label)
-                    if (
-                        sampling_cfg is None
-                        and split_name_label.startswith("hf://")
-                    ):
-                        sampling_cfg = self.hf_sampling_config.get(
-                            split_name_label[5:]
-                        )
+                    if sampling_cfg is None and split_name_label.startswith("hf://"):
+                        sampling_cfg = self.hf_sampling_config.get(split_name_label[5:])
 
                 if filter_fn:
                     print(f"  Applying filter to split: {split_name_label}")
