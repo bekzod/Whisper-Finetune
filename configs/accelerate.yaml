@@ -1,11 +1,5 @@
 compute_environment: LOCAL_MACHINE
 debug: false
-zero_optimization:
-  stage: 2,
-  allgather_partitions: true
-  reduce_scatter: true
-  overlap_comm: true
-  contiguous_gradients: true
 deepspeed_config:
   gradient_clipping: 1.0
   bf16:
