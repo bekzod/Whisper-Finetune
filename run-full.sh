@@ -43,7 +43,7 @@ accelerate launch --config_file --multi-gpu ./configs/accelerate.yaml finetune.p
   --warmup_ratio 0.05 \
   --lr_scheduler_type cosine \
   --use_lora False \
-  --weight_decay 0.008 \
+  --weight_decay 0.01 \
   --save_total_limit 4 \
   --wandb_project whisper-uzbek \
   --wandb_run_name whisper-v3-uzbek \

@@ -1,11 +1,17 @@
 compute_environment: LOCAL_MACHINE
 debug: false
+zero_optimization:
+  stage: 2,
+  allgather_partitions: true
+  reduce_scatter: true
+  overlap_comm: true
+  contiguous_gradients: true
 deepspeed_config:
   gradient_clipping: 1.0
   bf16:
     enabled: true
 distributed_type: DEEPSPEED
-downcast_bf16: "no"
+downcast_bf16: no
 enable_cpu_affinity: false
 machine_rank: 0
 main_training_function: main
