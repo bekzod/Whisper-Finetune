@@ -125,30 +125,6 @@ def normalize_text(text):
     return normalized
 
 
-def _detect_distributed() -> bool:
-    """
-    Prefer PyTorch distributed init if available, fall back to env heuristics.
-    """
-    # Prefer PyTorch's ground truth if initialized
-    try:
-        import torch.distributed as dist  # noqa
-
-        if dist.is_available() and dist.is_initialized():
-            return True
-    except Exception:
-        pass
-
-    # Fallback to environment heuristics
-    if os.environ.get("WORLD_SIZE", "1") not in ("", "1"):
-        return True
-    if any(
-        os.environ.get(k) is not None
-        for k in ("LOCAL_RANK", "RANK", "OMPI_COMM_WORLD_SIZE", "PMI_SIZE")
-    ):
-        return True
-    return False
-
-
 class CustomDataset(Dataset):
     def __init__(
         self,
