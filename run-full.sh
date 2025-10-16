@@ -1,5 +1,5 @@
 #!/bin/bash
-export HF_HOME=/workspace/.cache/huggingface
+export HF_HOME=/data/.cache/huggingface
 export HUGGINGFACE_HUB_CACHE=$HF_HOME/hub
 export HF_DATASETS_CACHE=$HF_HOME/datasets
 
