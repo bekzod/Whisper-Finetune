@@ -8,6 +8,7 @@ import re
 import sys
 import tarfile
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from itertools import chain
 from typing import Any, Dict, Iterator, List, Optional, Sequence, Set, Union
@@ -25,6 +26,11 @@ from utils.audio_augmentation import AudioAugmenter, resample
 from utils.tsv_parser import iter_tsv_dict_rows
 
 try:
+    import pyarrow as pa
+except ImportError:  # pragma: no cover - optional at runtime
+    pa = None
+
+try:
     csv.field_size_limit(sys.maxsize)
 except (OverflowError, AttributeError):
     # Fall back to a large but safe limit if sys.maxsize is not accepted
@@ -33,6 +39,48 @@ except (OverflowError, AttributeError):
 MAX_TRANSCRIPT_CHAR_LIMIT = 600
 DEFAULT_HF_SAMPLING_SEED = 3407
 ORIGINAL_INDEX_COLUMN = "__orig_idx__"
+
+_HF_AUDIO_CANDIDATE_KEYS = (
+    "audio",
+    "audio_path",
+    "audio_filepath",
+    "file",
+    "filename",
+    "path",
+    "audio_file",
+)
+_HF_TEXT_CANDIDATE_KEYS = (
+    "sentence",
+    "text",
+    "transcription",
+    "transcript",
+    "label",
+    "normalized_text",
+    "norm_text",
+    "normalized_text_with_punct",
+    "raw_text",
+    "target_text",
+    "translation",
+)
+_HF_OPTIONAL_KEYS = (
+    "duration",
+    "language",
+    "sentences",
+    "speaker",
+    "speaker_id",
+    "accent",
+    "id",
+    "name",
+    "start_time",
+    "end_time",
+    "segment",
+    "offset",
+)
+_HF_ALLOWED_COLUMNS = (
+    set(_HF_AUDIO_CANDIDATE_KEYS)
+    | set(_HF_TEXT_CANDIDATE_KEYS)
+    | set(_HF_OPTIONAL_KEYS)
+)
 
 _APOSTROPHE_TRANSLATION = str.maketrans(
     {
@@ -708,6 +756,80 @@ class CustomDataset(Dataset):
             f"  Sampling {target}/{total} entries (~{percentage:.2f}%) from split '{split_label}' with seed {seed_value}."
         )
         return selected
+
+    def _ensure_hf_arrow_dataset(self, split_entry: Dict[str, Any]) -> Any:
+        """
+        Ensure a Hugging Face dataset entry uses Arrow formatting when no explicit
+        columns were previously selected, and remember which columns are exposed.
+        """
+        ds_obj = split_entry.get("dataset")
+        if not isinstance(ds_obj, HFDataset):
+            return ds_obj
+
+        format_dict = getattr(ds_obj, "format", None) or {}
+        existing_columns = format_dict.get("columns")
+        if existing_columns:
+            # Respect caller-defined formatting but remember the visible columns.
+            if "hf_allowed_columns" not in split_entry:
+                try:
+                    split_entry["hf_allowed_columns"] = list(existing_columns)
+                except TypeError:
+                    split_entry["hf_allowed_columns"] = list(existing_columns)
+            return ds_obj
+
+        allowed_columns = [
+            col for col in ds_obj.column_names if col in _HF_ALLOWED_COLUMNS
+        ]
+        if not allowed_columns:
+            allowed_columns = list(ds_obj.column_names)
+
+        needs_update = (
+            format_dict.get("type") != "arrow"
+            or format_dict.get("output_all_columns", True)
+            or not existing_columns
+        )
+
+        if needs_update:
+            try:
+                ds_obj = ds_obj.with_format(
+                    type="arrow",
+                    columns=allowed_columns,
+                    output_all_columns=False,
+                )
+            except Exception:
+                # Leave dataset unchanged if Arrow formatting is unavailable.
+                split_entry.setdefault("hf_allowed_columns", allowed_columns)
+                return split_entry.get("dataset", ds_obj)
+            split_entry["dataset"] = ds_obj
+
+        split_entry["hf_allowed_columns"] = allowed_columns
+        return ds_obj
+
+    def _hf_item_to_python(
+        self, item: Any, allowed_columns: Optional[Sequence[str]]
+    ) -> Any:
+        """
+        Convert a Hugging Face dataset item that may be backed by Arrow objects
+        into standard Python types and drop unformatted columns.
+        """
+        if pa is not None:
+            if isinstance(item, pa.StructScalar):
+                item = item.as_py()
+            elif isinstance(item, pa.Table):
+                rows = item.to_pylist()
+                item = rows[0] if len(rows) == 1 else rows
+            elif isinstance(item, pa.RecordBatch):
+                rows = item.to_pylist()
+                item = rows[0] if len(rows) == 1 else rows
+            elif isinstance(item, pa.Array):
+                item = item.to_pylist()
+
+        if isinstance(item, Mapping):
+            item = dict(item)
+
+        if allowed_columns and isinstance(item, dict):
+            item = {key: item[key] for key in allowed_columns if key in item}
+        return item
 
     def _validate_entry(
         self, entry: ManifestEntry, dataset_source: Optional[str] = None
@@ -2248,6 +2370,10 @@ class CustomDataset(Dataset):
             print(f"Error processing item: {e}")
 
     def __getitem__(self, idx):
+        if isinstance(idx, slice):
+            indices = range(*idx.indices(len(self)))
+            return [self.__getitem__(i) for i in indices]
+
         try:
             # Route: materialized list first, then lazy HF splits
             if idx < len(self.data_list):
@@ -2280,7 +2406,20 @@ class CustomDataset(Dataset):
                     raise IndexError("Index out of range for dataset")
                 dataset_source = entry.get("name")
 
+                if isinstance(idx, (int, slice)):
+                    ds = self._ensure_hf_arrow_dataset(entry)
+                allowed_columns = entry.get("hf_allowed_columns")
                 item = ds[row_idx]
+                item = self._hf_item_to_python(item, allowed_columns)
+                if isinstance(item, list):
+                    raise TypeError(
+                        "CustomDataset does not support slice retrieval from HF splits."
+                    )
+                if not isinstance(item, dict):
+                    raise TypeError(
+                        f"Expected dict-like item from dataset '{dataset_source}', "
+                        f"received {type(item).__name__}."
+                    )
 
                 # Extract audio path and text similar to _process_item
                 audio_file = None
@@ -2375,13 +2514,7 @@ class CustomDataset(Dataset):
                     transcript = item.get("sentences", item.get("text", ""))
                 else:
                     txt = None
-                    for text_key in [
-                        "sentence",
-                        "text",
-                        "transcription",
-                        "transcript",
-                        "label",
-                    ]:
+                    for text_key in _HF_TEXT_CANDIDATE_KEYS:
                         if text_key in item:
                             txt = item[text_key]
                             break
