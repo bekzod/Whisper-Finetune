@@ -7,6 +7,7 @@ import argparse
 import inspect
 import json
 import os
+import time
 import types
 from collections.abc import Iterable as IterableCollection
 from pathlib import Path
@@ -18,6 +19,33 @@ from datasets.utils.logging import set_verbosity_info
 
 DatasetEntry = Dict[str, object]
 SeenKey = Tuple[str, Optional[str], Optional[str], Optional[str]]
+
+
+def rate_limited_request(func, *args, **kwargs):
+    """Execute a function with exponential backoff to dodge HF rate limits."""
+    max_retries = 5
+    base_delay = 150
+
+    for attempt in range(max_retries):
+        try:
+            return func(*args, **kwargs)
+        except Exception as exc:  # pylint: disable=broad-except
+            message = str(exc).lower()
+            if any(
+                indicator in message for indicator in ("rate limit", "quota", "2500")
+            ):
+                if attempt < max_retries - 1:
+                    delay = base_delay * (2**attempt)
+                    print(
+                        f"Rate limit hit. Waiting {delay} seconds before retry "
+                        f"{attempt + 1}/{max_retries}..."
+                    )
+                    time.sleep(delay)
+                    continue
+                print(
+                    "Max retries reached for rate limiting. Please upgrade your HF plan or retry later."
+                )
+            raise
 
 
 def parse_args() -> argparse.Namespace:
@@ -144,9 +172,11 @@ def warm_split(
 
     try:
         if subset:
-            dataset = load_dataset(repo, name=subset, **load_kwargs)
+            dataset = rate_limited_request(
+                load_dataset, repo, name=subset, **load_kwargs
+            )
         else:
-            dataset = load_dataset(repo, **load_kwargs)
+            dataset = rate_limited_request(load_dataset, repo, **load_kwargs)
         try:
             _ = len(dataset)
         except (TypeError, NotImplementedError):
@@ -212,7 +242,8 @@ def download_resources_only(
     if hf_token:
         builder_kwargs["use_auth_token"] = hf_token
     try:
-        builder = load_dataset_builder(
+        builder = rate_limited_request(
+            load_dataset_builder,
             repo,
             name=subset,
             revision=revision,
@@ -234,7 +265,10 @@ def download_resources_only(
 
     try:
         with _skip_prepare_split(builder):
-            builder.download_and_prepare(download_config=download_config)
+            rate_limited_request(
+                builder.download_and_prepare,
+                download_config=download_config,
+            )
         print("  downloads completed (dataset preparation skipped).")
         return True
     except Exception as exc:  # pylint: disable=broad-except
