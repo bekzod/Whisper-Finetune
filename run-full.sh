@@ -31,8 +31,8 @@ accelerate launch --multi-gpu --config_file ./configs/accelerate.yaml finetune.p
   --base_model ../models/whisper-large-v3 \
   --output_dir ../models/output-full-finetune \
   --num_train_epochs 6 \
-  --per_device_train_batch_size 18 \
-  --per_device_eval_batch_size 40 \
+  --per_device_train_batch_size 16 \
+  --per_device_eval_batch_size 38 \
   --gradient_accumulation_steps 1 \
   --freeze_encoder_epochs 1 \
   --unfreeze_finish_ratio 0.3 \
