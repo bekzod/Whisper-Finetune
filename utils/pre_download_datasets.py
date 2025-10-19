@@ -6,15 +6,18 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import types
 from collections.abc import Iterable as IterableCollection
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
-from datasets import load_dataset
+from datasets import load_dataset, load_dataset_builder
+from datasets.utils.download_manager import DownloadConfig
 from datasets.utils.logging import set_verbosity_info
 
 DatasetEntry = Dict[str, object]
-SplitKey = Tuple[str, Optional[str], Optional[str], str]
+SeenKey = Tuple[str, Optional[str], Optional[str], Optional[str]]
 
 
 def parse_args() -> argparse.Namespace:
@@ -48,6 +51,15 @@ def parse_args() -> argparse.Namespace:
         "--dry-run",
         action="store_true",
         help="Print what would be downloaded without performing the calls.",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=("download", "prepare"),
+        default="download",
+        help=(
+            "Download only the dataset resources needed for the selected splits "
+            "(default) or fully prepare the arrow datasets for each split."
+        ),
     )
     return parser.parse_args()
 
@@ -145,14 +157,84 @@ def warm_split(
         return False
 
 
+@contextmanager
+def _skip_prepare_split(builder) -> None:
+    original_prepare_split = builder._prepare_split
+
+    def noop_prepare_split(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        return None
+
+    builder._prepare_split = types.MethodType(noop_prepare_split, builder)
+    try:
+        yield
+    finally:
+        builder._prepare_split = original_prepare_split
+
+
+def download_resources_only(
+    group: str,
+    repo: str,
+    subset: Optional[str],
+    revision: Optional[str],
+    splits: Sequence[str],
+    cache_dir: Optional[Path],
+    hf_token: Optional[str],
+    extra_kwargs: Dict[str, object],
+    dry_run: bool,
+) -> bool:
+    display_subset = subset or "default"
+    splits_text = (
+        ", ".join(dict.fromkeys(str(split) for split in splits)) or "unspecified"
+    )
+    print(
+        f"[{group}] downloading resources for {repo} ({display_subset}) splits={splits_text}"
+    )
+    if dry_run:
+        return True
+
+    builder_kwargs: Dict[str, object] = dict(extra_kwargs)
+    if cache_dir:
+        builder_kwargs["cache_dir"] = str(cache_dir)
+    if hf_token:
+        builder_kwargs["use_auth_token"] = hf_token
+    try:
+        builder = load_dataset_builder(
+            repo,
+            name=subset,
+            revision=revision,
+            **builder_kwargs,
+        )
+    except Exception as exc:  # pylint: disable=broad-except
+        print(f"  ⚠️ failed to initialise builder for {repo} ({display_subset}): {exc}")
+        return False
+
+    download_config_kwargs: Dict[str, object] = {}
+    if cache_dir:
+        download_config_kwargs["cache_dir"] = str(cache_dir)
+    if hf_token:
+        download_config_kwargs["token"] = hf_token
+    download_config = (
+        DownloadConfig(**download_config_kwargs) if download_config_kwargs else None
+    )
+
+    try:
+        with _skip_prepare_split(builder):
+            builder.download_and_prepare(download_config=download_config)
+        return True
+    except Exception as exc:  # pylint: disable=broad-except
+        print(f"  ⚠️ failed to download resources for {repo} ({display_subset}): {exc}")
+        return False
+
+
 def main() -> None:
     args = parse_args()
     set_verbosity_info()
 
     config = load_dataset_config(args.config)
-    seen: Set[SplitKey] = set()
+    seen: Set[SeenKey] = set()
     requested = 0
     completed = 0
+    download_only = args.mode == "download"
 
     for group, entry in iter_selected_entries(config, args.groups):
         name = entry.get("name")
@@ -171,26 +253,48 @@ def main() -> None:
         extra_kwargs = extract_optional_kwargs(entry)
 
         for split in splits:
-            key: SplitKey = (repo, subset, revision, split)
+            key: SeenKey = (repo, subset, revision, None if download_only else split)
             if key in seen:
                 continue
             seen.add(key)
             requested += 1
-            if warm_split(
-                group,
-                repo,
-                subset,
-                revision,
-                split,
-                args.cache_dir,
-                args.hf_token,
-                extra_kwargs,
-                args.dry_run,
-            ):
-                completed += 1
+            if download_only:
+                if download_resources_only(
+                    group,
+                    repo,
+                    subset,
+                    revision,
+                    splits,
+                    args.cache_dir,
+                    args.hf_token,
+                    extra_kwargs,
+                    args.dry_run,
+                ):
+                    completed += 1
+            else:
+                if warm_split(
+                    group,
+                    repo,
+                    subset,
+                    revision,
+                    split,
+                    args.cache_dir,
+                    args.hf_token,
+                    extra_kwargs,
+                    args.dry_run,
+                ):
+                    completed += 1
 
-    status = "planned" if args.dry_run else "completed"
-    print(f"{status.capitalize()} {completed}/{requested} dataset split downloads.")
+    if args.dry_run:
+        verb = "planned"
+        noun = "operations"
+    elif download_only:
+        verb = "downloaded"
+        noun = "dataset resource groups"
+    else:
+        verb = "prepared"
+        noun = "dataset splits"
+    print(f"{verb.capitalize()} {completed}/{requested} {noun}.")
 
 
 if __name__ == "__main__":
