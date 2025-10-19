@@ -7,6 +7,7 @@ import argparse
 import inspect
 import json
 import os
+import types
 from collections.abc import Iterable as IterableCollection
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Set, Tuple
@@ -156,6 +157,34 @@ def warm_split(
         return False
 
 
+def _skip_prepare_split(builder):
+    original_prepare_split = getattr(builder, "_prepare_split", None)
+    if original_prepare_split is None:
+        # Nothing to override; run default behaviour.
+        class NullContext:
+            def __enter__(self_inner):
+                return None
+
+            def __exit__(self_inner, exc_type, exc, traceback):
+                return False
+
+        return NullContext()
+
+    def noop_prepare_split(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        return None
+
+    class RestoreContext:
+        def __enter__(self_inner):
+            builder._prepare_split = types.MethodType(noop_prepare_split, builder)
+            return None
+
+        def __exit__(self_inner, exc_type, exc, traceback):
+            builder._prepare_split = original_prepare_split
+            return False
+
+    return RestoreContext()
+
+
 def download_resources_only(
     group: str,
     repo: str,
@@ -194,61 +223,19 @@ def download_resources_only(
         return False
 
     download_config_kwargs: Dict[str, object] = {}
+    config_params = inspect.signature(DownloadConfig.__init__).parameters
     if cache_dir:
-        download_config_kwargs["cache_dir"] = str(cache_dir)
+        if "cache_dir" in config_params:
+            download_config_kwargs["cache_dir"] = str(cache_dir)
     if hf_token:
-        init_params = inspect.signature(DownloadConfig.__init__).parameters
-        if "use_auth_token" in init_params:
+        if "use_auth_token" in config_params:
             download_config_kwargs["use_auth_token"] = hf_token
-        if "token" in init_params:
-            download_config_kwargs.setdefault("token", hf_token)
     download_config = DownloadConfig(**download_config_kwargs)
 
-    get_dl_manager = getattr(builder, "_get_download_manager", None) or getattr(
-        builder, "_get_dl_manager", None
-    )
-    if not callable(get_dl_manager):
-        print(
-            f"  ⚠️ builder for {repo} ({display_subset}) does not expose a download manager helper."
-        )
-        return False
-
     try:
-        dl_params = inspect.signature(get_dl_manager).parameters
-        dl_kwargs: Dict[str, object] = {}
-        if "download_config" in dl_params:
-            dl_kwargs["download_config"] = download_config
-        base_path = getattr(builder, "base_path", None) or getattr(
-            builder, "_base_path", None
-        )
-        if "base_path" in dl_params and base_path is not None:
-            dl_kwargs["base_path"] = base_path
-        if "use_auth_token" in dl_params and hf_token:
-            dl_kwargs["use_auth_token"] = hf_token
-        dl_manager = get_dl_manager(**dl_kwargs)
-    except Exception as exc:  # pylint: disable=broad-except
-        print(
-            f"  ⚠️ failed to construct download manager for {repo} ({display_subset}): {exc}"
-        )
-        return False
-
-    split_fn = getattr(builder, "_split_generators", None)
-    if not callable(split_fn):
-        print(
-            f"  ⚠️ builder for {repo} ({display_subset}) does not support split generation."
-        )
-        return False
-
-    try:
-        generated_splits = split_fn(dl_manager)  # type: ignore[misc]
-        if generated_splits:
-            available = [
-                getattr(split, "name", None) for split in generated_splits if split
-            ]
-            if available:
-                print(
-                    f"  download requests issued for splits: {', '.join(str(s) for s in available)}"
-                )
+        with _skip_prepare_split(builder):
+            builder.download_and_prepare(download_config=download_config)
+        print("  downloads completed (dataset preparation skipped).")
         return True
     except Exception as exc:  # pylint: disable=broad-except
         print(
