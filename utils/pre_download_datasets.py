@@ -268,6 +268,8 @@ def main() -> None:
     download_only = args.mode == "download"
 
     for group, entry in iter_selected_entries(config, args.groups):
+        if str(entry.get("name")) == "mozilla-foundation/common_voice_17_0":
+            continue
         name = entry.get("name")
         if not name:
             print(f"[{group}] skipping entry without a 'name' field: {entry}")
