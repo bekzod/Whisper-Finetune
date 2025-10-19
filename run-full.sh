@@ -33,7 +33,7 @@ accelerate launch --multi-gpu --config_file ./configs/accelerate.yaml finetune.p
   --num_train_epochs 6 \
   --per_device_train_batch_size 16 \
   --per_device_eval_batch_size 38 \
-  --gradient_accumulation_steps 1 \
+  --gradient_accumulation_steps 2 \
   --freeze_encoder_epochs 1 \
   --unfreeze_finish_ratio 0.3 \
   --learning_rate 5e-5 \
