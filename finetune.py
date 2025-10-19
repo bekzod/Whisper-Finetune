@@ -178,7 +178,7 @@ add_arg(
 add_arg(
     "new_group_lr_scale",
     type=float,
-    default=0.2,
+    default=0.1,
     help="Scale factor for LR of newly unfrozen param groups (e.g., 0.1 = 10% of base LR)",
 )
 add_arg(
