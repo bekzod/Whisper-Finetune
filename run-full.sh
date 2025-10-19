@@ -36,7 +36,7 @@ accelerate launch --multi-gpu --config_file ./configs/accelerate.yaml finetune.p
   --gradient_accumulation_steps 1 \
   --freeze_encoder_epochs 1 \
   --unfreeze_finish_ratio 0.3 \
-  --learning_rate 6e-5 \
+  --learning_rate 5e-5 \
   --logging_steps 200 \
   --eval_steps 3000 \
   --save_steps 3000 \
