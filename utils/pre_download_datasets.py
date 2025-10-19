@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from datasets import load_dataset, load_dataset_builder
-from datasets.utils.download_manager import DownloadConfig
+from datasets.download.download_manager import DownloadConfig
 from datasets.utils.logging import set_verbosity_info
 
 DatasetEntry = Dict[str, object]
@@ -159,7 +159,11 @@ def warm_split(
 
 @contextmanager
 def _skip_prepare_split(builder) -> None:
-    original_prepare_split = builder._prepare_split
+    original_prepare_split = getattr(builder, "_prepare_split", None)
+    if original_prepare_split is None:
+        # Some builders do not implement `_prepare_split`; nothing to patch.
+        yield
+        return
 
     def noop_prepare_split(self, *args, **kwargs):  # type: ignore[no-untyped-def]
         return None
