@@ -7,3 +7,4 @@ dataset/*
 !dataset/test.wav
 !dataset/test_long.wav
 test.py
+checkpoint-*
