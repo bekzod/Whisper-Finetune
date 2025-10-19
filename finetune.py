@@ -174,6 +174,19 @@ add_arg(
     default=0.5,
     help="Fraction of total training (after warmup) by which the final encoder group is unfrozen (0<r<=1).",
 )
+# NEW: LR for newly unfrozen groups
+add_arg(
+    "new_group_lr_scale",
+    type=float,
+    default=0.2,
+    help="Scale factor for LR of newly unfrozen param groups (e.g., 0.1 = 10% of base LR)",
+)
+add_arg(
+    "warmup_new_group_steps",
+    type=int,
+    default=200,
+    help="Linear warmup steps for newly unfrozen groups to ramp from scaled LR to base LR",
+)
 
 # Logging / eval / saving
 add_arg("logging_steps", type=int, default=None, help="Number of steps between logging")
@@ -394,8 +407,9 @@ class LayerwiseEncoderUnfreezeCallback(TrainerCallback):
     Gradually unfreezes encoder parameter groups after an optional warmup period.
     Groups are ordered from decoder-adjacent layers down to the acoustic frontend.
 
-    NEW: unfreeze_completion_ratio controls by when the last group must be unfrozen
-    (as a fraction of training after warmup).
+    This version *starts newly unfrozen groups at a reduced LR* (new_group_lr_scale)
+    and *warms them up* over warmup_new_group_steps to the base LR. This prevents a
+    sharp spike in the (pre-clipping) grad norm.
     """
 
     def __init__(
@@ -406,6 +420,8 @@ class LayerwiseEncoderUnfreezeCallback(TrainerCallback):
         lr: float | None = None,
         wd: float | None = None,
         unfreeze_completion_ratio: float = 1.0,  # 0 < r <= 1
+        new_group_lr_scale: float = 0.1,
+        warmup_new_group_steps: int = 200,
     ):
         self.warmup_steps = max(0, int(warmup_steps))
         self.total_steps = max(int(total_steps), self.warmup_steps)
@@ -414,11 +430,17 @@ class LayerwiseEncoderUnfreezeCallback(TrainerCallback):
         self.wd = wd
         self.unfreeze_completion_ratio = float(unfreeze_completion_ratio)
 
+        self.new_group_lr_scale = float(new_group_lr_scale)
+        self.warmup_new_group_steps = max(1, int(warmup_new_group_steps))
+
         self.initialized = False
         self.layer_groups: list[tuple[str, list[torch.nn.Parameter]]] = []
         self.thresholds: list[int] = []
         self.next_group_idx = 0
         self.optimizer_param_ids: set[int] = set()
+
+        # Track newly added param groups that need LR warmup
+        self._warming: list[dict] = []
 
     def on_train_begin(self, args, state, control, **kwargs):
         model = kwargs.get("model")
@@ -442,7 +464,6 @@ class LayerwiseEncoderUnfreezeCallback(TrainerCallback):
         if total_groups == 0:
             self.thresholds = []
         elif remaining_steps == 0:
-            # All groups scheduled at warmup end (effectively stays frozen if end_step==warmup_steps and nothing triggers)
             self.thresholds = [self.warmup_steps] * total_groups
         else:
             for idx in range(total_groups):
@@ -466,7 +487,9 @@ class LayerwiseEncoderUnfreezeCallback(TrainerCallback):
                 print(
                     f"🪜 Layer-wise encoder unfreeze schedule: {total_groups} group(s), "
                     f"warmup ≈{approx_warmup_epochs:.2f} epoch(s), "
-                    f"finish by step {final_step} (≈epoch {approx_finish_epoch:.2f})."
+                    f"finish by step {final_step} (≈epoch {approx_finish_epoch:.2f}), "
+                    f"new-group LR scale={self.new_group_lr_scale}, "
+                    f"warmup steps={self.warmup_new_group_steps}."
                 )
 
         self.initialized = True
@@ -474,19 +497,17 @@ class LayerwiseEncoderUnfreezeCallback(TrainerCallback):
     def on_step_end(self, args, state, control, **kwargs):
         if not self.initialized:
             return
-        if self.next_group_idx >= len(self.layer_groups):
-            return
 
         model = kwargs.get("model")
         optimizer = kwargs.get("optimizer")
-        if model is None:
+        if model is None or optimizer is None:
             return
 
-        current_step = state.global_step
+        # Unfreeze groups whose thresholds we have reached
         while (
             self.next_group_idx < len(self.layer_groups)
             and self.next_group_idx < len(self.thresholds)
-            and current_step >= self.thresholds[self.next_group_idx]
+            and state.global_step >= self.thresholds[self.next_group_idx]
         ):
             self._activate_group(
                 args=args,
@@ -497,13 +518,29 @@ class LayerwiseEncoderUnfreezeCallback(TrainerCallback):
             )
             self.next_group_idx += 1
 
+        # Warm up LR for recently unfrozen groups
+        if self._warming:
+            done = []
+            for entry in self._warming:
+                pg = entry["group"]
+                base_lr = entry["base_lr"]
+                t0 = entry["t0"]
+                k = min(1.0, (state.global_step - t0) / self.warmup_new_group_steps)
+                pg["lr"] = base_lr * (
+                    self.new_group_lr_scale + (1 - self.new_group_lr_scale) * k
+                )
+                if k >= 1.0:
+                    done.append(entry)
+            for d in done:
+                self._warming.remove(d)
+
     def _activate_group(
         self,
         *,
         args: Seq2SeqTrainingArguments,
         state,
         model: torch.nn.Module,
-        optimizer: torch.optim.Optimizer | None,
+        optimizer: torch.optim.Optimizer,
         group_idx: int,
     ) -> None:
         group_name, params = self.layer_groups[group_idx]
@@ -511,19 +548,24 @@ class LayerwiseEncoderUnfreezeCallback(TrainerCallback):
         for param in params:
             param.requires_grad = True
 
-        if optimizer is not None:
-            new_params = [p for p in params if id(p) not in self.optimizer_param_ids]
-            if new_params:
-                optimizer.add_param_group(
-                    {
-                        "params": new_params,
-                        "lr": self.lr if self.lr is not None else args.learning_rate,
-                        "weight_decay": self.wd
-                        if self.wd is not None
-                        else args.weight_decay,
-                    }
-                )
-                self.optimizer_param_ids.update(id(p) for p in new_params)
+        # Add a new param group at a scaled LR, then warm it to base LR
+        new_params = [p for p in params if id(p) not in self.optimizer_param_ids]
+        if new_params:
+            base_lr = self.lr if self.lr is not None else args.learning_rate
+            wd = self.wd if self.wd is not None else args.weight_decay
+            optimizer.add_param_group(
+                {
+                    "params": new_params,
+                    "lr": base_lr * self.new_group_lr_scale,
+                    "weight_decay": wd,
+                }
+            )
+            self.optimizer_param_ids.update(id(p) for p in new_params)
+            # Keep a handle to the *actual* param group we just added
+            pg = optimizer.param_groups[-1]
+            self._warming.append(
+                {"group": pg, "base_lr": base_lr, "t0": state.global_step}
+            )
 
         should_log = getattr(args, "local_rank", -1) in (-1, 0)
         if should_log:
@@ -945,7 +987,9 @@ def main():
             steps_per_epoch=steps_per_epoch,
             lr=args.learning_rate,
             wd=args.weight_decay,
-            unfreeze_completion_ratio=args.unfreeze_finish_ratio,  # NEW
+            unfreeze_completion_ratio=args.unfreeze_finish_ratio,
+            new_group_lr_scale=args.new_group_lr_scale,
+            warmup_new_group_steps=args.warmup_new_group_steps,
         )
 
     # ----- Training args -----
