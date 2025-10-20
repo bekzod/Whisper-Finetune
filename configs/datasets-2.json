@@ -22,6 +22,10 @@
       "splits": ["train"]
     },
     {
+      "name": "IbratDO/uzbekvoice-1K",
+      "splits": ["train"]
+    },
+    {
       "name": "IbratDO/first_dataset",
       "splits": ["train"]
     },
@@ -32,9 +36,9 @@
   ],
   "eval": [
     {
-      "name": "mozilla-foundation/common_voice_17_0",
+      "name": "IbratDO/uzbekvoice-1K",
       "subset": "uz",
-      "splits": ["validation"],
+      "splits": ["test"],
       "percentage": 50
     }
   ]
