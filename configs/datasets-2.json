@@ -1,0 +1,41 @@
+{
+  "train": [
+    {
+      "name": "mozilla-foundation/common_voice_17_0",
+      "subset": "uz",
+      "splits": ["validation"]
+    },
+    {
+      "name": "islomov/podcasts_tashkent_dialect_youtube_uzbek_speech_dataset",
+      "splits": ["train"]
+    },
+    {
+      "name": "IbratDO/cv_female2546_dataset",
+      "splits": ["train"]
+    },
+    {
+      "name": "IbratDO/cv_female5000_dataset",
+      "splits": ["train"]
+    },
+    {
+      "name": "IbratDO/second_dataset",
+      "splits": ["train"]
+    },
+    {
+      "name": "IbratDO/first_dataset",
+      "splits": ["train"]
+    },
+    {
+      "name": "islomov/news_youtube_uzbek_speech_dataset",
+      "splits": ["train"]
+    }
+  ],
+  "eval": [
+    {
+      "name": "mozilla-foundation/common_voice_17_0",
+      "subset": "uz",
+      "splits": ["validation"],
+      "percentage": 50
+    }
+  ]
+}

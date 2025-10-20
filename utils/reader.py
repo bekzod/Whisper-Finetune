@@ -96,6 +96,83 @@ _APOSTROPHE_TRANSLATION = str.maketrans(
 )
 _ALLOWED_TEXT_RE = re.compile(r"[^a-zA-ZА-Яа-яЎўҚқҒғҲҳ0-9\s,.'-]+")
 _MULTISPACE_RE = re.compile(r"\s+")
+_UZBEK_CYRILLIC_TO_LATIN = {
+    "А": "A",
+    "а": "a",
+    "Б": "B",
+    "б": "b",
+    "В": "V",
+    "в": "v",
+    "Г": "G",
+    "г": "g",
+    "Д": "D",
+    "д": "d",
+    "Е": "E",
+    "е": "e",
+    "Ё": "Yo",
+    "ё": "yo",
+    "Ж": "J",
+    "ж": "j",
+    "З": "Z",
+    "з": "z",
+    "И": "I",
+    "и": "i",
+    "Й": "Y",
+    "й": "y",
+    "К": "K",
+    "к": "k",
+    "Л": "L",
+    "л": "l",
+    "М": "M",
+    "м": "m",
+    "Н": "N",
+    "н": "n",
+    "О": "O",
+    "о": "o",
+    "П": "P",
+    "п": "p",
+    "Р": "R",
+    "р": "r",
+    "С": "S",
+    "с": "s",
+    "Т": "T",
+    "т": "t",
+    "У": "U",
+    "у": "u",
+    "Ф": "F",
+    "ф": "f",
+    "Х": "X",
+    "х": "x",
+    "Ц": "Ts",
+    "ц": "ts",
+    "Ч": "Ch",
+    "ч": "ch",
+    "Ш": "Sh",
+    "ш": "sh",
+    "Щ": "Sh",
+    "щ": "sh",
+    "Ъ": "'",
+    "ъ": "'",
+    "Ы": "I",
+    "ы": "i",
+    "Ь": "",
+    "ь": "",
+    "Э": "E",
+    "э": "e",
+    "Ю": "Yu",
+    "ю": "yu",
+    "Я": "Ya",
+    "я": "ya",
+    "Ў": "O'",
+    "ў": "o'",
+    "Қ": "Q",
+    "қ": "q",
+    "Ғ": "G'",
+    "ғ": "g'",
+    "Ҳ": "H",
+    "ҳ": "h",
+}
+_UZBEK_CYRILLIC_CHARS = set(_UZBEK_CYRILLIC_TO_LATIN.keys())
 
 
 def _preview_text(text: str, limit: int = 120) -> str:
@@ -149,7 +226,8 @@ def normalize_text(text):
     """
     Normalize text by replacing various apostrophe-like characters with a uniform apostrophe
     and keeping only alphanumeric characters plus commas, dots, spaces, apostrophes, and dashes.
-    This handles Uzbek text like "ko'p" to ensure consistent character usage.
+    This handles Uzbek text like "ko'p" to ensure consistent character usage and also
+    transliterates Uzbek Cyrillic characters to their Latin counterparts.
     """
     if text is None:
         return text
@@ -161,6 +239,8 @@ def normalize_text(text):
         # As a last resort, return empty string if conversion fails
         return ""
 
+    normalized = _transliterate_uzbek_cyrillic(normalized)
+
     # Replace apostrophe-like characters with standard apostrophe
     normalized = normalized.translate(_APOSTROPHE_TRANSLATION)
 
@@ -171,6 +251,19 @@ def normalize_text(text):
     normalized = _MULTISPACE_RE.sub(" ", normalized).strip()
 
     return normalized
+
+
+def _transliterate_uzbek_cyrillic(text: str) -> str:
+    """
+    Transliterate Uzbek Cyrillic characters to Latin.
+    """
+    if not text:
+        return text
+
+    if not any(char in _UZBEK_CYRILLIC_CHARS for char in text):
+        return text
+
+    return "".join(_UZBEK_CYRILLIC_TO_LATIN.get(char, char) for char in text)
 
 
 class CustomDataset(Dataset):
