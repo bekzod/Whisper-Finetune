@@ -38,8 +38,8 @@ accelerate launch --multi-gpu --config_file ./configs/accelerate.yaml finetune.p
   --unfreeze_finish_ratio 0.4 \
   --learning_rate 5e-5 \
   --logging_steps 200 \
-  --eval_steps 1000 \
-  --save_steps 1000 \
+  --eval_steps 1200 \
+  --save_steps 1200 \
   --warmup_ratio 0.06 \
   --lr_scheduler_type cosine \
   --use_lora False \
