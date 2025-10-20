@@ -165,6 +165,37 @@ def load_audio(audio_path: str) -> Tuple[np.ndarray, int]:
     return audio.astype(np.float32), int(sample_rate)
 
 
+def resample_audio(
+    audio: np.ndarray,
+    original_sr: int,
+    target_sr: int,
+) -> np.ndarray:
+    """
+    Resample audio to the target sampling rate.
+    """
+    if original_sr == target_sr:
+        return audio
+
+    try:
+        from scipy.signal import resample_poly
+
+        # Use polyphase filtering for better quality resampling
+        return resample_poly(audio, target_sr, original_sr).astype(np.float32)
+    except Exception:
+        # Fallback to linear interpolation if scipy is unavailable
+        duration = audio.shape[0] / float(original_sr)
+        target_length = int(round(duration * target_sr))
+        if target_length <= 0:
+            raise ValueError(
+                f"Cannot resample audio with duration {duration:.6f}s "
+                f"from {original_sr}Hz to {target_sr}Hz"
+            )
+        original_indices = np.linspace(0, duration, num=audio.shape[0], endpoint=False)
+        target_indices = np.linspace(0, duration, num=target_length, endpoint=False)
+        resampled_audio = np.interp(target_indices, original_indices, audio)
+        return resampled_audio.astype(np.float32)
+
+
 def build_logits_processors(
     tokenizer: Any,
     bias_words: Iterable[str],
@@ -266,6 +297,13 @@ def main() -> None:
     )
 
     audio_samples, sample_rate = load_audio(args.audio_path)
+    target_sample_rate = processor.feature_extractor.sampling_rate
+    if sample_rate != target_sample_rate:
+        audio_samples = resample_audio(
+            audio_samples, original_sr=sample_rate, target_sr=target_sample_rate
+        )
+        sample_rate = target_sample_rate
+
     inputs = processor(
         audio=audio_samples,
         sampling_rate=sample_rate,
