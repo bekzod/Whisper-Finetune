@@ -37,7 +37,6 @@
   "eval": [
     {
       "name": "IbratDO/uzbekvoice-1K",
-      "subset": "uz",
       "splits": ["test"],
       "percentage": 50
     }
