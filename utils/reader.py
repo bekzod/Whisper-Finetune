@@ -11,7 +11,7 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from itertools import chain
-from typing import Any, Dict, Iterator, List, Optional, Sequence, Set, Union
+from typing import Any, Dict, Iterator, List, Optional, Sequence, Set, Tuple, Union
 
 import numpy as np
 import soundfile
@@ -44,10 +44,12 @@ _HF_AUDIO_CANDIDATE_KEYS = (
     "audio",
     "audio_path",
     "audio_filepath",
+    "filepath",
     "file",
     "filename",
     "path",
     "audio_file",
+    "wav",
 )
 _HF_TEXT_CANDIDATE_KEYS = (
     "sentence",
@@ -615,6 +617,49 @@ class CustomDataset(Dataset):
         return sample.get("sentences")
 
     @staticmethod
+    def _resolve_audio_blob(
+        blob: Any,
+    ) -> Tuple[Optional[str], Optional[float], Optional[float]]:
+        """
+        Normalize various audio representations to a filesystem path and optional timing metadata.
+        """
+        start_time = None
+        end_time = None
+
+        if isinstance(blob, Mapping):
+            start_time = blob.get("start_time")
+            end_time = blob.get("end_time")
+            path_candidates = (
+                blob.get("path"),
+                blob.get("audio_path"),
+                blob.get("audio_filepath"),
+                blob.get("filepath"),
+                blob.get("filename"),
+                blob.get("file"),
+                blob.get("path_or_url"),
+            )
+            for candidate in path_candidates:
+                if candidate is None:
+                    continue
+                if isinstance(candidate, (str, bytes)):
+                    return str(candidate), start_time, end_time
+                if hasattr(os, "PathLike") and isinstance(candidate, os.PathLike):
+                    return os.fspath(candidate), start_time, end_time
+                try:
+                    return str(candidate), start_time, end_time
+                except Exception:
+                    continue
+            return None, start_time, end_time
+
+        if isinstance(blob, (str, bytes)):
+            return str(blob), start_time, end_time
+
+        if hasattr(os, "PathLike") and isinstance(blob, os.PathLike):
+            return os.fspath(blob), start_time, end_time
+
+        return None, start_time, end_time
+
+    @staticmethod
     def _extract_audio_reference(sample: Dict[str, Any]) -> Optional[str]:
         """
         Extract a representative audio path reference from a dataset sample when available.
@@ -622,22 +667,13 @@ class CustomDataset(Dataset):
         if not isinstance(sample, dict):
             return None
 
-        audio_blob = sample.get("audio")
-        if isinstance(audio_blob, dict):
-            for key in ("path", "filename", "file"):
-                candidate = audio_blob.get(key)
-                if candidate:
-                    return str(candidate)
-
-        for key in ("audio_path", "path", "filename", "file"):
-            candidate = sample.get(key)
-            if isinstance(candidate, dict):
-                for nested_key in ("path", "filename", "file"):
-                    nested = candidate.get(nested_key)
-                    if nested:
-                        return str(nested)
-            elif candidate:
-                return str(candidate)
+        for key in _HF_AUDIO_CANDIDATE_KEYS:
+            candidate_blob = sample.get(key)
+            if candidate_blob is None:
+                continue
+            path, _, _ = CustomDataset._resolve_audio_blob(candidate_blob)
+            if path:
+                return path
 
         return None
 
@@ -684,11 +720,16 @@ class CustomDataset(Dataset):
         label = split_name_label or "<unnamed>"
 
         try:
-            scan_dataset = (
-                ds_obj.cast_column("audio", Audio(decode=False))
-                if "audio" in ds_obj.column_names
-                else ds_obj
-            )
+            scan_dataset = ds_obj
+            for audio_col in _HF_AUDIO_CANDIDATE_KEYS:
+                if audio_col not in scan_dataset.column_names:
+                    continue
+                try:
+                    scan_dataset = scan_dataset.cast_column(
+                        audio_col, Audio(decode=False)
+                    )
+                except Exception:
+                    continue
         except Exception:
             scan_dataset = ds_obj
 
@@ -965,24 +1006,18 @@ class CustomDataset(Dataset):
         start_time = None
         end_time = None
 
-        audio_blob = row.get("audio")
-        if isinstance(audio_blob, dict):
-            audio_path = (
-                audio_blob.get("path")
-                or audio_blob.get("filename")
-                or audio_blob.get("file")
+        for key in _HF_AUDIO_CANDIDATE_KEYS:
+            candidate_blob = row.get(key)
+            if candidate_blob is None:
+                continue
+            candidate_path, candidate_start, candidate_end = self._resolve_audio_blob(
+                candidate_blob
             )
-            start_time = audio_blob.get("start_time")
-            end_time = audio_blob.get("end_time")
-        elif audio_blob:
-            audio_path = audio_blob
-
-        if not audio_path:
-            for key in ("wav", "audio_path", "filepath", "file", "filename", "path"):
-                candidate = row.get(key)
-                if candidate:
-                    audio_path = candidate
-                    break
+            if candidate_path:
+                audio_path = candidate_path
+                start_time = candidate_start
+                end_time = candidate_end
+                break
 
         if not audio_path:
             return None
