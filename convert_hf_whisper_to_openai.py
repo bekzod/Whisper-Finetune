@@ -17,48 +17,47 @@ _HF_TO_OPENAI_PAIRS = [
     # Module stacks
     ("encoder.layers", "encoder.blocks"),
     ("decoder.layers", "decoder.blocks"),
-
     # Attention (self)
     (".self_attn.q_proj", ".attn.query"),
     (".self_attn.k_proj", ".attn.key"),
     (".self_attn.v_proj", ".attn.value"),
     (".self_attn.out_proj", ".attn.out"),
     (".self_attn_layer_norm", ".attn_ln"),
-
     # Attention (cross)
     (".encoder_attn.q_proj", ".cross_attn.query"),
     (".encoder_attn.k_proj", ".cross_attn.key"),
     (".encoder_attn.v_proj", ".cross_attn.value"),
     (".encoder_attn.out_proj", ".cross_attn.out"),
     (".encoder_attn_layer_norm", ".cross_attn_ln"),
-
     # MLP
     (".fc1", ".mlp.0"),
     (".fc2", ".mlp.2"),
     (".final_layer_norm", ".mlp_ln"),
-
     # Block-level LNs on encoder/decoder stacks
-    ("encoder.layer_norm.", "encoder.ln_post."),  # IMPORTANT: OpenAI expects ln_post on encoder
+    (
+        "encoder.layer_norm.",
+        "encoder.ln_post.",
+    ),  # IMPORTANT: OpenAI expects ln_post on encoder
     ("decoder.layer_norm.", "decoder.ln."),
-
     # Positional & token embeddings
     ("encoder.embed_positions.weight", "encoder.positional_embedding"),
     ("decoder.embed_positions.weight", "decoder.positional_embedding"),
     ("embed_tokens", "token_embedding"),
-
     # Rare top-level layer_norm (not typical, but handle if present)
     ("layer_norm.", "ln_post."),
 ]
 
+
 def _rename_key_hf_to_openai(key: str) -> str:
     # strip "model." prefix used by WhisperForConditionalGeneration
     if key.startswith("model."):
-        key = key[len("model."):]
+        key = key[len("model.") :]
     # Apply ordered replacements
     for hf_sub, oa_sub in _HF_TO_OPENAI_PAIRS:
         if hf_sub in key:
             key = key.replace(hf_sub, oa_sub)
     return key
+
 
 def _build_dims_from_config(cfg) -> dict:
     # Match OpenAI Whisper's expected 'dims' payload
@@ -75,11 +74,13 @@ def _build_dims_from_config(cfg) -> dict:
         "n_text_layer": cfg.decoder_layers,
     }
 
+
 def _drop_hf_specific_heads(sd: dict):
     # HF uses a separate LM head; OpenAI ties it to token_embedding.
     for k in list(sd.keys()):
         if k.startswith("lm_head.") or k.startswith("proj_out."):
             sd.pop(k)
+
 
 def _apply_encoder_ln_post_safety_patch(openai_sd: dict):
     """
@@ -90,7 +91,7 @@ def _apply_encoder_ln_post_safety_patch(openai_sd: dict):
     moved = 0
     for k in list(openai_sd.keys()):
         if k.startswith("encoder.ln."):
-            new_k = "encoder.ln_post." + k[len("encoder.ln."):]
+            new_k = "encoder.ln_post." + k[len("encoder.ln.") :]
             openai_sd[new_k] = openai_sd.pop(k)
             moved += 1
 
@@ -103,11 +104,19 @@ def _apply_encoder_ln_post_safety_patch(openai_sd: dict):
         moved += 1
     return moved
 
+
+def _cast_state_dict_to_bfloat16(sd: dict) -> None:
+    """Convert all floating-point tensors in-place to bfloat16 to shrink the checkpoint."""
+    for key, tensor in list(sd.items()):
+        if isinstance(tensor, torch.Tensor) and torch.is_floating_point(tensor):
+            sd[key] = tensor.to(dtype=torch.bfloat16)
+
+
 def convert(model_dir: str, out_path: str):
     # Load local HF checkpoint (reads .safetensors/.bin shards seamlessly)
     model = WhisperForConditionalGeneration.from_pretrained(
         model_dir,
-        torch_dtype=None,        # keep original dtype
+        torch_dtype=None,  # keep original dtype
         low_cpu_mem_usage=True,  # reduce peak RAM for large checkpoints
     )
 
@@ -137,15 +146,23 @@ def convert(model_dir: str, out_path: str):
 
     dims = _build_dims_from_config(model.config)
 
+    _cast_state_dict_to_bfloat16(openai_sd)
+
     torch.save({"dims": dims, "model_state_dict": openai_sd}, out_path)
     print(f"Saved OpenAI-format Whisper checkpoint to: {out_path}")
 
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model_dir", required=True, help="Path to HF checkpoint dir (has config.json, *.safetensors)")
+    ap.add_argument(
+        "--model_dir",
+        required=True,
+        help="Path to HF checkpoint dir (has config.json, *.safetensors)",
+    )
     ap.add_argument("--out", default="whisper_converted.pt", help="Output .pt filepath")
     args = ap.parse_args()
     convert(args.model_dir, args.out)
+
 
 if __name__ == "__main__":
     main()
