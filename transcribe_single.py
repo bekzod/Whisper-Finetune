@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Single-file transcription script with optional KenLM and vocabulary biasing.
+Single-file transcription script with optional KenLM, vocabulary biasing, and basic voice enhancement.
 
 Example usage:
     python transcribe_single.py --audio_path path/to/file.wav --model_path models/whisper-tiny-finetune
@@ -90,8 +90,50 @@ add_arg(
 add_arg(
     "num_beams",
     type=int,
-    default=1,
+    default=4,
     help="Beam search width used during generation",
+)
+add_arg(
+    "do_sample",
+    type=bool,
+    default=True,
+    help="Enable sampling for generation (set True to sample instead of deterministic decoding)",
+)
+add_arg(
+    "temperature",
+    type=float,
+    default=0,
+    help="Sampling temperature applied when do_sample is enabled",
+)
+add_arg(
+    "top_p",
+    type=float,
+    default=1.0,
+    help="Nucleus sampling probability mass (effective when do_sample is enabled)",
+)
+add_arg(
+    "top_k",
+    type=int,
+    default=50,
+    help="Top-k sampling limit (set 0 to disable; effective when do_sample is enabled)",
+)
+add_arg(
+    "repetition_penalty",
+    type=float,
+    default=1.0,
+    help="Penalty factor for repeated tokens during generation",
+)
+add_arg(
+    "length_penalty",
+    type=float,
+    default=1.0,
+    help="Length penalty applied during beam search decoding",
+)
+add_arg(
+    "no_repeat_ngram_size",
+    type=int,
+    default=0,
+    help="Prevent repeating n-grams of this size (0 disables constraint)",
 )
 add_arg(
     "device",
@@ -114,13 +156,13 @@ add_arg(
 add_arg(
     "kenlm_alpha",
     type=float,
-    default=0.5,
+    default=0.3,
     help="KenLM weight applied to logit deltas",
 )
 add_arg(
     "kenlm_top_k",
     type=int,
-    default=50,
+    default=30,
     help="Rescore only the top-k tokens with KenLM",
 )
 add_arg(
@@ -134,6 +176,24 @@ add_arg(
     type=float,
     default=5.0,
     help="Logit boost applied to the first token of each bias phrase",
+)
+add_arg(
+    "enhance_audio",
+    type=bool,
+    default=True,
+    help="Apply simple gain boost to quiet audio before transcription",
+)
+add_arg(
+    "enhance_target_rms",
+    type=float,
+    default=0.1,
+    help="Target RMS amplitude for enhancement when gain is applied",
+)
+add_arg(
+    "enhance_max_gain",
+    type=float,
+    default=10.0,
+    help="Maximum gain multiplier applied during enhancement",
 )
 
 args = parser.parse_args()
@@ -194,6 +254,32 @@ def resample_audio(
         target_indices = np.linspace(0, duration, num=target_length, endpoint=False)
         resampled_audio = np.interp(target_indices, original_indices, audio)
         return resampled_audio.astype(np.float32)
+
+
+def enhance_audio(
+    audio: np.ndarray,
+    target_rms: float,
+    max_gain: float,
+) -> np.ndarray:
+    """
+    Boost the audio level if the RMS amplitude is below the target threshold.
+    """
+    if target_rms <= 0 or max_gain <= 1.0:
+        return audio
+
+    rms = float(np.sqrt(np.mean(np.square(audio, dtype=np.float64))))
+    if rms <= 0 or rms >= target_rms:
+        return audio
+
+    gain = min(max_gain, target_rms / max(rms, 1e-8))
+    if gain <= 1.0:
+        return audio
+
+    enhanced = audio * gain
+    peak = float(np.max(np.abs(enhanced)))
+    if peak > 1.0:
+        enhanced /= peak
+    return enhanced.astype(np.float32)
 
 
 def build_logits_processors(
@@ -303,6 +389,12 @@ def main() -> None:
             audio_samples, original_sr=sample_rate, target_sr=target_sample_rate
         )
         sample_rate = target_sample_rate
+    if args.enhance_audio:
+        audio_samples = enhance_audio(
+            audio=audio_samples,
+            target_rms=args.enhance_target_rms,
+            max_gain=args.enhance_max_gain,
+        )
 
     inputs = processor(
         audio=audio_samples,
@@ -318,6 +410,13 @@ def main() -> None:
         "input_features": input_features,
         "max_new_tokens": args.max_new_tokens,
         "num_beams": args.num_beams,
+        "do_sample": args.do_sample,
+        "temperature": args.temperature,
+        "top_p": args.top_p,
+        "top_k": args.top_k,
+        "repetition_penalty": args.repetition_penalty,
+        "length_penalty": args.length_penalty,
+        "no_repeat_ngram_size": args.no_repeat_ngram_size,
     }
     if attention_mask is not None:
         generate_kwargs["attention_mask"] = attention_mask
