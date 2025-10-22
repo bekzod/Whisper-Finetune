@@ -40,7 +40,13 @@ from utils.logits_processors import (
 parser = argparse.ArgumentParser(description=__doc__)
 add_arg = functools.partial(add_arguments, argparser=parser)
 add_arg(
-    "test_data", type=str, default="dataset/test.json", help="Path to the test dataset"
+    "test_data",
+    type=str,
+    default="dataset/test.json",
+    help=(
+        "Path to the test dataset or a Hugging Face repo spec (e.g. 'org/name:split'). "
+        "Use '+' to combine multiple datasets."
+    ),
 )
 add_arg(
     "model_path",
@@ -122,7 +128,38 @@ add_arg(
     help="Additive logit boost (scalar) applied to the first token of each vocabulary bias entry.",
 )
 
+
+def _normalize_dataset_argument(raw_value: str) -> str:
+    """
+    Resolve dataset specifications so Hugging Face hub repos are prefixed with 'hf://'.
+    Supports '+'-separated lists.
+    """
+    if raw_value is None:
+        raise ValueError("test_data argument must be provided.")
+
+    parts = [part.strip() for part in str(raw_value).split("+") if part.strip()]
+    if not parts:
+        raise ValueError("test_data argument is empty after parsing.")
+
+    normalized_parts = []
+    for part in parts:
+        if part.startswith("hf://"):
+            normalized_parts.append(part)
+            continue
+
+        base = part.split(":", 1)[0]
+        expanded_base = os.path.expanduser(base)
+        # Treat as HF repo when it resembles 'namespace/dataset' and no local file/dir exists
+        if "/" in base and not os.path.exists(expanded_base):
+            normalized_parts.append(f"hf://{part}")
+        else:
+            normalized_parts.append(part)
+
+    return "+".join(normalized_parts)
+
+
 args = parser.parse_args()
+args.test_data = _normalize_dataset_argument(args.test_data)
 print_arguments(args)
 
 
