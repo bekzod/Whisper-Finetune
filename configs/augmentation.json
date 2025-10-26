@@ -4,7 +4,7 @@
     "params": {
       "new_sample_rates": [8000, 10000, 32000]
     },
-    "prob": 0.0
+    "prob": 0.1
   },
   {
     "type": "noise",
@@ -13,7 +13,7 @@
       "max_snr_dB": 50,
       "noise_dir": "dataset/noise"
     },
-    "prob": 0.2
+    "prob": 0.3
   },
   {
     "type": "speed",
@@ -30,7 +30,7 @@
       "min_shift_ms": -5,
       "max_shift_ms": 5
     },
-    "prob": 0.0
+    "prob": 0.1
   },
   {
     "type": "volume",
