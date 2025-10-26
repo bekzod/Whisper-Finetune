@@ -78,10 +78,6 @@
     {
       "name": "IbratDO/first_dataset",
       "splits": ["train"]
-    },
-    {
-      "name": "islomov/news_youtube_uzbek_speech_dataset",
-      "splits": ["train"]
     }
   ],
   "eval": [
