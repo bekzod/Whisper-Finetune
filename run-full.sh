@@ -31,7 +31,7 @@ accelerate launch --multi-gpu --config_file ./configs/accelerate.yaml finetune.p
   --base_model ../models/output-full-finetune/whisper-large-v3-20251026-1138/checkpoint-15000 \
   --output_dir ../models/output-full-finetune \
   --num_train_epochs 8 \
-  --per_device_train_batch_size 12 \
+  --per_device_train_batch_size 14 \
   --per_device_eval_batch_size 32 \
   --gradient_accumulation_steps 2 \
   --learning_rate 4.5e-5 \
