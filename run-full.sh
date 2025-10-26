@@ -28,15 +28,13 @@ export NCCL_TIMEOUT=600
 export NCCL_IB_DISABLE=1             # single-node hygiene
 
 accelerate launch --multi-gpu --config_file ./configs/accelerate.yaml finetune.py \
-  --base_model ../models/whisper-large-v3 \
+  --base_model ../models/output-full-finetune/whisper-large-v3-20251026-1138/checkpoint-15000 \
   --output_dir ../models/output-full-finetune \
-  --num_train_epochs 10 \
-  --per_device_train_batch_size 13 \
-  --per_device_eval_batch_size 34 \
+  --num_train_epochs 8 \
+  --per_device_train_batch_size 12 \
+  --per_device_eval_batch_size 32 \
   --gradient_accumulation_steps 2 \
-  --freeze_encoder_epochs 2 \
-  --unfreeze_finish_ratio 0.3 \
-  --learning_rate 5e-5 \
+  --learning_rate 4.5e-5 \
   --logging_steps 200 \
   --eval_steps 3000 \
   --save_steps 3000 \
@@ -49,4 +47,3 @@ accelerate launch --multi-gpu --config_file ./configs/accelerate.yaml finetune.p
   --wandb_run_name whisper-v3-uzbek \
   --wandb_tags uzbek,whisper,full-finetune,H100 \
   --train_data ./configs/datasets.json \
-  --resume_from_checkpoint ../models/output-full-finetune/whisper-large-v3-20251026-1138/checkpoint-15000
