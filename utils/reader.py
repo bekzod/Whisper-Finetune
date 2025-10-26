@@ -38,7 +38,7 @@ except (OverflowError, AttributeError):
     # Fall back to a large but safe limit if sys.maxsize is not accepted
     csv.field_size_limit(2**31 - 1)
 
-MAX_TRANSCRIPT_CHAR_LIMIT = 600
+MAX_TRANSCRIPT_CHAR_LIMIT = 680
 DEFAULT_HF_SAMPLING_SEED = 3407
 ORIGINAL_INDEX_COLUMN = "__orig_idx__"
 
@@ -282,7 +282,7 @@ class CustomDataset(Dataset):
         min_duration=0.5,
         max_duration=30,
         min_sentence=1,
-        max_sentence=680,
+        max_sentence=MAX_TRANSCRIPT_CHAR_LIMIT,
         augment_config_path=None,
         dataset_filters=None,
         hf_sampling_config=None,
