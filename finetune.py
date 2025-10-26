@@ -1069,9 +1069,52 @@ def main():
     model.config.use_cache = False
     trainer._load_from_checkpoint = load_from_checkpoint
 
-    # ---- Training ----
-    model.config.forced_decoder_ids = None  # training stays prompt-free
-    trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
+    # ---- Handle optimizer state mismatch when resuming with layerwise unfreezing ----
+    if args.resume_from_checkpoint and layerwise_unfreeze_callback is not None:
+        print("⚠️  Resuming with layerwise unfreezing enabled.")
+        print(
+            "   To avoid optimizer parameter group mismatch, we'll skip loading optimizer/scheduler state."
+        )
+        print("   Model weights will be loaded, but optimizer will restart fresh.")
+
+        # Temporarily rename optimizer/scheduler files to skip loading them
+        import shutil
+
+        checkpoint_dir = args.resume_from_checkpoint
+        optimizer_path = os.path.join(checkpoint_dir, "optimizer.pt")
+        scheduler_path = os.path.join(checkpoint_dir, "scheduler.pt")
+        optimizer_backup = os.path.join(checkpoint_dir, "optimizer.pt.backup")
+        scheduler_backup = os.path.join(checkpoint_dir, "scheduler.pt.backup")
+
+        optimizer_moved = False
+        scheduler_moved = False
+
+        if os.path.exists(optimizer_path):
+            shutil.move(optimizer_path, optimizer_backup)
+            optimizer_moved = True
+            print(f"   Temporarily moved: {optimizer_path}")
+
+        if os.path.exists(scheduler_path):
+            shutil.move(scheduler_path, scheduler_backup)
+            scheduler_moved = True
+            print(f"   Temporarily moved: {scheduler_path}")
+
+        try:
+            # ---- Training ----
+            model.config.forced_decoder_ids = None  # training stays prompt-free
+            trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
+        finally:
+            # Restore the backup files
+            if optimizer_moved and os.path.exists(optimizer_backup):
+                shutil.move(optimizer_backup, optimizer_path)
+                print(f"   Restored: {optimizer_path}")
+            if scheduler_moved and os.path.exists(scheduler_backup):
+                shutil.move(scheduler_backup, scheduler_path)
+                print(f"   Restored: {scheduler_path}")
+    else:
+        # ---- Training ----
+        model.config.forced_decoder_ids = None  # training stays prompt-free
+        trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
 
     # ---- Save & Export ----
     trainer.save_state()
