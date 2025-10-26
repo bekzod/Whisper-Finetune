@@ -58,6 +58,30 @@
     {
       "name": "Beehzod/dataset_for_STT_TTSmodels",
       "splits": ["train"]
+    },
+    {
+      "name": "IbratDO/cv_female2546_dataset",
+      "splits": ["train"]
+    },
+    {
+      "name": "IbratDO/cv_female5000_dataset",
+      "splits": ["train"]
+    },
+    {
+      "name": "IbratDO/second_dataset",
+      "splits": ["train"]
+    },
+    {
+      "name": "IbratDO/uzbekvoice-1K",
+      "splits": ["train", "test"]
+    },
+    {
+      "name": "IbratDO/first_dataset",
+      "splits": ["train"]
+    },
+    {
+      "name": "islomov/news_youtube_uzbek_speech_dataset",
+      "splits": ["train"]
     }
   ],
   "eval": [
