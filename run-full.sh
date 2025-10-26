@@ -30,10 +30,12 @@ export NCCL_IB_DISABLE=1             # single-node hygiene
 accelerate launch --multi-gpu --config_file ./configs/accelerate.yaml finetune.py \
   --base_model ../models/whisper-large-v3 \
   --output_dir ../models/output-full-finetune \
-  --num_train_epochs 8 \
+  --num_train_epochs 10 \
   --per_device_train_batch_size 14 \
   --per_device_eval_batch_size 34 \
   --gradient_accumulation_steps 2 \
+  --freeze_encoder_epochs 2 \
+  --unfreeze_finish_ratio 0.3 \
   --learning_rate 5e-5 \
   --logging_steps 200 \
   --eval_steps 3000 \
