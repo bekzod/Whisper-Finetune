@@ -1,12 +1,14 @@
 import csv
 import functools
 import gc
+import hashlib
 import json
 import os
 import random
 import re
 import sys
 import tarfile
+import tempfile
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -382,6 +384,16 @@ class CustomDataset(Dataset):
         # Each entry: { 'dataset': HFDataset, 'indices': Optional[List[int]], 'name': str }
         self.hf_splits = []
 
+        inline_cache_root = os.environ.get("WHISPER_INLINE_AUDIO_DIR")
+        if inline_cache_root:
+            inline_cache_root = os.path.abspath(inline_cache_root)
+        else:
+            inline_cache_root = os.path.join(
+                tempfile.gettempdir(), "whisper_finetune_inline_audio"
+            )
+        os.makedirs(inline_cache_root, exist_ok=True)
+        self.inline_audio_cache_dir = inline_cache_root
+
         # Label tracking for debugging TSV/dataset issues
         self._dataset_label_counts = {}
         self._label_examples = {}
@@ -508,6 +520,106 @@ class CustomDataset(Dataset):
                 features = features[0]
 
         return features
+
+    def _write_inline_bytes(self, payload: Union[bytes, bytearray, memoryview]) -> str:
+        """
+        Persist encoded audio bytes to disk and return the resulting file path.
+        """
+        if isinstance(payload, memoryview):
+            payload = payload.tobytes()
+        digest = hashlib.sha1(payload).hexdigest()
+        target_path = os.path.join(self.inline_audio_cache_dir, f"{digest}.bin")
+        if not os.path.exists(target_path):
+            tmp_path = f"{target_path}.tmp-{os.getpid()}-{random.randint(0, 1_000_000)}"
+            with open(tmp_path, "wb") as handle:
+                handle.write(payload)
+            os.replace(tmp_path, target_path)
+        return target_path
+
+    def _write_inline_array(
+        self, array_data: Any, sampling_rate: Optional[int]
+    ) -> Optional[str]:
+        """
+        Persist a numpy/list audio array to disk as a WAV file and return its path.
+        """
+        if array_data is None:
+            return None
+        if not isinstance(array_data, np.ndarray):
+            array = np.array(array_data, dtype=np.float32)
+        else:
+            array = array_data.astype(np.float32, copy=False)
+        if array.size == 0:
+            return None
+
+        if array.ndim == 2:
+            if array.shape[1] == 1:
+                array = array[:, 0]
+            elif self.mono and array.shape[1] > 1:
+                array = array.mean(axis=1, dtype=np.float32)
+        elif array.ndim > 2:
+            array = array.reshape(-1)
+        array = np.ascontiguousarray(array, dtype=np.float32)
+
+        try:
+            sr_value = (
+                int(sampling_rate)
+                if sampling_rate is not None
+                else int(self.sample_rate)
+            )
+        except (TypeError, ValueError):
+            sr_value = int(self.sample_rate)
+        if sr_value <= 0:
+            sr_value = int(self.sample_rate)
+
+        digest = hashlib.sha1(
+            array.tobytes() + str(sr_value).encode("utf-8")
+        ).hexdigest()
+        target_path = os.path.join(
+            self.inline_audio_cache_dir, f"{digest}_{sr_value}.wav"
+        )
+        if not os.path.exists(target_path):
+            tmp_path = f"{target_path}.tmp-{os.getpid()}-{random.randint(0, 1_000_000)}"
+            soundfile.write(tmp_path, array, sr_value)
+            os.replace(tmp_path, target_path)
+        return target_path
+
+    def _materialize_inline_audio(self, blob: Any) -> Optional[str]:
+        """
+        Convert inline audio payloads (arrays/bytes) to cached files and return their path.
+        """
+        if blob is None:
+            return None
+
+        sampling_rate = self.sample_rate
+        array_candidate: Optional[Any] = None
+
+        if isinstance(blob, Mapping):
+            sr_value = blob.get("sampling_rate")
+            if sr_value is not None:
+                sampling_rate = sr_value
+            if "array" in blob and blob["array"] is not None:
+                array_candidate = blob["array"]
+            elif isinstance(blob.get("waveform"), (list, tuple, np.ndarray)):
+                array_candidate = blob["waveform"]
+            elif isinstance(blob.get("samples"), (list, tuple, np.ndarray)):
+                array_candidate = blob["samples"]
+            elif isinstance(blob.get("values"), (list, tuple, np.ndarray)):
+                array_candidate = blob["values"]
+
+            bytes_value = blob.get("bytes")
+            if isinstance(bytes_value, (bytes, bytearray, memoryview)):
+                return self._write_inline_bytes(bytes_value)
+        elif isinstance(blob, np.ndarray):
+            array_candidate = blob
+        elif isinstance(blob, (list, tuple)):
+            array_candidate = blob
+        elif isinstance(blob, (bytes, bytearray, memoryview)):
+            return self._write_inline_bytes(blob)
+
+        if array_candidate is None:
+            return None
+
+        return self._write_inline_array(array_candidate, sampling_rate)
 
     def _flatten_transcript_text(self, transcript: Any) -> str:
         """
@@ -1013,11 +1125,20 @@ class CustomDataset(Dataset):
             candidate_path, candidate_start, candidate_end = self._resolve_audio_blob(
                 candidate_blob
             )
+            if candidate_path is None:
+                candidate_path = self._materialize_inline_audio(candidate_blob)
             if candidate_path:
                 audio_path = candidate_path
                 start_time = candidate_start
                 end_time = candidate_end
                 break
+
+        if not audio_path:
+            for candidate_blob in row.values():
+                candidate_path = self._materialize_inline_audio(candidate_blob)
+                if candidate_path:
+                    audio_path = candidate_path
+                    break
 
         if not audio_path:
             return None
