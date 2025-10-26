@@ -2670,93 +2670,130 @@ class CustomDataset(Dataset):
                         f"received {type(item).__name__}."
                     )
 
-                # Extract audio path and text similar to _process_item
+                # Extract audio path or inline sample similar to _process_item
                 audio_file = None
                 sample = None
                 sample_rate = None
                 audio_reference = None
-                if "audio" in item:
-                    audio_data = item["audio"]
-                    if isinstance(audio_data, dict):
-                        # Prefer already-decoded array from HF datasets to avoid path issues
-                        if "array" in audio_data and audio_data["array"] is not None:
-                            arr = audio_data["array"]
-                            # Handle both numpy arrays and lists
-                            if not isinstance(arr, np.ndarray):
-                                arr = np.array(arr, dtype=np.float32)
-                            # Ensure float32
-                            if arr.dtype != np.float32:
-                                arr = arr.astype(np.float32)
-                            # If stereo/2D, average to mono if requested
-                            if arr.ndim == 2 and arr.shape[1] > 1 and self.mono:
-                                arr = arr.mean(axis=1).astype(np.float32)
-                            # If 2D with a single channel, squeeze to 1D
-                            if arr.ndim == 2 and arr.shape[1] == 1:
-                                arr = arr[:, 0].astype(np.float32)
-                            sample = arr
-                            sample_rate = int(
-                                audio_data.get("sampling_rate", self.sample_rate)
-                            )
-                            audio_reference = (
-                                audio_data.get("path")
-                                or audio_data.get("filename")
-                                or audio_data.get("file")
-                            )
-                            # Don't try to extract audio_file if we already have the sample
-                        else:
-                            # No array present, extract path
-                            audio_file = (
-                                audio_data.get("path")
-                                or audio_data.get("filename")
-                                or audio_data.get("file")
-                            )
-                            audio_reference = audio_file
-                    else:
-                        audio_file = str(audio_data)
-                        audio_reference = audio_file
 
-                # Only check other fields if we don't have a sample yet
-                if sample is None and audio_file is None:
-                    if "audio_path" in item:
-                        audio_file = item["audio_path"]
-                        audio_reference = audio_file
-                    elif "file" in item:
-                        audio_file = item["file"]
-                        audio_reference = audio_file
-                    elif "filename" in item:
-                        audio_file = item["filename"]
-                        audio_reference = audio_file
-                    elif "path" in item:
-                        # Make sure we extract string path, not a dict
-                        path_val = item["path"]
-                        if isinstance(path_val, dict):
-                            # Check if this is actually an audio dict with array
-                            if "array" in path_val and isinstance(
-                                path_val["array"], np.ndarray
-                            ):
-                                # This is a mislabeled audio dict, process it as such
-                                arr = path_val["array"]
-                                if arr.dtype != np.float32:
-                                    arr = arr.astype(np.float32)
-                                if arr.ndim == 2 and arr.shape[1] > 1 and self.mono:
-                                    arr = arr.mean(axis=1).astype(np.float32)
-                                if arr.ndim == 2 and arr.shape[1] == 1:
-                                    arr = arr[:, 0].astype(np.float32)
-                                sample = arr
-                                sample_rate = int(
-                                    path_val.get("sampling_rate", self.sample_rate)
-                                )
-                            else:
-                                # If path is a dict without array, try to extract the actual path string
-                                audio_file = (
-                                    path_val.get("path")
-                                    or path_val.get("filename")
-                                    or path_val.get("file")
-                                )
-                                audio_reference = audio_file
-                        else:
-                            audio_file = path_val
+                def _assign_sample_from_array(
+                    array_like, sampling_rate_hint=None, reference=None
+                ):
+                    nonlocal sample, sample_rate, audio_reference
+                    if array_like is None:
+                        return False
+                    try:
+                        arr = (
+                            array_like
+                            if isinstance(array_like, np.ndarray)
+                            else np.array(array_like, dtype=np.float32)
+                        )
+                    except Exception:
+                        return False
+                    if arr.size == 0:
+                        return False
+                    if arr.dtype != np.float32:
+                        arr = arr.astype(np.float32)
+                    if arr.ndim == 2:
+                        if arr.shape[1] > 1 and self.mono:
+                            arr = arr.mean(axis=1).astype(np.float32)
+                        elif arr.shape[1] == 1:
+                            arr = arr[:, 0].astype(np.float32)
+                    elif arr.ndim > 2:
+                        arr = arr.reshape(-1).astype(np.float32)
+                    sample = arr
+                    try:
+                        sr_val = (
+                            int(sampling_rate_hint)
+                            if sampling_rate_hint is not None
+                            else int(self.sample_rate)
+                        )
+                    except (TypeError, ValueError):
+                        sr_val = int(self.sample_rate)
+                    sample_rate = sr_val
+                    if reference and not audio_reference:
+                        audio_reference = reference
+                    return True
+
+                def _handle_audio_blob(blob):
+                    nonlocal audio_file, audio_reference
+                    if blob is None:
+                        return False
+                    if isinstance(blob, dict):
+                        array_candidate = blob.get("array")
+                        if array_candidate is None:
+                            for alt_key in ("waveform", "samples", "values"):
+                                if isinstance(
+                                    blob.get(alt_key), (list, tuple, np.ndarray)
+                                ):
+                                    array_candidate = blob[alt_key]
+                                    break
+                        sr_hint = blob.get("sampling_rate")
+                        reference = (
+                            blob.get("path")
+                            or blob.get("audio_path")
+                            or blob.get("audio_filepath")
+                            or blob.get("filename")
+                            or blob.get("file")
+                        )
+                        if array_candidate is not None and _assign_sample_from_array(
+                            array_candidate, sr_hint, reference
+                        ):
+                            return True
+                        bytes_value = blob.get("bytes")
+                        if isinstance(bytes_value, (bytes, bytearray, memoryview)):
+                            inline_path = self._write_inline_bytes(bytes_value)
+                            audio_file = inline_path
+                            audio_reference = inline_path
+                            return True
+                        if reference:
+                            audio_file = str(reference)
                             audio_reference = audio_file
+                            return True
+                        inline_path = self._materialize_inline_audio(blob)
+                        if inline_path:
+                            audio_file = inline_path
+                            audio_reference = inline_path
+                            return True
+                        return False
+                    if isinstance(blob, (np.ndarray, list, tuple)):
+                        return _assign_sample_from_array(blob)
+                    if isinstance(blob, (bytes, bytearray, memoryview)):
+                        inline_path = self._materialize_inline_audio(blob)
+                        if inline_path:
+                            audio_file = inline_path
+                            audio_reference = inline_path
+                            return True
+                        return False
+                    if hasattr(os, "PathLike") and isinstance(blob, os.PathLike):
+                        audio_file = os.fspath(blob)
+                        audio_reference = audio_file
+                        return True
+                    if isinstance(blob, str) and blob.strip():
+                        audio_file = blob
+                        audio_reference = blob
+                        return True
+                    return False
+
+                candidate_keys: List[str] = []
+                if "audio" in item:
+                    candidate_keys.append("audio")
+                for key in _HF_AUDIO_CANDIDATE_KEYS:
+                    if key == "audio":
+                        continue
+                    if key in item:
+                        candidate_keys.append(key)
+
+                for key in candidate_keys:
+                    if sample is not None or audio_file is not None:
+                        break
+                    _handle_audio_blob(item.get(key))
+
+                # As a fallback, scan remaining values for inline blobs
+                if sample is None and audio_file is None:
+                    for value in item.values():
+                        if _handle_audio_blob(value):
+                            break
 
                 # Transcript selection
                 if self.timestamps:
