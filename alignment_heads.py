@@ -5,8 +5,18 @@ Compute Whisper cross-attention heads that correlate with word-level timing
 and emit them as base85-encoded (n_layers, n_heads) boolean arrays.
 
 Example:
-    python find_alignment_heads.py \
+    # Using Hugging Face model ID:
+    python alignment_heads.py \
         --model-id openai/whisper-small \
+        --dataset-name mozilla-foundation/common_voice_11_0 \
+        --dataset-config en \
+        --dataset-split validation \
+        --threshold 0.90 \
+        --device cuda
+
+    # Using local finetuned model path:
+    python alignment_heads.py \
+        --model-path ./models/whisper-small-finetuned \
         --dataset-name mozilla-foundation/common_voice_11_0 \
         --dataset-config en \
         --dataset-split validation \
@@ -53,6 +63,38 @@ class Sample:
     transcript: str
 
 
+def parse_inline_timestamps(text: str) -> Tuple[List[Word], str]:
+    """
+    Parse inline timestamp format like: word[start-end] word2[start-end]
+
+    Example input: "Hello[0.00-0.50] world[0.55-1.00]"
+    Example output: ([Word("Hello", 0.00, 0.50), Word("world", 0.55, 1.00)], "Hello world")
+
+    Also supports format: "Allo,[0.00-0.80] eshitayapsanmi[0.85-1.60] Kechqurun[1.76-2.40]"
+
+    Returns:
+        words: List of Word objects with timing info
+        transcript: Plain text without timestamps
+    """
+    import re
+
+    # Pattern to match word[start-end]
+    pattern = r"(\S+?)\[(\d+\.?\d*)-(\d+\.?\d*)\]"
+    matches = re.findall(pattern, text)
+
+    words = []
+    transcript_parts = []
+
+    for word_text, start, end in matches:
+        # Remove punctuation from word_text for the Word object if needed
+        # but keep it in transcript
+        words.append(Word(word_text, float(start), float(end)))
+        transcript_parts.append(word_text)
+
+    transcript = " ".join(transcript_parts)
+    return words, transcript
+
+
 def load_samples_from_hf_dataset(
     dataset,
     audio_column: str = "audio",
@@ -73,6 +115,7 @@ def load_samples_from_hf_dataset(
     Expected dataset format:
     - audio_column: dict with 'path' or 'array' and 'sampling_rate'
     - words_column: list of dicts with 'text', 'start', 'end' keys
+                    OR string with inline timestamps like "word[start-end]"
     - transcript_column: optional text string (if not provided, joins words)
     """
     if max_samples is not None:
@@ -94,17 +137,25 @@ def load_samples_from_hf_dataset(
         else:
             audio_path = audio_data
 
-        # Parse words
+        # Parse words - handle both list format and inline timestamp string format
         words_data = item[words_column]
-        words = [
-            Word(w["text"], float(w["start"]), float(w["end"])) for w in words_data
-        ]
 
-        # Get transcript
-        if transcript_column and transcript_column in item:
-            transcript = item[transcript_column]
+        if isinstance(words_data, str):
+            # Inline timestamp format: "word[start-end] word2[start-end]"
+            words, transcript = parse_inline_timestamps(words_data)
+        elif isinstance(words_data, list):
+            # Standard list format: [{"text": "word", "start": 0.0, "end": 1.0}, ...]
+            words = [
+                Word(w["text"], float(w["start"]), float(w["end"])) for w in words_data
+            ]
+            # Get transcript
+            if transcript_column and transcript_column in item:
+                transcript = item[transcript_column]
+            else:
+                transcript = " ".join([w.text for w in words])
         else:
-            transcript = " ".join(w.text for w in words)
+            print(f"Warning: Unsupported words_column format, skipping sample")
+            continue
 
         samples.append(Sample(audio_path, words, transcript))
 
@@ -135,6 +186,7 @@ def load_samples_from_dataset(
     Expected dataset format:
     - audio_column: dict with 'path' or 'array' and 'sampling_rate'
     - words_column: list of dicts with 'text', 'start', 'end' keys
+                    OR string with inline timestamps like "word[start-end]"
     - transcript_column: optional text string (if not provided, joins words)
     """
     dataset = load_dataset(
@@ -279,21 +331,30 @@ def base85_to_bool_array(b: bytes, shape: Tuple[int, int]) -> np.ndarray:
 
 
 def compute_alignment_heads(
-    model_id: str,
     samples: List[Sample],
     device: str = "cuda",
     batch_size: int = 1,
     threshold: float = 0.90,
     language: Optional[str] = None,
     task: str = "transcribe",
+    model_id: Optional[str] = None,
+    model_path: Optional[str] = None,
 ) -> Tuple[np.ndarray, Dict[Tuple[int, int], float]]:
     """
     Returns:
         mask: (n_layers, n_heads) boolean array of alignment heads
         scores: dict[(layer, head)] -> Pearson r
     """
-    processor = WhisperProcessor.from_pretrained(model_id, language=language, task=task)
-    model = WhisperForConditionalGeneration.from_pretrained(model_id)
+    if model_id is None and model_path is None:
+        raise ValueError("Either model_id or model_path must be provided")
+    if model_id is not None and model_path is not None:
+        raise ValueError("Cannot specify both model_id and model_path")
+
+    model_source = model_path if model_path is not None else model_id
+    processor = WhisperProcessor.from_pretrained(
+        model_source, language=language, task=task
+    )
+    model = WhisperForConditionalGeneration.from_pretrained(model_source)
     model.to(device)
     model.eval()
 
@@ -419,8 +480,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument(
         "--model-id",
-        required=True,
-        help="e.g., openai/whisper-small or openai/whisper-large-v3",
+        default=None,
+        help="Hugging Face model ID (e.g., openai/whisper-small or openai/whisper-large-v3)",
+    )
+    ap.add_argument(
+        "--model-path",
+        default=None,
+        help="Local path to a finetuned Whisper model directory",
     )
     ap.add_argument(
         "--model-alias",
@@ -476,6 +542,12 @@ def main():
     ap.add_argument("--task", default="transcribe", choices=["transcribe", "translate"])
     args = ap.parse_args()
 
+    # Validate that either model_id or model_path is provided
+    if args.model_id is None and args.model_path is None:
+        ap.error("Either --model-id or --model-path must be provided")
+    if args.model_id is not None and args.model_path is not None:
+        ap.error("Cannot specify both --model-id and --model-path")
+
     samples = load_samples_from_dataset(
         dataset_name=args.dataset_name,
         dataset_config=args.dataset_config,
@@ -486,12 +558,13 @@ def main():
         max_samples=args.max_samples,
     )
     mask, scores = compute_alignment_heads(
-        model_id=args.model_id,
         samples=samples,
         device=args.device,
         threshold=args.threshold,
         language=args.language,
         task=args.task,
+        model_id=args.model_id,
+        model_path=args.model_path,
     )
 
     # Encode
@@ -500,7 +573,8 @@ def main():
     if alias is None:
         # Derive a compact alias (similar to Whisper keys)
         # Examples: "openai/whisper-small.en" -> "small.en", "openai/whisper-large-v3" -> "large-v3"
-        name = args.model_id.split("/")[-1]
+        model_source = args.model_path if args.model_path is not None else args.model_id
+        name = model_source.split("/")[-1]
         alias = name.replace("whisper-", "")
 
     # Print in the requested format
