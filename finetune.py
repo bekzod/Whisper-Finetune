@@ -594,8 +594,17 @@ def main():
     set_seed(args.seed)
 
     # ----- Processor (tokenizer + feature extractor) -----
+    # Load processor from checkpoint if resuming, otherwise from base model
+    processor_source = (
+        args.resume_from_checkpoint
+        if args.resume_from_checkpoint and os.path.isdir(args.resume_from_checkpoint)
+        else args.base_model
+    )
+    if processor_source != args.base_model:
+        print(f"📂 Loading processor from checkpoint: {processor_source}")
+
     processor = WhisperProcessor.from_pretrained(
-        args.base_model,
+        processor_source,
         language=args.language,
         task=args.task,
         no_timestamps=not args.timestamps,
@@ -859,8 +868,17 @@ def main():
         device_map = {"": int(os.environ.get("LOCAL_RANK") or 0)}
 
     # ----- Load model -----
+    # Load model from checkpoint if resuming with config preservation
+    model_source = (
+        args.resume_from_checkpoint
+        if args.resume_from_checkpoint and os.path.isdir(args.resume_from_checkpoint)
+        else args.base_model
+    )
+    if model_source != args.base_model:
+        print(f"📂 Loading model from checkpoint: {model_source}")
+
     model = WhisperForConditionalGeneration.from_pretrained(
-        args.base_model,
+        model_source,
         device_map=device_map,
         local_files_only=args.local_files_only,
     )
@@ -885,8 +903,17 @@ def main():
     eval_forced_decoder_ids = processor.get_decoder_prompt_ids(
         language="uz", task=args.task
     )
-    model.config.forced_decoder_ids = None  # training
-    model.generation_config.forced_decoder_ids = eval_forced_decoder_ids  # eval
+
+    # When resuming, preserve existing generation config if it exists
+    if args.resume_from_checkpoint and model_source != args.base_model:
+        print("⚙️  Preserving generation config from checkpoint")
+        # Only update if not already set in checkpoint
+        if model.generation_config.forced_decoder_ids is None:
+            model.generation_config.forced_decoder_ids = eval_forced_decoder_ids
+    else:
+        model.config.forced_decoder_ids = None  # training
+        model.generation_config.forced_decoder_ids = eval_forced_decoder_ids  # eval
+
     try:
         model.generation_config.task = "transcribe"
         model.generation_config.no_timestamps = not args.timestamps
@@ -934,11 +961,23 @@ def main():
     total_update_steps = args.num_train_epochs * steps_per_epoch
 
     if args.use_lora:
+        # When resuming with LoRA, check if loading from adapter checkpoint or full model checkpoint
         if args.resume_from_checkpoint:
-            print("Loading adapters from checkpoint (resume).")
-            model = PeftModel.from_pretrained(
-                model, args.resume_from_checkpoint, is_trainable=True
+            adapter_config_path = os.path.join(
+                args.resume_from_checkpoint, "adapter_config.json"
             )
+            if os.path.exists(adapter_config_path):
+                print("🔌 Loading LoRA adapters from checkpoint (resume).")
+                model = PeftModel.from_pretrained(
+                    model, args.resume_from_checkpoint, is_trainable=True
+                )
+            else:
+                print(
+                    "⚠️  Checkpoint doesn't contain adapter config; assuming full model checkpoint."
+                )
+                print(
+                    "   Model already loaded with adapters merged or is a full fine-tuned model."
+                )
         else:
             print("Adding LoRA/AdaLoRA adapters...")
             if args.use_adalora:
@@ -992,11 +1031,17 @@ def main():
             warmup_new_group_steps=args.warmup_new_group_steps,
         )
     elif args.freeze_encoder_epochs > 0 and args.resume_from_checkpoint:
-        print(f"⚠️  Skipping encoder unfreezing because resuming from checkpoint.")
-        print(f"   The encoder should already be unfrozen in the checkpoint.")
         print(
-            f"   This preserves optimizer state and ensures smooth training continuation."
+            f"⚠️  Skipping encoder freeze/unfreeze setup because resuming from checkpoint."
         )
+        print(f"   Verifying encoder is trainable...")
+        # Ensure encoder is not frozen when resuming
+        encoder_module = _get_encoder_module(model)
+        if encoder_module is not None:
+            for param in encoder_module.parameters():
+                param.requires_grad = True
+        tr, tot = count_trainable(model)
+        print(f"   -> Current trainable params: {tr / 1e6:.2f}M / {tot / 1e6:.2f}M")
 
     # ----- Training args -----
     training_args_dict = {
@@ -1077,6 +1122,22 @@ def main():
 
     # ---- Training ----
     model.config.forced_decoder_ids = None  # training stays prompt-free
+
+    # Log training configuration for debugging
+    print("\n🔧 Training Configuration:")
+    print(
+        f"   - Processor language: {processor.tokenizer.language if hasattr(processor.tokenizer, 'language') else 'N/A'}"
+    )
+    print(
+        f"   - Processor task: {processor.tokenizer.task if hasattr(processor.tokenizer, 'task') else 'N/A'}"
+    )
+    print(f"   - Model vocab size: {model.config.vocab_size}")
+    print(f"   - Tokenizer vocab size: {len(processor.tokenizer)}")
+    print(
+        f"   - Forced decoder IDs (eval): {model.generation_config.forced_decoder_ids}"
+    )
+    print(f"   - Resuming from checkpoint: {args.resume_from_checkpoint or 'No'}\n")
+
     trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
 
     # ---- Save & Export ----
