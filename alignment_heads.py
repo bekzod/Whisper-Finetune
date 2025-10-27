@@ -42,6 +42,7 @@ import numpy as np
 import torch
 import torchaudio
 from datasets import load_dataset
+from tqdm import tqdm
 from transformers import WhisperForConditionalGeneration, WhisperProcessor
 
 # ---------------------------
@@ -122,7 +123,8 @@ def load_samples_from_hf_dataset(
         dataset = dataset.select(range(min(max_samples, len(dataset))))
 
     samples = []
-    for item in dataset:
+    print(f"Loading {len(dataset)} samples from dataset...")
+    for item in tqdm(dataset, desc="Loading samples", unit="sample"):
         # Handle audio - HF datasets provide audio as dict with 'path' or 'array'
         audio_data = item[audio_column]
         if isinstance(audio_data, dict):
@@ -354,7 +356,9 @@ def compute_alignment_heads(
     processor = WhisperProcessor.from_pretrained(
         model_source, language=language, task=task
     )
-    model = WhisperForConditionalGeneration.from_pretrained(model_source)
+    model = WhisperForConditionalGeneration.from_pretrained(
+        model_source, attn_implementation="eager"
+    )
     model.to(device)
     model.eval()
 
@@ -371,7 +375,7 @@ def compute_alignment_heads(
         (L, H): [] for L in range(n_layers) for H in range(n_heads)
     }
 
-    for sample in samples:
+    for sample in tqdm(samples, desc="Processing samples", unit="sample"):
         # Load audio
         wav, sr = torchaudio.load(sample.audio_path)
         wav = wav.mean(dim=0, keepdim=False)  # mono
@@ -407,7 +411,9 @@ def compute_alignment_heads(
             out = model(
                 input_features=input_features,
                 decoder_input_ids=input_ids[:, :-1],  # teacher-forcing
-                labels=input_ids,  # enables loss but we don't use it
+                labels=input_ids[
+                    :, 1:
+                ],  # shift labels to match decoder_input_ids length
                 output_attentions=True,
                 use_cache=False,  # ensure full attentions are returned
             )
@@ -455,6 +461,7 @@ def compute_alignment_heads(
                 per_head_true[(L, H)].extend(true_times_np.tolist())
 
     # Compute Pearson r per head
+    print(f"\nComputing Pearson correlations for {n_layers * n_heads} heads...")
     scores: Dict[Tuple[int, int], float] = {}
     mask = np.zeros((n_layers, n_heads), dtype=bool)
     for (L, H), y_list in per_head_true.items():
@@ -515,7 +522,7 @@ def main():
     )
     ap.add_argument(
         "--words-column",
-        default="words",
+        default="text_with_timestamp",
         help="Name of the words column with timing info (default: 'words')",
     )
     ap.add_argument(
@@ -548,6 +555,13 @@ def main():
     if args.model_id is not None and args.model_path is not None:
         ap.error("Cannot specify both --model-id and --model-path")
 
+    print(f"Loading dataset: {args.dataset_name}")
+    if args.dataset_config:
+        print(f"  Config: {args.dataset_config}")
+    print(f"  Split: {args.dataset_split}")
+    if args.max_samples:
+        print(f"  Max samples: {args.max_samples}")
+
     samples = load_samples_from_dataset(
         dataset_name=args.dataset_name,
         dataset_config=args.dataset_config,
@@ -557,6 +571,10 @@ def main():
         transcript_column=args.transcript_column,
         max_samples=args.max_samples,
     )
+
+    print(f"\nSuccessfully loaded {len(samples)} samples")
+    print(f"Computing alignment heads with threshold={args.threshold}...\n")
+
     mask, scores = compute_alignment_heads(
         samples=samples,
         device=args.device,
