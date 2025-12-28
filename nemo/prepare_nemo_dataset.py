@@ -8,6 +8,7 @@ import json
 import os
 import random
 import re
+import sys
 import tarfile
 import tempfile
 from collections.abc import Iterable as IterableCollection
@@ -22,6 +23,11 @@ import soundfile as sf
 from datasets import load_dataset
 from huggingface_hub import snapshot_download
 from tqdm import tqdm
+
+# Allow running the script from the ``nemo`` directory without installing the repo as a package.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from utils.tsv_parser import iter_tsv_dict_rows
 

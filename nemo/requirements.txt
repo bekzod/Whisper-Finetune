@@ -3,3 +3,4 @@ numpy
 soundfile>=0.12.1
 librosa>=0.10.0
 tqdm>=4.62.1
+nemo_toolkit['asr']
