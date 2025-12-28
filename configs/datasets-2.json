@@ -10,6 +10,10 @@
       "splits": ["train"]
     },
     {
+      "name": "BoburAmirov/it_youtube_uzbek_speech_dataset",
+      "splits": ["train"]
+    },
+    {
       "name": "IbratDO/cv_female2546_dataset",
       "splits": ["train"]
     },

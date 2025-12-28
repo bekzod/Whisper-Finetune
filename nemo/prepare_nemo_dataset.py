@@ -1,0 +1,1177 @@
+#!/usr/bin/env python3
+"""Prepare HuggingFace datasets into NeMo-style JSONL manifests with cleaned text."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import random
+import re
+import tarfile
+import tempfile
+from collections.abc import Iterable as IterableCollection
+from contextlib import contextmanager
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+
+import librosa
+import numpy as np
+import soundfile as sf
+from datasets import load_dataset
+from huggingface_hub import snapshot_download
+from tqdm import tqdm
+
+from utils.tsv_parser import iter_tsv_dict_rows
+
+MAX_TRANSCRIPT_CHAR_LIMIT = 680
+DEFAULT_SAMPLE_RATE = 16000
+DEFAULT_MIN_DURATION = 0.5
+DEFAULT_MAX_DURATION = 30.0
+DEFAULT_MIN_CHARS = 1
+DEFAULT_MAX_CHARS = 680
+DEFAULT_SAMPLING_SEED = 3407
+
+_HF_AUDIO_CANDIDATE_KEYS = (
+    "audio",
+    "audio_path",
+    "audio_filepath",
+    "filepath",
+    "file",
+    "filename",
+    "path",
+    "audio_file",
+    "wav",
+)
+_HF_TEXT_CANDIDATE_KEYS = (
+    "sentence",
+    "text",
+    "transcription",
+    "transcript",
+    "label",
+    "normalized_text",
+    "norm_text",
+    "normalized_text_with_punct",
+    "raw_text",
+    "target_text",
+    "translation",
+)
+
+_APOSTROPHE_TRANSLATION = str.maketrans(
+    {
+        "\u2019": "'",
+        "\u02bc": "'",
+        "\u02bb": "'",
+        "`": "'",
+        "´": "'",
+        "ʻ": "'",
+        "ʼ": "'",
+        "‛": "'",
+    }
+)
+_ALLOWED_TEXT_RE = re.compile(r"[^a-zA-ZА-Яа-яЎўҚқҒғҲҳ0-9\s,.'-]+")
+_MULTISPACE_RE = re.compile(r"\s+")
+_UZBEK_CYRILLIC_TO_LATIN = {
+    "А": "A",
+    "а": "a",
+    "Б": "B",
+    "б": "b",
+    "В": "V",
+    "в": "v",
+    "Г": "G",
+    "г": "g",
+    "Д": "D",
+    "д": "d",
+    "Е": "E",
+    "е": "e",
+    "Ё": "Yo",
+    "ё": "yo",
+    "Ж": "J",
+    "ж": "j",
+    "З": "Z",
+    "з": "z",
+    "И": "I",
+    "и": "i",
+    "Й": "Y",
+    "й": "y",
+    "К": "K",
+    "к": "k",
+    "Л": "L",
+    "л": "l",
+    "М": "M",
+    "м": "m",
+    "Н": "N",
+    "н": "n",
+    "О": "O",
+    "о": "o",
+    "П": "P",
+    "п": "p",
+    "Р": "R",
+    "р": "r",
+    "С": "S",
+    "с": "s",
+    "Т": "T",
+    "т": "t",
+    "У": "U",
+    "у": "u",
+    "Ф": "F",
+    "ф": "f",
+    "Х": "X",
+    "х": "x",
+    "Ц": "Ts",
+    "ц": "ts",
+    "Ч": "Ch",
+    "ч": "ch",
+    "Ш": "Sh",
+    "ш": "sh",
+    "Щ": "Sh",
+    "щ": "sh",
+    "Ъ": "'",
+    "ъ": "'",
+    "Ы": "I",
+    "ы": "i",
+    "Ь": "",
+    "ь": "",
+    "Э": "E",
+    "э": "e",
+    "Ю": "Yu",
+    "ю": "yu",
+    "Я": "Ya",
+    "я": "ya",
+    "Ў": "O'",
+    "ў": "o'",
+    "Қ": "Q",
+    "қ": "q",
+    "Ғ": "G'",
+    "ғ": "g'",
+    "Ҳ": "H",
+    "ҳ": "h",
+}
+_UZBEK_CYRILLIC_CHARS = set(_UZBEK_CYRILLIC_TO_LATIN.keys())
+_FILTERED_CLIENT_IDS = {
+    "56ac8e86-b8c9-4879-a342-0eeb94f686fc",
+    "3d3fca02-6a07-41e2-9af4-60886ea60300",
+    "231d3776-2dbe-4a42-a535-c67943427e3f",
+    "e2716f95-70b5-4832-b903-eef2343591a4",
+    "2a815774-e953-4031-931a-8a28052e5cf9",
+    "d6fd3dc4-a55d-4a80-9bbf-b713325d05be",
+    "10b29e87-bf01-4b16-bead-a044076f849b",
+    "e3412d51-f079-4167-b3f9-311a976443ce",
+}
+
+
+def _filter_bekzod123_uzbek_voice(ex: Dict[str, Any]) -> bool:
+    return ex.get("is_correct") is True
+
+
+def _filter_davron_sherbaev_uzbekvoice(ex: Dict[str, Any]) -> bool:
+    return (
+        ex.get("reported_reasons") is None
+        and ex.get("downvotes_count", 0) == 0
+        and ex.get("reported_count", 0) == 0
+        and ex.get("client_id") not in _FILTERED_CLIENT_IDS
+    )
+
+
+@dataclass(frozen=True)
+class DatasetSpec:
+    group: str
+    repo: str
+    subset: Optional[str]
+    revision: Optional[str]
+    splits: List[str]
+    percentage: Optional[float]
+    seed: Optional[int]
+    data_dir: Optional[str]
+    data_files: Optional[Any]
+    trust_remote_code: Optional[bool]
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Convert HuggingFace datasets into NeMo-style manifests with text cleanup."
+        )
+    )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=Path("datasets.json"),
+        help="Path to dataset config JSON (train/eval entries).",
+    )
+    parser.add_argument(
+        "--groups",
+        nargs="+",
+        default=["train", "eval"],
+        help="Config groups to process (default: train eval).",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("output"),
+        help="Output directory for audio and manifest files.",
+    )
+    parser.add_argument(
+        "--cache-dir",
+        type=Path,
+        default=None,
+        help="Optional cache root (used in default mode or as temp parent).",
+    )
+    parser.add_argument(
+        "--cache-mode",
+        choices=("default", "per-dataset"),
+        default="per-dataset",
+        help=(
+            "Cache strategy: 'per-dataset' uses a temporary cache per split and "
+            "deletes it after processing; 'default' uses the shared HF cache."
+        ),
+    )
+    parser.add_argument(
+        "--hf-token",
+        default=None,
+        help="Optional HuggingFace token for gated datasets.",
+    )
+    parser.add_argument(
+        "--sample-rate",
+        type=int,
+        default=DEFAULT_SAMPLE_RATE,
+        help="Target sample rate for audio (default: 16000).",
+    )
+    parser.add_argument(
+        "--no-resample",
+        action="store_true",
+        help="Keep original sample rate instead of resampling.",
+    )
+    parser.add_argument(
+        "--mono",
+        dest="mono",
+        action="store_true",
+        default=True,
+        help="Convert audio to mono (default: enabled).",
+    )
+    parser.add_argument(
+        "--no-mono",
+        dest="mono",
+        action="store_false",
+        help="Keep audio channels (disable mono conversion).",
+    )
+    parser.add_argument(
+        "--min-duration",
+        type=float,
+        default=DEFAULT_MIN_DURATION,
+        help="Minimum audio duration in seconds.",
+    )
+    parser.add_argument(
+        "--max-duration",
+        type=float,
+        default=DEFAULT_MAX_DURATION,
+        help="Maximum audio duration in seconds (-1 for no limit).",
+    )
+    parser.add_argument(
+        "--min-chars",
+        type=int,
+        default=DEFAULT_MIN_CHARS,
+        help="Minimum cleaned transcript length in chars.",
+    )
+    parser.add_argument(
+        "--max-chars",
+        type=int,
+        default=DEFAULT_MAX_CHARS,
+        help="Maximum cleaned transcript length in chars.",
+    )
+    parser.add_argument(
+        "--default-splits",
+        nargs="+",
+        default=["train"],
+        help="Fallback splits when none provided in config (default: train).",
+    )
+    parser.add_argument(
+        "--absolute-paths",
+        action="store_true",
+        help="Write absolute audio paths into the manifest.",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Optional max rows per split for quick smoke tests.",
+    )
+    return parser.parse_args()
+
+
+def load_dataset_config(path: Path) -> Dict[str, Sequence[Dict[str, Any]]]:
+    if not path.exists():
+        raise FileNotFoundError(f"Dataset config not found: {path}")
+    with path.open("r", encoding="utf-8") as handle:
+        raw = json.load(handle)
+    if not isinstance(raw, dict):
+        raise ValueError("Dataset config must be a dict with train/eval keys.")
+    return raw
+
+
+def parse_repo_spec(name: str) -> Tuple[str, Optional[str], Optional[str]]:
+    normalized = name.strip()
+    if normalized.startswith("hf://"):
+        normalized = normalized[5:]
+    subset = None
+    revision = None
+    before_hash = normalized
+    if "#" in normalized:
+        before_hash, subset = normalized.split("#", 1)
+    if "@" in before_hash:
+        repo, revision = before_hash.split("@", 1)
+    else:
+        repo = before_hash
+    return repo, revision, subset
+
+
+def coerce_splits(raw_value: Any, default_splits: Sequence[str]) -> List[str]:
+    if raw_value is None:
+        return list(default_splits)
+    if isinstance(raw_value, str):
+        return [raw_value]
+    if isinstance(raw_value, IterableCollection):
+        return [str(split) for split in raw_value]
+    raise TypeError(f"Unsupported split definition: {raw_value!r}")
+
+
+def iter_dataset_specs(
+    config: Dict[str, Sequence[Dict[str, Any]]],
+    groups: Sequence[str],
+    default_splits: Sequence[str],
+) -> Iterable[DatasetSpec]:
+    for group in groups:
+        for entry in config.get(group, []):
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("name") or entry.get("hf") or entry.get("huggingface")
+            if not name:
+                continue
+            repo, revision_inline, subset_inline = parse_repo_spec(str(name))
+            subset = entry.get("subset") or subset_inline
+            revision = entry.get("revision") or revision_inline
+            splits = coerce_splits(
+                entry.get("splits") or entry.get("split"), default_splits
+            )
+            percentage = entry.get("percentage")
+            if percentage is not None:
+                try:
+                    percentage = float(percentage)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(
+                        f"Invalid percentage value '{percentage}' for entry {entry}"
+                    ) from exc
+                if not (0 < percentage <= 100):
+                    raise ValueError(
+                        f"Percentage must be within (0, 100], got {percentage} for entry {entry}"
+                    )
+            seed = entry.get("seed")
+            if seed is not None:
+                try:
+                    seed = int(seed)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(
+                        f"Seed must be an integer, got {seed!r} for entry {entry}"
+                    ) from exc
+            yield DatasetSpec(
+                group=group,
+                repo=repo,
+                subset=subset,
+                revision=revision,
+                splits=splits,
+                percentage=percentage,
+                seed=seed,
+                data_dir=entry.get("data_dir"),
+                data_files=entry.get("data_files"),
+                trust_remote_code=entry.get("trust_remote_code"),
+            )
+
+
+def normalize_text(text: Any) -> str:
+    """Normalize text to match training cleanup in utils/reader.py."""
+    if text is None:
+        return ""
+    try:
+        normalized = str(text)
+    except Exception:
+        return ""
+
+    normalized = _transliterate_uzbek_cyrillic(normalized)
+    normalized = normalized.translate(_APOSTROPHE_TRANSLATION)
+    normalized = _ALLOWED_TEXT_RE.sub("", normalized)
+    normalized = _MULTISPACE_RE.sub(" ", normalized).strip()
+    return normalized
+
+
+def _transliterate_uzbek_cyrillic(text: str) -> str:
+    if not text:
+        return text
+    if not any(char in _UZBEK_CYRILLIC_CHARS for char in text):
+        return text
+    return "".join(_UZBEK_CYRILLIC_TO_LATIN.get(char, char) for char in text)
+
+
+def _flatten_transcript_text(transcript: Any) -> str:
+    if transcript is None:
+        return ""
+    if isinstance(transcript, str):
+        return normalize_text(transcript)
+    if isinstance(transcript, dict):
+        return normalize_text(str(transcript.get("text", "")))
+    if isinstance(transcript, Sequence) and not isinstance(
+        transcript, (str, bytes, bytearray)
+    ):
+        parts: List[str] = []
+        for segment in transcript:
+            flattened = _flatten_transcript_text(segment)
+            if flattened:
+                parts.append(flattened)
+        return " ".join(parts).strip()
+    return normalize_text(str(transcript))
+
+
+def sanitize_name(name: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("._-")
+    return cleaned or "dataset"
+
+
+def pick_text(item: Dict[str, Any]) -> str:
+    if "sentences" in item and item["sentences"] is not None:
+        return _flatten_transcript_text(item["sentences"])
+    for key in _HF_TEXT_CANDIDATE_KEYS:
+        if key in item and item[key] is not None:
+            return _flatten_transcript_text(item[key])
+    return ""
+
+
+def resolve_audio_blob(
+    blob: Any,
+) -> Tuple[Optional[np.ndarray], Optional[int], Optional[str]]:
+    if blob is None:
+        return None, None, None
+    if isinstance(blob, dict):
+        array_candidate = blob.get("array")
+        if array_candidate is not None:
+            try:
+                arr = np.asarray(array_candidate, dtype=np.float32)
+            except Exception:
+                arr = None
+            if arr is not None and arr.size > 0:
+                return (
+                    arr,
+                    int(blob.get("sampling_rate") or 0) or None,
+                    blob.get("path"),
+                )
+        for key in ("path", "audio_path", "audio_filepath", "filename", "file"):
+            ref = blob.get(key)
+            if isinstance(ref, str) and ref:
+                return None, None, ref
+        return None, None, None
+    if isinstance(blob, (list, tuple, np.ndarray)):
+        try:
+            arr = np.asarray(blob, dtype=np.float32)
+        except Exception:
+            return None, None, None
+        if arr.size == 0:
+            return None, None, None
+        return arr, None, None
+    if isinstance(blob, str):
+        return None, None, blob
+    if hasattr(os, "PathLike") and isinstance(blob, os.PathLike):
+        return None, None, os.fspath(blob)
+    return None, None, None
+
+
+def read_audio_from_item(
+    item: Dict[str, Any],
+) -> Tuple[Optional[np.ndarray], Optional[int], Optional[str]]:
+    for key in _HF_AUDIO_CANDIDATE_KEYS:
+        if key not in item:
+            continue
+        arr, sr, ref = resolve_audio_blob(item.get(key))
+        if arr is not None or ref:
+            return arr, sr, ref
+    for value in item.values():
+        arr, sr, ref = resolve_audio_blob(value)
+        if arr is not None or ref:
+            return arr, sr, ref
+    return None, None, None
+
+
+def download_common_voice_subset(subset: str, cache_root: Optional[Path]) -> Path:
+    if cache_root is None:
+        cache_root = Path(
+            os.getenv(
+                "HF_DATASETS_CACHE",
+                os.path.expanduser("~/.cache/huggingface/datasets"),
+            )
+        )
+    local_dir = cache_root / "mozilla_common_voice" / subset
+    local_dir.mkdir(parents=True, exist_ok=True)
+    snapshot_download(
+        repo_id="mozilla-foundation/common_voice_17_0",
+        repo_type="dataset",
+        allow_patterns=[
+            f"audio/{subset}/*",
+            f"transcript/{subset}/*",
+        ],
+        local_dir=str(local_dir),
+        local_dir_use_symlinks=False,
+    )
+    return local_dir
+
+
+def _safe_extract_tarball(
+    root_path: Path, tar_name: str, tar_root_to_subdirs: Dict[str, set]
+) -> None:
+    root_abs = root_path.resolve()
+    if tar_name.endswith(".tar.gz"):
+        stem = tar_name[: -len(".tar.gz")]
+    elif tar_name.endswith(".tar"):
+        stem = tar_name[: -len(".tar")]
+    else:
+        stem = os.path.splitext(tar_name)[0]
+    tar_root_to_subdirs.setdefault(str(root_abs), set()).add(stem)
+
+    marker_path = root_abs / f".{stem}_extracted"
+    if marker_path.exists():
+        return
+    tar_path = root_abs / tar_name
+    mode = "r:gz" if tar_name.endswith(".tar.gz") else "r:"
+    with tarfile.open(tar_path, mode) as tar:
+        safe_members = []
+        for member in tar:
+            target_path = (root_abs / member.name).resolve()
+            if os.path.commonpath([str(root_abs), str(target_path)]) != str(root_abs):
+                raise RuntimeError(
+                    f"Blocked path traversal while extracting {tar_name}"
+                )
+            safe_members.append(member)
+        tar.extractall(root_abs, members=safe_members)
+
+    marker_path.write_text("extracted", encoding="utf-8")
+
+
+def iter_common_voice_items(
+    *,
+    local_dir: Path,
+    subset: str,
+    split: Optional[str],
+    percentage: Optional[float],
+    seed: int,
+    limit: Optional[int],
+) -> Iterable[Dict[str, Any]]:
+    audio_dir = local_dir / "audio" / subset
+    transcript_dir = local_dir / "transcript" / subset
+    audio_dir_abs = audio_dir.resolve()
+
+    tar_root_to_subdirs: Dict[str, set] = {}
+    if audio_dir_abs.is_dir():
+        for current_dir, _, files in os.walk(audio_dir_abs):
+            current_path = Path(current_dir)
+            for tar_file in files:
+                if tar_file.endswith((".tar", ".tar.gz")):
+                    _safe_extract_tarball(current_path, tar_file, tar_root_to_subdirs)
+
+    subset_aliases = {
+        "validation": ["validated"],
+        "validated": ["validation"],
+        "dev": ["development"],
+        "development": ["dev"],
+    }
+
+    subset_variants: List[str] = []
+    if split:
+        base = str(split).strip().lower()
+        if base:
+            subset_variants.append(base)
+    else:
+        subset_variants.extend(
+            ["train", "validation", "test", "dev", "validated", "invalidated", "other"]
+        )
+
+    for variant in list(subset_variants):
+        for alias in subset_aliases.get(variant, []):
+            if alias not in subset_variants:
+                subset_variants.append(alias)
+
+    candidate_dirs: List[str] = []
+    seen_dirs: set = set()
+
+    def _add_candidate(dir_path: Path) -> None:
+        abs_path = dir_path.resolve()
+        if abs_path.is_dir():
+            abs_str = str(abs_path)
+            if abs_str not in seen_dirs:
+                seen_dirs.add(abs_str)
+                candidate_dirs.append(abs_str)
+
+    _add_candidate(audio_dir_abs)
+    for variant in subset_variants:
+        _add_candidate(audio_dir_abs / variant)
+
+    for base_dir in list(candidate_dirs):
+        for suffix in tar_root_to_subdirs.get(base_dir, set()):
+            _add_candidate(Path(base_dir) / suffix)
+        _add_candidate(Path(base_dir) / "clips")
+
+    if not candidate_dirs:
+        candidate_dirs.append(str(audio_dir_abs))
+
+    path_cache: Dict[str, Optional[str]] = {}
+    missing_logged: set = set()
+
+    def _resolve_audio_path(filename: str) -> Optional[str]:
+        if not filename:
+            return None
+        normalized = filename.strip().replace("\\", os.sep)
+        has_ext = bool(os.path.splitext(normalized)[1])
+        exts = [".mp3", ".wav", ".flac", ".ogg", ".m4a"]
+
+        cached = path_cache.get(normalized)
+        if cached is not None:
+            return cached
+
+        candidates = []
+        names = [normalized]
+        base_name = os.path.basename(normalized)
+        if base_name != normalized:
+            names.append(base_name)
+        if has_ext:
+            candidates.extend(names)
+        else:
+            for name in names:
+                for ext in exts:
+                    candidates.append(f"{name}{ext}")
+
+        resolved = None
+        for name in candidates:
+            if os.path.isabs(name):
+                if os.path.exists(name):
+                    resolved = name
+                    break
+                continue
+            for base_dir in candidate_dirs:
+                direct_path = os.path.join(base_dir, name)
+                if os.path.exists(direct_path):
+                    resolved = direct_path
+                    break
+                for suffix in tar_root_to_subdirs.get(base_dir, set()):
+                    nested_path = os.path.join(base_dir, suffix, os.path.basename(name))
+                    if os.path.exists(nested_path):
+                        resolved = nested_path
+                        break
+                if resolved:
+                    break
+            if resolved:
+                break
+
+        if resolved is None and os.sep in normalized:
+            for base_dir in candidate_dirs:
+                fallback_path = os.path.join(base_dir, base_name)
+                if os.path.exists(fallback_path):
+                    resolved = fallback_path
+                    break
+
+        if resolved:
+            resolved = os.path.abspath(resolved)
+        path_cache[normalized] = resolved
+        return resolved
+
+    keep_prob = 1.0
+    if percentage is not None and percentage < 100:
+        keep_prob = max(0.0, min(1.0, float(percentage) / 100.0))
+    rng = random.Random(seed)
+    kept = 0
+
+    seen_tsv: set = set()
+    for variant in subset_variants or ["train", "validation", "test"]:
+        tsv_file = transcript_dir / f"{variant}.tsv"
+        if not tsv_file.exists() or str(tsv_file) in seen_tsv:
+            continue
+        seen_tsv.add(str(tsv_file))
+        print(f"  Processing TSV file: {tsv_file}")
+        with tsv_file.open("r", encoding="utf-8", newline="") as f:
+            header_keys, header_lookup, dict_rows = iter_tsv_dict_rows(f)
+            if not header_keys:
+                continue
+
+            def _select_column(
+                candidates: Sequence[str], default_idx: int
+            ) -> Optional[str]:
+                for candidate in candidates:
+                    cand_key = candidate.strip().lower()
+                    if cand_key in header_lookup:
+                        return cand_key
+                if 0 <= default_idx < len(header_keys):
+                    return header_keys[default_idx]
+                if header_keys:
+                    return header_keys[0]
+                return None
+
+            path_column = _select_column(
+                ["path", "audio", "audio_filename", "filename", "file"],
+                default_idx=0,
+            )
+            text_column = _select_column(
+                [
+                    "sentence",
+                    "text",
+                    "transcription",
+                    "transcript",
+                    "text_latin",
+                    "normalized_text",
+                    "raw_text",
+                ],
+                default_idx=2 if len(header_keys) > 2 else len(header_keys) - 1,
+            )
+
+            if path_column is None or text_column is None:
+                print(
+                    f"  Warning: could not detect required columns in {tsv_file}. "
+                    f"Header: {list(header_lookup.values())}"
+                )
+                continue
+
+            for row_number, row_dict in dict_rows:
+                audio_filename = (row_dict.get(path_column) or "").strip()
+                if not audio_filename:
+                    continue
+
+                transcription_raw = row_dict.get(text_column, "")
+                transcription = (
+                    str(transcription_raw).strip()
+                    if transcription_raw is not None
+                    else ""
+                )
+                if not transcription:
+                    continue
+
+                if keep_prob < 1.0 and rng.random() > keep_prob:
+                    continue
+
+                resolved_path = _resolve_audio_path(audio_filename)
+                if resolved_path:
+                    yield {"audio": {"path": resolved_path}, "text": transcription}
+                    kept += 1
+                    if limit and kept >= limit:
+                        return
+                elif audio_filename not in missing_logged:
+                    print(
+                        f"  Warning (line {row_number}): audio file '{audio_filename}' not found under {audio_dir_abs}"
+                    )
+                    missing_logged.add(audio_filename)
+
+
+def load_audio(
+    arr: Optional[np.ndarray],
+    sr: Optional[int],
+    ref: Optional[str],
+    *,
+    target_sr: Optional[int],
+    mono: bool,
+    no_resample: bool,
+) -> Tuple[Optional[np.ndarray], Optional[int]]:
+    if arr is None:
+        if not ref:
+            return None, None
+        try:
+            samples, sample_rate = sf.read(ref, dtype="float32", always_2d=True)
+        except Exception:
+            return None, None
+        if mono:
+            samples = samples.mean(axis=1).astype(np.float32)
+        else:
+            samples = samples.astype(np.float32)
+        arr = samples
+        sr = int(sample_rate)
+    else:
+        arr = arr.astype(np.float32, copy=False)
+        if arr.ndim == 2:
+            if mono:
+                arr = arr.mean(axis=1).astype(np.float32)
+            else:
+                arr = arr.astype(np.float32)
+
+    if arr is None or arr.size == 0:
+        return None, None
+
+    if sr is None:
+        return None, None
+
+    if not no_resample and target_sr and sr != target_sr:
+        if arr.ndim == 1:
+            arr = librosa.resample(arr, orig_sr=sr, target_sr=target_sr).astype(
+                np.float32
+            )
+        else:
+            channels = []
+            for ch in range(arr.shape[1]):
+                channels.append(
+                    librosa.resample(
+                        arr[:, ch], orig_sr=sr, target_sr=target_sr
+                    ).astype(np.float32)
+                )
+            arr = np.stack(channels, axis=1)
+        sr = target_sr
+    return arr, sr
+
+
+def write_audio(
+    samples: np.ndarray, sample_rate: int, path: Path, *, subtype: str = "PCM_16"
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    sf.write(path, samples, sample_rate, subtype=subtype)
+
+
+def apply_sampling(ds, percentage: Optional[float], seed: int, limit: Optional[int]):
+    if percentage is None:
+        percentage = 100.0
+    if percentage >= 100 and not limit:
+        return ds
+    try:
+        length = len(ds)
+    except TypeError:
+        return ds
+    if length == 0:
+        return ds
+    if percentage < 100:
+        target = max(1, int(length * (percentage / 100.0)))
+    else:
+        target = length
+    if limit:
+        target = min(target, limit)
+    if target >= length:
+        return ds
+    ds = ds.shuffle(seed=seed)
+    return ds.select(range(target))
+
+
+def get_filter_fn(repo: str):
+    if repo == "bekzod123/uzbek_voice":
+        return _filter_bekzod123_uzbek_voice
+    if repo == "DavronSherbaev/uzbekvoice-filtered":
+        return _filter_davron_sherbaev_uzbekvoice
+    return None
+
+
+def apply_dataset_filter(ds, filter_fn, label: str):
+    if filter_fn is None:
+        return ds
+    try:
+        before = len(ds)
+    except TypeError:
+        before = None
+    try:
+        ds = ds.filter(filter_fn, batched=False, desc=f"Filtering {label}")
+        if before is not None:
+            print(f"  Kept {len(ds)}/{before} after filter for {label}")
+        return ds
+    except Exception as exc:
+        print(f"  Filter failed for {label} ({exc}); falling back to index scan.")
+        try:
+            kept = []
+            for idx, item in enumerate(tqdm(ds, desc=f"Scanning {label}")):
+                try:
+                    if filter_fn(item):
+                        kept.append(idx)
+                except Exception:
+                    continue
+            print(f"  Kept {len(kept)}/{len(ds)} after index scan for {label}")
+            return ds.select(kept)
+        except Exception as exc2:
+            print(f"  Failed to apply filter for {label}: {exc2}")
+            return ds
+
+
+@contextmanager
+def dataset_cache_context(
+    cache_mode: str, cache_root: Optional[Path]
+) -> Optional[Path]:
+    if cache_mode == "default":
+        yield cache_root
+        return
+
+    temp_dir = tempfile.TemporaryDirectory(
+        prefix="hf_cache_", dir=str(cache_root) if cache_root else None
+    )
+    tmp_path = Path(temp_dir.name)
+    prev_env = {
+        "HF_HOME": os.environ.get("HF_HOME"),
+        "HF_DATASETS_CACHE": os.environ.get("HF_DATASETS_CACHE"),
+        "HUGGINGFACE_HUB_CACHE": os.environ.get("HUGGINGFACE_HUB_CACHE"),
+    }
+    os.environ["HF_HOME"] = str(tmp_path)
+    os.environ["HF_DATASETS_CACHE"] = str(tmp_path)
+    os.environ["HUGGINGFACE_HUB_CACHE"] = str(tmp_path / "hub")
+    try:
+        yield tmp_path
+    finally:
+        for key, value in prev_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        temp_dir.cleanup()
+
+
+def to_manifest_path(output_dir: Path, audio_path: Path, absolute: bool) -> str:
+    if absolute:
+        return str(audio_path.resolve())
+    return str(audio_path.relative_to(output_dir))
+
+
+def process_items(
+    items: Iterable[Dict[str, Any]],
+    *,
+    output_dir: Path,
+    audio_root: Path,
+    manifest_file,
+    desc: str,
+    sample_rate: int,
+    no_resample: bool,
+    mono: bool,
+    min_duration: float,
+    max_duration: float,
+    min_chars: int,
+    max_chars: int,
+    absolute_paths: bool,
+) -> Dict[str, int]:
+    counts = {
+        "total": 0,
+        "kept": 0,
+        "no_text": 0,
+        "no_audio": 0,
+        "dur_filtered": 0,
+        "text_filtered": 0,
+        "failed": 0,
+    }
+
+    for idx, item in enumerate(tqdm(items, desc=desc)):
+        counts["total"] += 1
+        if not isinstance(item, dict):
+            counts["failed"] += 1
+            continue
+
+        transcript = pick_text(item)
+        if not transcript:
+            counts["no_text"] += 1
+            continue
+        if len(transcript) < min_chars:
+            counts["text_filtered"] += 1
+            continue
+        effective_max = MAX_TRANSCRIPT_CHAR_LIMIT
+        if max_chars != -1:
+            effective_max = min(effective_max, max_chars)
+        if len(transcript) > effective_max:
+            counts["text_filtered"] += 1
+            continue
+
+        arr, sr, ref = read_audio_from_item(item)
+        arr, sr = load_audio(
+            arr,
+            sr,
+            ref,
+            target_sr=None if no_resample else sample_rate,
+            mono=mono,
+            no_resample=no_resample,
+        )
+        if arr is None or sr is None:
+            counts["no_audio"] += 1
+            continue
+
+        duration = float(arr.shape[0] / float(sr))
+        if duration < min_duration:
+            counts["dur_filtered"] += 1
+            continue
+        if max_duration != -1 and duration > max_duration:
+            counts["dur_filtered"] += 1
+            continue
+
+        audio_path = audio_root / f"{idx:09d}.wav"
+        try:
+            write_audio(arr, sr, audio_path)
+        except Exception:
+            counts["failed"] += 1
+            continue
+
+        manifest_entry = {
+            "audio_filepath": to_manifest_path(output_dir, audio_path, absolute_paths),
+            "duration": round(duration, 6),
+            "text": transcript,
+        }
+        manifest_file.write(json.dumps(manifest_entry, ensure_ascii=False))
+        manifest_file.write("\n")
+        counts["kept"] += 1
+
+    return counts
+
+
+def prepare_group(
+    group: str,
+    specs: Sequence[DatasetSpec],
+    *,
+    output_dir: Path,
+    cache_dir: Optional[Path],
+    cache_mode: str,
+    hf_token: Optional[str],
+    sample_rate: int,
+    no_resample: bool,
+    mono: bool,
+    min_duration: float,
+    max_duration: float,
+    min_chars: int,
+    max_chars: int,
+    absolute_paths: bool,
+    limit: Optional[int],
+) -> None:
+    manifest_path = output_dir / f"{group}_manifest.jsonl"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    with manifest_path.open("w", encoding="utf-8") as manifest_file:
+        for spec in specs:
+            if spec.group != group:
+                continue
+            dataset_id = sanitize_name(spec.repo)
+            if spec.repo == "mozilla-foundation/common_voice_17_0":
+                if not spec.subset:
+                    print(
+                        f"[{group}] skipping {spec.repo} because no subset was provided."
+                    )
+                    continue
+                with dataset_cache_context(cache_mode, cache_dir) as cache_path:
+                    local_dir = download_common_voice_subset(spec.subset, cache_path)
+                    for split in spec.splits:
+                        print(
+                            f"[{group}] loading {spec.repo} split={split} (subset={spec.subset})"
+                        )
+                        items = iter_common_voice_items(
+                            local_dir=local_dir,
+                            subset=spec.subset,
+                            split=split,
+                            percentage=spec.percentage,
+                            seed=spec.seed
+                            if spec.seed is not None
+                            else DEFAULT_SAMPLING_SEED,
+                            limit=limit,
+                        )
+                        audio_root = output_dir / "audio" / group / dataset_id / split
+                        counts = process_items(
+                            items,
+                            output_dir=output_dir,
+                            audio_root=audio_root,
+                            manifest_file=manifest_file,
+                            desc=f"{dataset_id}:{split}",
+                            sample_rate=sample_rate,
+                            no_resample=no_resample,
+                            mono=mono,
+                            min_duration=min_duration,
+                            max_duration=max_duration,
+                            min_chars=min_chars,
+                            max_chars=max_chars,
+                            absolute_paths=absolute_paths,
+                        )
+                        print(
+                            f"[{group}] {spec.repo}:{split} "
+                            f"total={counts['total']} kept={counts['kept']} "
+                            f"no_text={counts['no_text']} no_audio={counts['no_audio']} "
+                            f"dur_filtered={counts['dur_filtered']} text_filtered={counts['text_filtered']} "
+                            f"failed={counts['failed']}"
+                        )
+                continue
+
+            for split in spec.splits:
+                print(
+                    f"[{group}] loading {spec.repo} split={split}"
+                    + (f" (subset={spec.subset})" if spec.subset else "")
+                )
+                with dataset_cache_context(cache_mode, cache_dir) as cache_path:
+                    load_kwargs: Dict[str, Any] = {"split": split}
+                    if spec.subset:
+                        load_kwargs["name"] = spec.subset
+                    if spec.revision:
+                        load_kwargs["revision"] = spec.revision
+                    if spec.data_dir:
+                        load_kwargs["data_dir"] = spec.data_dir
+                    if spec.data_files is not None:
+                        load_kwargs["data_files"] = spec.data_files
+                    if spec.trust_remote_code is not None:
+                        load_kwargs["trust_remote_code"] = spec.trust_remote_code
+                    if cache_path:
+                        load_kwargs["cache_dir"] = str(cache_path)
+                    if hf_token:
+                        load_kwargs["use_auth_token"] = hf_token
+
+                    ds = load_dataset(spec.repo, **load_kwargs)
+                    filter_fn = get_filter_fn(spec.repo)
+                    if filter_fn is not None:
+                        print(f"  Applying dataset filter for {spec.repo}")
+                        ds = apply_dataset_filter(ds, filter_fn, f"{spec.repo}:{split}")
+                    ds = apply_sampling(
+                        ds,
+                        spec.percentage,
+                        spec.seed if spec.seed is not None else DEFAULT_SAMPLING_SEED,
+                        limit,
+                    )
+
+                    audio_root = output_dir / "audio" / group / dataset_id / split
+                    counts = process_items(
+                        ds,
+                        output_dir=output_dir,
+                        audio_root=audio_root,
+                        manifest_file=manifest_file,
+                        desc=f"{dataset_id}:{split}",
+                        sample_rate=sample_rate,
+                        no_resample=no_resample,
+                        mono=mono,
+                        min_duration=min_duration,
+                        max_duration=max_duration,
+                        min_chars=min_chars,
+                        max_chars=max_chars,
+                        absolute_paths=absolute_paths,
+                    )
+                    print(
+                        f"[{group}] {spec.repo}:{split} "
+                        f"total={counts['total']} kept={counts['kept']} "
+                        f"no_text={counts['no_text']} no_audio={counts['no_audio']} "
+                        f"dur_filtered={counts['dur_filtered']} text_filtered={counts['text_filtered']} "
+                        f"failed={counts['failed']}"
+                    )
+
+
+def main() -> None:
+    args = parse_args()
+    config = load_dataset_config(args.config)
+    specs = list(
+        iter_dataset_specs(config, args.groups, default_splits=args.default_splits)
+    )
+
+    if not specs:
+        raise SystemExit("No dataset entries found for the selected groups.")
+    groups_present = {spec.group for spec in specs}
+    for group in args.groups:
+        if group not in groups_present:
+            print(f"Skipping group '{group}' (no entries in config).")
+            continue
+        prepare_group(
+            group,
+            specs,
+            output_dir=args.output_dir,
+            cache_dir=args.cache_dir,
+            cache_mode=args.cache_mode,
+            hf_token=args.hf_token,
+            sample_rate=args.sample_rate,
+            no_resample=args.no_resample,
+            mono=args.mono,
+            min_duration=args.min_duration,
+            max_duration=args.max_duration,
+            min_chars=args.min_chars,
+            max_chars=args.max_chars,
+            absolute_paths=args.absolute_paths,
+            limit=args.limit,
+        )
+
+
+if __name__ == "__main__":
+    main()
