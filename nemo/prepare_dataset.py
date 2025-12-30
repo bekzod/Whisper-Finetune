@@ -55,6 +55,7 @@ DEFAULT_MIN_CHARS = 1
 DEFAULT_MAX_CHARS = 680
 DEFAULT_SAMPLING_SEED = 3407
 DEFAULT_CACHE_ROOT = Path("/workspace")
+MAX_TAR_PATH_COMPONENT = 240
 
 _HF_AUDIO_CANDIDATE_KEYS = (
     "audio",
@@ -464,15 +465,25 @@ def _safe_extract_tarball(
     tar_path = root_abs / tar_name
     mode = "r:gz" if tar_name.endswith(".tar.gz") else "r:"
     with tarfile.open(tar_path, mode) as tar:
-        safe_members = []
         for member in tar:
             target_path = (root_abs / member.name).resolve()
             if os.path.commonpath([str(root_abs), str(target_path)]) != str(root_abs):
                 raise RuntimeError(
                     f"Blocked path traversal while extracting {tar_name}"
                 )
-            safe_members.append(member)
-        tar.extractall(root_abs, members=safe_members)
+            parts = Path(member.name).parts
+            if any(len(part) > MAX_TAR_PATH_COMPONENT for part in parts):
+                print(
+                    f"  Warning: skipping tar entry with long path in {tar_name}: {member.name}"
+                )
+                continue
+            try:
+                tar.extract(member, root_abs)
+            except OSError as exc:
+                print(
+                    f"  Warning: failed to extract {member.name} from {tar_name}: {exc}"
+                )
+                continue
 
     marker_path.write_text("extracted", encoding="utf-8")
 
