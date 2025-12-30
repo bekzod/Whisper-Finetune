@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import random
@@ -30,6 +31,20 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from utils.tsv_parser import iter_tsv_dict_rows
+
+
+def _load_cleanup_utils() -> Any:
+    utils_path = Path(__file__).with_name("utils.py")
+    spec = importlib.util.spec_from_file_location("nemo_cleanup_utils", utils_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Unable to load cleanup utils from {utils_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_cleanup_utils = _load_cleanup_utils()
+normalize_text = _cleanup_utils.normalize_text
 
 MAX_TRANSCRIPT_CHAR_LIMIT = 680
 DEFAULT_SAMPLE_RATE = 16000
@@ -64,97 +79,6 @@ _HF_TEXT_CANDIDATE_KEYS = (
     "translation",
 )
 
-_APOSTROPHE_TRANSLATION = str.maketrans(
-    {
-        "\u2019": "'",
-        "\u02bc": "'",
-        "\u02bb": "'",
-        "`": "'",
-        "´": "'",
-        "ʻ": "'",
-        "ʼ": "'",
-        "‛": "'",
-    }
-)
-_ALLOWED_TEXT_RE = re.compile(r"[^a-zA-ZА-Яа-яЎўҚқҒғҲҳ0-9\s,.'-]+")
-_MULTISPACE_RE = re.compile(r"\s+")
-_UZBEK_CYRILLIC_TO_LATIN = {
-    "А": "A",
-    "а": "a",
-    "Б": "B",
-    "б": "b",
-    "В": "V",
-    "в": "v",
-    "Г": "G",
-    "г": "g",
-    "Д": "D",
-    "д": "d",
-    "Е": "E",
-    "е": "e",
-    "Ё": "Yo",
-    "ё": "yo",
-    "Ж": "J",
-    "ж": "j",
-    "З": "Z",
-    "з": "z",
-    "И": "I",
-    "и": "i",
-    "Й": "Y",
-    "й": "y",
-    "К": "K",
-    "к": "k",
-    "Л": "L",
-    "л": "l",
-    "М": "M",
-    "м": "m",
-    "Н": "N",
-    "н": "n",
-    "О": "O",
-    "о": "o",
-    "П": "P",
-    "п": "p",
-    "Р": "R",
-    "р": "r",
-    "С": "S",
-    "с": "s",
-    "Т": "T",
-    "т": "t",
-    "У": "U",
-    "у": "u",
-    "Ф": "F",
-    "ф": "f",
-    "Х": "X",
-    "х": "x",
-    "Ц": "Ts",
-    "ц": "ts",
-    "Ч": "Ch",
-    "ч": "ch",
-    "Ш": "Sh",
-    "ш": "sh",
-    "Щ": "Sh",
-    "щ": "sh",
-    "Ъ": "'",
-    "ъ": "'",
-    "Ы": "I",
-    "ы": "i",
-    "Ь": "",
-    "ь": "",
-    "Э": "E",
-    "э": "e",
-    "Ю": "Yu",
-    "ю": "yu",
-    "Я": "Ya",
-    "я": "ya",
-    "Ў": "O'",
-    "ў": "o'",
-    "Қ": "Q",
-    "қ": "q",
-    "Ғ": "G'",
-    "ғ": "g'",
-    "Ҳ": "H",
-    "ҳ": "h",
-}
-_UZBEK_CYRILLIC_CHARS = set(_UZBEK_CYRILLIC_TO_LATIN.keys())
 _FILTERED_CLIENT_IDS = {
     "56ac8e86-b8c9-4879-a342-0eeb94f686fc",
     "3d3fca02-6a07-41e2-9af4-60886ea60300",
@@ -392,30 +316,6 @@ def iter_dataset_specs(
                 data_files=entry.get("data_files"),
                 trust_remote_code=entry.get("trust_remote_code"),
             )
-
-
-def normalize_text(text: Any) -> str:
-    """Normalize text to match training cleanup in utils/reader.py."""
-    if text is None:
-        return ""
-    try:
-        normalized = str(text)
-    except Exception:
-        return ""
-
-    normalized = _transliterate_uzbek_cyrillic(normalized)
-    normalized = normalized.translate(_APOSTROPHE_TRANSLATION)
-    normalized = _ALLOWED_TEXT_RE.sub("", normalized)
-    normalized = _MULTISPACE_RE.sub(" ", normalized).strip()
-    return normalized
-
-
-def _transliterate_uzbek_cyrillic(text: str) -> str:
-    if not text:
-        return text
-    if not any(char in _UZBEK_CYRILLIC_CHARS for char in text):
-        return text
-    return "".join(_UZBEK_CYRILLIC_TO_LATIN.get(char, char) for char in text)
 
 
 def _flatten_transcript_text(transcript: Any) -> str:
