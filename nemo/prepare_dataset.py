@@ -62,8 +62,9 @@ DEFAULT_CACHE_ROOT = Path("/workspace")
 MAX_TAR_PATH_COMPONENT = 480
 DEFAULT_HF_LOAD_RETRIES = 8
 DEFAULT_HF_RETRY_WAIT = (
-    240  # 2 minutes base backoff; exponential: 120s, 240s, 480s, ...
+    240  # 4 minutes base backoff; exponential: 240s, 480s, 960s, ...
 )
+DEFAULT_HF_RATE_LIMIT_WAIT = 60  # Base wait for 429 rate limits (60s, 120s, 240s, ...)
 
 _HF_AUDIO_CANDIDATE_KEYS = (
     "audio",
@@ -216,6 +217,15 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--hf-rate-limit-wait",
+        type=float,
+        default=DEFAULT_HF_RATE_LIMIT_WAIT,
+        help=(
+            "Base backoff in seconds for 429 rate limit errors "
+            f"(default: {DEFAULT_HF_RATE_LIMIT_WAIT:g}). HF quota resets every 5 minutes."
+        ),
+    )
+    parser.add_argument(
         "--sample-rate",
         type=int,
         default=DEFAULT_SAMPLE_RATE,
@@ -338,6 +348,9 @@ def _is_retryable_hf_error(exc: BaseException) -> bool:
         "service unavailable",
         "bad gateway",
         "gateway timeout",
+        "too many requests",
+        "rate limit",
+        "429",
         "502",
         "503",
         "504",
@@ -345,26 +358,44 @@ def _is_retryable_hf_error(exc: BaseException) -> bool:
     return any(marker in message for marker in retry_markers)
 
 
+def _is_rate_limit_error(exc: BaseException) -> bool:
+    """Check if the exception is a rate limit (429) error."""
+    message = str(exc).lower()
+    return "429" in message or "too many requests" in message or "rate limit" in message
+
+
 def _load_dataset_with_retries(
     repo: str,
     load_kwargs: Dict[str, Any],
     max_retries: int,
     retry_wait: float,
+    rate_limit_wait: float = DEFAULT_HF_RATE_LIMIT_WAIT,
 ) -> Any:
     retries = max(0, max_retries)
     delay = max(0.0, retry_wait)
     attempt = 0
+    # Rate limit errors require longer waits (HF quota is per 5-minute window)
+    rate_limit_base_wait = max(0.0, rate_limit_wait)
     while True:
         try:
             return load_dataset(repo, **load_kwargs)
         except Exception as exc:
             if attempt >= retries or not _is_retryable_hf_error(exc):
                 raise
-            sleep_for = delay * (2**attempt)
-            print(
-                f"  Network error while loading {repo}; retrying in {sleep_for:.1f}s "
-                f"({attempt + 1}/{retries}): {exc}"
-            )
+            # Use longer backoff for rate limit errors
+            if _is_rate_limit_error(exc):
+                # For rate limits, wait longer (60s, 120s, 240s, ...)
+                sleep_for = rate_limit_base_wait * (2**attempt)
+                print(
+                    f"  Rate limited while loading {repo}; waiting {sleep_for:.0f}s "
+                    f"before retry ({attempt + 1}/{retries}): {exc}"
+                )
+            else:
+                sleep_for = delay * (2**attempt)
+                print(
+                    f"  Network error while loading {repo}; retrying in {sleep_for:.1f}s "
+                    f"({attempt + 1}/{retries}): {exc}"
+                )
             time.sleep(sleep_for)
             attempt += 1
 
@@ -1436,6 +1467,7 @@ def prepare_group(
     limit: Optional[int],
     hf_load_retries: int = DEFAULT_HF_LOAD_RETRIES,
     hf_retry_wait: float = DEFAULT_HF_RETRY_WAIT,
+    hf_rate_limit_wait: float = DEFAULT_HF_RATE_LIMIT_WAIT,
 ) -> None:
     manifest_path = output_dir / f"{group}_manifest.jsonl"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1567,6 +1599,7 @@ def prepare_group(
                         load_kwargs,
                         hf_load_retries,
                         hf_retry_wait,
+                        hf_rate_limit_wait,
                     )
                     filter_fn = get_filter_fn(spec.repo)
                     if filter_fn is not None:
@@ -1642,6 +1675,7 @@ def main() -> None:
             limit=args.limit,
             hf_load_retries=args.hf_load_retries,
             hf_retry_wait=args.hf_retry_wait,
+            hf_rate_limit_wait=args.hf_rate_limit_wait,
         )
 
 

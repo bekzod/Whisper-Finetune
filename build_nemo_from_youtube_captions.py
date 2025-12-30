@@ -294,8 +294,26 @@ def _parse_vtt_raw_cues(vtt_path: Path) -> List[Tuple[float, float, str]]:
         end = _parse_timestamp(match.group("end"))
         idx += 1
         text_lines: List[str] = []
-        while idx < len(lines) and lines[idx].strip():
-            text_lines.append(lines[idx])
+        # Read all lines until we hit an empty line followed by another timestamp
+        # or two consecutive empty lines (end of cue block)
+        consecutive_empty = 0
+        while idx < len(lines):
+            current_line = lines[idx]
+            if not current_line.strip():
+                consecutive_empty += 1
+                # Check if next non-empty line is a timestamp (new cue)
+                if consecutive_empty >= 1:
+                    peek_idx = idx + 1
+                    while peek_idx < len(lines) and not lines[peek_idx].strip():
+                        peek_idx += 1
+                    if peek_idx >= len(lines) or _VTT_TIMESTAMP_LINE_RE.match(
+                        lines[peek_idx].strip()
+                    ):
+                        break
+                idx += 1
+                continue
+            consecutive_empty = 0
+            text_lines.append(current_line)
             idx += 1
         cues.append((start, end, "\n".join(text_lines)))
     return cues
