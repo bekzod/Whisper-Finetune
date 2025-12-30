@@ -466,17 +466,28 @@ def _safe_extract_tarball(
     mode = "r:gz" if tar_name.endswith(".tar.gz") else "r:"
     with tarfile.open(tar_path, mode) as tar:
         for member in tar:
-            target_path = (root_abs / member.name).resolve()
-            if os.path.commonpath([str(root_abs), str(target_path)]) != str(root_abs):
-                raise RuntimeError(
-                    f"Blocked path traversal while extracting {tar_name}"
-                )
-            parts = Path(member.name).parts
+            member_path = Path(member.name)
+            parts = member_path.parts
             if any(len(part) > MAX_TAR_PATH_COMPONENT for part in parts):
                 print(
                     f"  Warning: skipping tar entry with long path in {tar_name}: {member.name}"
                 )
                 continue
+            if member_path.is_absolute() or ".." in parts:
+                raise RuntimeError(
+                    f"Blocked path traversal while extracting {tar_name}"
+                )
+            try:
+                target_path = (root_abs / member.name).resolve()
+            except OSError as exc:
+                print(
+                    f"  Warning: skipping tar entry in {tar_name} due to path error: {member.name} ({exc})"
+                )
+                continue
+            if os.path.commonpath([str(root_abs), str(target_path)]) != str(root_abs):
+                raise RuntimeError(
+                    f"Blocked path traversal while extracting {tar_name}"
+                )
             try:
                 tar.extract(member, root_abs)
             except OSError as exc:
