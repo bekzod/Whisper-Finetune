@@ -15,6 +15,7 @@ import tempfile
 from collections.abc import Iterable as IterableCollection
 from contextlib import contextmanager
 from dataclasses import dataclass
+from itertools import chain
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -428,6 +429,32 @@ def download_common_voice_subset(subset: str, cache_root: Optional[Path]) -> Pat
     return local_dir
 
 
+def download_fleurs_subset(
+    subset: str, cache_root: Optional[Path], revision: Optional[str]
+) -> Path:
+    if cache_root is None:
+        cache_root = Path(
+            os.getenv(
+                "HF_DATASETS_CACHE",
+                os.path.expanduser("~/.cache/huggingface/datasets"),
+            )
+        )
+    local_dir = cache_root / "google_fleurs" / subset
+    local_dir.mkdir(parents=True, exist_ok=True)
+    snapshot_download(
+        repo_id="google/fleurs",
+        repo_type="dataset",
+        allow_patterns=[
+            f"data/{subset}/audio/*.tar.gz",
+            f"data/{subset}/*.tsv",
+        ],
+        local_dir=str(local_dir),
+        local_dir_use_symlinks=False,
+        revision=revision,
+    )
+    return local_dir
+
+
 def _safe_extract_tarball(
     root_path: Path, tar_name: str, tar_root_to_subdirs: Dict[str, set]
 ) -> None:
@@ -666,6 +693,250 @@ def iter_common_voice_items(
                 elif audio_filename not in missing_logged:
                     print(
                         f"  Warning (line {row_number}): audio file '{audio_filename}' not found under {audio_dir_abs}"
+                    )
+                    missing_logged.add(audio_filename)
+
+
+def iter_fleurs_items(
+    *,
+    local_dir: Path,
+    subset: str,
+    split: Optional[str],
+    percentage: Optional[float],
+    seed: int,
+    limit: Optional[int],
+) -> Iterable[Dict[str, Any]]:
+    data_dir = local_dir / "data" / subset
+    audio_dir = data_dir / "audio"
+    audio_dir_abs = audio_dir.resolve()
+
+    tar_root_to_subdirs: Dict[str, set] = {}
+    if audio_dir_abs.is_dir():
+        for current_dir, _, files in os.walk(audio_dir_abs):
+            current_path = Path(current_dir)
+            for tar_file in files:
+                if tar_file.endswith((".tar", ".tar.gz")):
+                    _safe_extract_tarball(current_path, tar_file, tar_root_to_subdirs)
+
+    audio_exts = (".wav", ".mp3", ".flac", ".m4a", ".ogg")
+    path_index: Dict[str, str] = {}
+    noext_index: Dict[str, str] = {}
+    if audio_dir_abs.is_dir():
+        for root, _, files in os.walk(audio_dir_abs):
+            for fn in files:
+                if fn.lower().endswith(audio_exts):
+                    full_path = os.path.join(root, fn)
+                    path_index[fn] = full_path
+                    base_no_ext, _ = os.path.splitext(fn)
+                    noext_index.setdefault(base_no_ext, full_path)
+
+    def resolve_audio(filename: str) -> Optional[str]:
+        if not filename:
+            return None
+        normalized = str(filename).strip().replace("\\", os.sep)
+
+        direct = audio_dir_abs / normalized
+        if direct.exists():
+            return str(direct)
+
+        base = os.path.basename(normalized)
+        if base in path_index:
+            return path_index[base]
+
+        base_no_ext, ext = os.path.splitext(base)
+        if not ext:
+            for suf in audio_exts:
+                cand = base_no_ext + suf
+                if cand in path_index:
+                    return path_index[cand]
+        if base_no_ext in noext_index:
+            return noext_index[base_no_ext]
+
+        return None
+
+    split_candidates: List[str] = []
+    if split:
+        base = str(split).strip().lower()
+        if base:
+            split_candidates.append(base)
+            if base == "dev" and "validation" not in split_candidates:
+                split_candidates.append("validation")
+            if base == "validation" and "dev" not in split_candidates:
+                split_candidates.append("dev")
+    else:
+        split_candidates.extend(["train", "validation", "test"])
+
+    keep_prob = 1.0
+    if percentage is not None and percentage < 100:
+        keep_prob = max(0.0, min(1.0, float(percentage) / 100.0))
+    rng = random.Random(seed)
+    kept = 0
+
+    missing_logged: set = set()
+    seen_tsv: set = set()
+    for variant in split_candidates or ["train", "validation", "test"]:
+        tsv_file = data_dir / f"{variant}.tsv"
+        if not tsv_file.exists() or str(tsv_file) in seen_tsv:
+            continue
+        seen_tsv.add(str(tsv_file))
+        print(f"  Processing TSV file: {tsv_file}")
+        with tsv_file.open("r", encoding="utf-8", newline="") as f:
+            header_keys, header_lookup, dict_rows = iter_tsv_dict_rows(f)
+            if not header_keys:
+                continue
+
+            dict_rows = iter(dict_rows)
+            try:
+                first_item = next(dict_rows)
+            except StopIteration:
+                continue
+            dict_rows = chain([first_item], dict_rows)
+            _, first_row = first_item
+
+            def _peek_resolved_audio_column() -> Optional[str]:
+                candidates: List[str] = []
+                for key in header_keys:
+                    candidate_value = first_row.get(key, "")
+                    if not candidate_value:
+                        continue
+                    resolved = resolve_audio(str(candidate_value))
+                    if resolved:
+                        candidates.append(key)
+                return candidates[0] if candidates else None
+
+            def _pick_text_column(existing_audio_col: Optional[str]) -> Optional[str]:
+                best_key: Optional[str] = None
+                best_score = -1
+                for key in header_keys:
+                    if key == existing_audio_col:
+                        continue
+                    value = str(first_row.get(key, "")).strip()
+                    if not value:
+                        continue
+                    score = 0
+                    if " " in value:
+                        score += 2
+                    score += min(len(value), 120) / 40.0
+                    if score > best_score:
+                        best_score = score
+                        best_key = key
+                return best_key
+
+            def _resolve_column(
+                candidates: Sequence[str], default_idx: int
+            ) -> Optional[str]:
+                for candidate in candidates:
+                    cand_key = candidate.strip().lower()
+                    if cand_key in header_lookup:
+                        return cand_key
+                if 0 <= default_idx < len(header_keys):
+                    return header_keys[default_idx]
+                return None
+
+            audio_column = _resolve_column(
+                ["path", "filename", "file", "audio", "audio_filename"],
+                default_idx=0,
+            )
+            text_column = _resolve_column(
+                [
+                    "text",
+                    "transcription",
+                    "sentence",
+                    "transcript",
+                    "raw_transcription",
+                    "normalized_text",
+                    "raw_text",
+                ],
+                default_idx=2 if len(header_keys) > 2 else len(header_keys) - 1,
+            )
+
+            def _looks_like_audio_path(value: str) -> bool:
+                if not value:
+                    return False
+                lowered = str(value).lower()
+                return lowered.endswith(audio_exts)
+
+            resolved_audio_col = _peek_resolved_audio_column()
+            if resolved_audio_col and resolved_audio_col in header_keys:
+                audio_column = resolved_audio_col
+
+            header_is_synthetic = all(
+                key.startswith("column_") and header_lookup.get(key) == key
+                for key in header_keys
+            )
+            if header_is_synthetic:
+                first_col_value = (
+                    first_row.get(header_keys[0], "") if header_keys else ""
+                )
+                second_col_value = (
+                    first_row.get(header_keys[1], "") if len(header_keys) > 1 else ""
+                )
+                third_col_value = (
+                    first_row.get(header_keys[2], "") if len(header_keys) > 2 else ""
+                )
+                if (
+                    len(header_keys) > 1
+                    and not _looks_like_audio_path(first_col_value)
+                    and _looks_like_audio_path(second_col_value)
+                ):
+                    audio_column = header_keys[1]
+                if (
+                    len(header_keys) > 2
+                    and third_col_value
+                    and not _looks_like_audio_path(third_col_value)
+                ):
+                    text_column = header_keys[2]
+                if text_column is None:
+                    text_column = _pick_text_column(audio_column)
+
+            if text_column is None:
+                text_column = _pick_text_column(audio_column)
+
+            if header_is_synthetic:
+                if len(header_keys) > 1 and audio_column == header_keys[0]:
+                    audio_column = header_keys[1]
+                if len(header_keys) > 2:
+                    if text_column is None or text_column == audio_column:
+                        text_column = header_keys[2]
+                elif text_column == audio_column and len(header_keys) > 1:
+                    text_column = header_keys[1]
+
+            if text_column == audio_column:
+                text_column = _pick_text_column(audio_column)
+
+            if audio_column is None or text_column is None:
+                print(
+                    f"  Warning: could not detect audio/text columns in {tsv_file}. "
+                    f"Header: {list(header_lookup.values())}"
+                )
+                continue
+
+            for line_number, row_dict in dict_rows:
+                audio_filename = (row_dict.get(audio_column) or "").strip()
+                if not audio_filename:
+                    continue
+
+                transcription_raw = row_dict.get(text_column, "")
+                transcription = (
+                    str(transcription_raw).strip()
+                    if transcription_raw is not None
+                    else ""
+                )
+                if not transcription:
+                    continue
+
+                if keep_prob < 1.0 and rng.random() > keep_prob:
+                    continue
+
+                audio_path = resolve_audio(audio_filename)
+                if audio_path:
+                    yield {"audio": {"path": audio_path}, "text": transcription}
+                    kept += 1
+                    if limit and kept >= limit:
+                        return
+                elif audio_filename not in missing_logged:
+                    print(
+                        f"  Warning (line {line_number}): audio file '{audio_filename}' not found under {audio_dir_abs}"
                     )
                     missing_logged.add(audio_filename)
 
@@ -940,6 +1211,54 @@ def prepare_group(
             if spec.group != group:
                 continue
             dataset_id = sanitize_name(spec.repo)
+            if spec.repo == "google/fleurs":
+                if not spec.subset:
+                    print(
+                        f"[{group}] skipping {spec.repo} because no subset was provided."
+                    )
+                    continue
+                with dataset_cache_context(cache_mode, cache_dir) as cache_path:
+                    local_dir = download_fleurs_subset(
+                        spec.subset, cache_path, spec.revision
+                    )
+                    for split in spec.splits:
+                        print(
+                            f"[{group}] loading {spec.repo} split={split} (subset={spec.subset})"
+                        )
+                        items = iter_fleurs_items(
+                            local_dir=local_dir,
+                            subset=spec.subset,
+                            split=split,
+                            percentage=spec.percentage,
+                            seed=spec.seed
+                            if spec.seed is not None
+                            else DEFAULT_SAMPLING_SEED,
+                            limit=limit,
+                        )
+                        audio_root = output_dir / "audio" / group / dataset_id / split
+                        counts = process_items(
+                            items,
+                            output_dir=output_dir,
+                            audio_root=audio_root,
+                            manifest_file=manifest_file,
+                            desc=f"{dataset_id}:{split}",
+                            sample_rate=sample_rate,
+                            no_resample=no_resample,
+                            mono=mono,
+                            min_duration=min_duration,
+                            max_duration=max_duration,
+                            min_chars=min_chars,
+                            max_chars=max_chars,
+                            absolute_paths=absolute_paths,
+                        )
+                        print(
+                            f"[{group}] {spec.repo}:{split} "
+                            f"total={counts['total']} kept={counts['kept']} "
+                            f"no_text={counts['no_text']} no_audio={counts['no_audio']} "
+                            f"dur_filtered={counts['dur_filtered']} text_filtered={counts['text_filtered']} "
+                            f"failed={counts['failed']}"
+                        )
+                continue
             if spec.repo == "mozilla-foundation/common_voice_17_0":
                 if not spec.subset:
                     print(
