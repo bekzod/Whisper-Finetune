@@ -6,6 +6,7 @@ output/
 dataset/*
 !dataset/test.wav
 !dataset/test_long.wav
+nemo_uz_dataset/
 test.py
 checkpoint-*
 .DS_Store

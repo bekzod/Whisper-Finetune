@@ -11,6 +11,13 @@ import webvtt
 
 from nemo.utils import _APOSTROPHE_TRANSLATION
 
+_VTT_TIMESTAMP_LINE_RE = re.compile(
+    r"^(?P<start>\d{2}:\d{2}(?::\d{2})?\.\d{3})\s*-->\s*(?P<end>\d{2}:\d{2}(?::\d{2})?\.\d{3})"
+)
+_VTT_WORD_TAG_RE = re.compile(
+    r"<(?P<ts>\d{2}:\d{2}(?::\d{2})?\.\d{3})><c>(?P<word>[^<]*)</c>"
+)
+
 
 def run(cmd: List[str]) -> None:
     p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -187,6 +194,73 @@ def parse_vtt_to_cues(vtt_path: Path) -> List[Tuple[float, float, str]]:
     return cues
 
 
+def parse_vtt_to_word_segments(
+    vtt_path: Path,
+) -> List[Tuple[float, float, str]]:
+    cues = _parse_vtt_raw_cues(vtt_path)
+    has_word_tags = any(_VTT_WORD_TAG_RE.search(text or "") for _, _, text in cues)
+    segments: List[Tuple[float, float, str]] = []
+    last_end = 0.0
+
+    for start, end, raw_text in cues:
+        raw = html.unescape(raw_text or "")
+        matches = list(_VTT_WORD_TAG_RE.finditer(raw))
+        if matches:
+            first_ts = _parse_timestamp(matches[0].group("ts"))
+            prefix = clean_caption_text(raw[: matches[0].start()])
+            prefix_words = _split_words(prefix)
+            include_prefix = not segments or (start - last_end) > 1.0
+            if include_prefix and prefix_words:
+                segments.extend(
+                    _spread_words(prefix_words, start, max(start, first_ts))
+                )
+                last_end = segments[-1][1]
+
+            for idx, match in enumerate(matches):
+                word_text = clean_caption_text(match.group("word"))
+                tokens = _split_words(word_text)
+                if not tokens:
+                    continue
+                word_start = _parse_timestamp(match.group("ts"))
+                if idx + 1 < len(matches):
+                    next_start = _parse_timestamp(matches[idx + 1].group("ts"))
+                else:
+                    next_start = end
+                word_end = max(word_start, min(next_start, end))
+
+                if len(tokens) == 1:
+                    token_segments = [(word_start, word_end, tokens[0])]
+                else:
+                    token_segments = _spread_words(tokens, word_start, word_end)
+
+                for seg_start, seg_end, token in token_segments:
+                    if segments and seg_start < segments[-1][0] - 0.001:
+                        continue
+                    if (
+                        segments
+                        and seg_start <= segments[-1][1]
+                        and token == segments[-1][2]
+                    ):
+                        continue
+                    segments.append((seg_start, seg_end, token))
+                    last_end = seg_end
+            continue
+
+        cleaned = clean_caption_text(raw)
+        if not cleaned:
+            continue
+        words = _split_words(cleaned)
+        if not words:
+            continue
+        if has_word_tags:
+            continue
+        segments.extend(_spread_words(words, start, end))
+        last_end = segments[-1][1]
+
+    segments.sort(key=lambda item: item[0])
+    return segments
+
+
 def _parse_timestamp(ts: str) -> float:
     # WebVTT timestamps: HH:MM:SS.mmm or MM:SS.mmm
     parts = ts.split(":")
@@ -201,6 +275,75 @@ def _parse_timestamp(ts: str) -> float:
     else:
         raise ValueError(f"Unrecognized timestamp: {ts}")
     return h * 3600 + m * 60 + s
+
+
+def _parse_vtt_raw_cues(vtt_path: Path) -> List[Tuple[float, float, str]]:
+    cues: List[Tuple[float, float, str]] = []
+    lines = vtt_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    idx = 0
+    while idx < len(lines):
+        line = lines[idx].strip()
+        if not line:
+            idx += 1
+            continue
+        match = _VTT_TIMESTAMP_LINE_RE.match(line)
+        if not match:
+            idx += 1
+            continue
+        start = _parse_timestamp(match.group("start"))
+        end = _parse_timestamp(match.group("end"))
+        idx += 1
+        text_lines: List[str] = []
+        while idx < len(lines) and lines[idx].strip():
+            text_lines.append(lines[idx])
+            idx += 1
+        cues.append((start, end, "\n".join(text_lines)))
+    return cues
+
+
+def _split_words(text: str) -> List[str]:
+    return [token for token in text.split() if token]
+
+
+def _spread_words(
+    words: List[str], start: float, end: float
+) -> List[Tuple[float, float, str]]:
+    if not words:
+        return []
+    if end <= start:
+        end = start + (0.05 * len(words))
+    step = (end - start) / float(len(words))
+    segments: List[Tuple[float, float, str]] = []
+    for idx, word in enumerate(words):
+        seg_start = start + (idx * step)
+        seg_end = end if idx == len(words) - 1 else start + ((idx + 1) * step)
+        segments.append((seg_start, seg_end, word))
+    return segments
+
+
+def sentences_for_slice(
+    word_segments: List[Tuple[float, float, str]],
+    slice_start: float,
+    slice_end: float,
+) -> List[dict]:
+    sentences: List[dict] = []
+    for seg_start, seg_end, token in word_segments:
+        if seg_end <= slice_start:
+            continue
+        if seg_start >= slice_end:
+            break
+        rel_start = max(seg_start, slice_start) - slice_start
+        rel_end = min(seg_end, slice_end) - slice_start
+        if rel_end <= rel_start:
+            continue
+        sentences.append(
+            {
+                "start": round(rel_start, 3),
+                "end": round(rel_end, 3),
+                "text": token,
+            }
+        )
+    return sentences
 
 
 def pack_cues_into_slices(
@@ -347,14 +490,19 @@ def main():
                 continue
             print(f"Subtitles: {vtt_path.name}")
 
-            cues = parse_vtt_to_cues(vtt_path)
-            if not cues:
-                print("No usable cues in VTT. Skipping.")
-                continue
-
-            slices = pack_cues_into_slices(
-                cues, min_sec=args.min_sec, max_sec=args.max_sec
-            )
+            word_segments = parse_vtt_to_word_segments(vtt_path)
+            if word_segments:
+                slices = pack_cues_into_slices(
+                    word_segments, min_sec=args.min_sec, max_sec=args.max_sec
+                )
+            else:
+                cues = parse_vtt_to_cues(vtt_path)
+                if not cues:
+                    print("No usable cues in VTT. Skipping.")
+                    continue
+                slices = pack_cues_into_slices(
+                    cues, min_sec=args.min_sec, max_sec=args.max_sec
+                )
             if not slices:
                 print("No slices produced after packing. Skipping.")
                 continue
@@ -390,10 +538,19 @@ def main():
                 except ValueError:
                     rel_path = slice_path
 
+                if word_segments:
+                    slice_end = min(e, s + dur)
+                    sentences = sentences_for_slice(word_segments, s, slice_end)
+                    if not sentences:
+                        continue
+                    txt = " ".join(seg["text"] for seg in sentences).strip()
+                else:
+                    sentences = [{"start": 0.0, "end": float(dur), "text": txt}]
+
                 entry = {
                     "audio": str(rel_path),
                     "duration": float(dur),
-                    "sentences": [{"start": 0.0, "end": float(dur), "text": txt}],
+                    "sentences": sentences,
                     "text": txt,
                 }
                 mf.write(json.dumps(entry, ensure_ascii=False) + "\n")
