@@ -54,6 +54,7 @@ DEFAULT_MAX_DURATION = 30.0
 DEFAULT_MIN_CHARS = 1
 DEFAULT_MAX_CHARS = 680
 DEFAULT_SAMPLING_SEED = 3407
+DEFAULT_CACHE_ROOT = Path("/workspace")
 
 _HF_AUDIO_CANDIDATE_KEYS = (
     "audio",
@@ -408,12 +409,7 @@ def read_audio_from_item(
 
 def download_common_voice_subset(subset: str, cache_root: Optional[Path]) -> Path:
     if cache_root is None:
-        cache_root = Path(
-            os.getenv(
-                "HF_DATASETS_CACHE",
-                os.path.expanduser("~/.cache/huggingface/datasets"),
-            )
-        )
+        cache_root = DEFAULT_CACHE_ROOT
     local_dir = cache_root / "mozilla_common_voice" / subset
     local_dir.mkdir(parents=True, exist_ok=True)
     snapshot_download(
@@ -433,12 +429,7 @@ def download_fleurs_subset(
     subset: str, cache_root: Optional[Path], revision: Optional[str]
 ) -> Path:
     if cache_root is None:
-        cache_root = Path(
-            os.getenv(
-                "HF_DATASETS_CACHE",
-                os.path.expanduser("~/.cache/huggingface/datasets"),
-            )
-        )
+        cache_root = DEFAULT_CACHE_ROOT
     local_dir = cache_root / "google_fleurs" / subset
     local_dir.mkdir(parents=True, exist_ok=True)
     snapshot_download(
@@ -1066,6 +1057,9 @@ def apply_dataset_filter(ds, filter_fn, label: str):
 def dataset_cache_context(
     cache_mode: str, cache_root: Optional[Path]
 ) -> Optional[Path]:
+    if cache_root is None:
+        cache_root = DEFAULT_CACHE_ROOT
+    cache_root.mkdir(parents=True, exist_ok=True)
     if cache_mode == "default":
         yield cache_root
         return
