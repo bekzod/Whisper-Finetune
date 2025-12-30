@@ -3,7 +3,6 @@ set -euo pipefail
 
 python prepare_tokenizer.py \
   --manifest "output/train_manifest.jsonl,output/eval_manifest.jsonl" \
-  --data_root "tokenizers/uzbek" \
   --vocab_size 2048 \
   --tokenizer "spe" \
   --spe_type "bpe" \
