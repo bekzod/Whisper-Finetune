@@ -7,10 +7,6 @@
       "percentage": 100
     },
     {
-      "name": "islomov/it_youtube_uzbek_speech_dataset",
-      "splits": ["train"]
-    },
-    {
       "name": "islomov/podcasts_tashkent_dialect_youtube_uzbek_speech_dataset",
       "splits": ["train"]
     },
