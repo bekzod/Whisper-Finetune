@@ -60,8 +60,12 @@ DEFAULT_MAX_CHARS = 680
 DEFAULT_SAMPLING_SEED = 3407
 DEFAULT_CACHE_ROOT = Path("/workspace")
 MAX_TAR_PATH_COMPONENT = 240
-DEFAULT_HF_LOAD_RETRIES = int(getattr(hf_constants, "HF_HUB_MAX_RETRIES", 10))
-DEFAULT_HF_RETRY_WAIT = 30.0
+# HuggingFace Hub quota: 2500 requests per 5 minutes (300s).
+# Use conservative retry settings to avoid exceeding rate limits.
+DEFAULT_HF_LOAD_RETRIES = 5
+DEFAULT_HF_RETRY_WAIT = (
+    120.0  # 2 minutes base backoff; exponential: 120s, 240s, 480s, ...
+)
 
 _HF_AUDIO_CANDIDATE_KEYS = (
     "audio",
