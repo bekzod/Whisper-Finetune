@@ -1,4 +1,5 @@
 import argparse
+import html
 import json
 import re
 import subprocess
@@ -165,8 +166,10 @@ def download_uzbek_vtt(
 
 def clean_caption_text(text: str) -> str:
     # Remove VTT markup/HTML entities lightly; keep Uzbek characters intact.
-    t = re.sub(r"<[^>]+>", "", text)  # tags
+    t = html.unescape(text)
+    t = re.sub(r"<[^>]+>", "", t)  # tags
     t = t.replace("&nbsp;", " ")
+    t = " ".join(part.strip() for part in t.split(">>") if part.strip())
     t = t.translate(_APOSTROPHE_TRANSLATION)
     t = re.sub(r"\s+", " ", t).strip()
     return t
@@ -382,9 +385,15 @@ def main():
                 if dur < 0.1:
                     continue
 
+                try:
+                    rel_path = slice_path.resolve().relative_to(out_dir.resolve())
+                except ValueError:
+                    rel_path = slice_path
+
                 entry = {
-                    "audio_filepath": str(slice_path.resolve()),
+                    "audio": str(rel_path),
                     "duration": float(dur),
+                    "sentences": [{"start": 0.0, "end": float(dur), "text": txt}],
                     "text": txt,
                 }
                 mf.write(json.dumps(entry, ensure_ascii=False) + "\n")
