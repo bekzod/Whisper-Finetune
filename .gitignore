@@ -8,3 +8,4 @@ dataset/*
 !dataset/test_long.wav
 test.py
 checkpoint-*
+.DS_Store
