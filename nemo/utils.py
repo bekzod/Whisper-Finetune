@@ -6,6 +6,9 @@ from __future__ import annotations
 import re
 from typing import Any
 
+# Regex to match C or c NOT followed by h or H
+_STANDALONE_C_RE = re.compile(r"[Cc](?![Hh])")
+
 _APOSTROPHE_TRANSLATION = str.maketrans(
     {
         "\u2019": "'",
@@ -123,4 +126,15 @@ def _transliterate_uzbek_cyrillic(text: str) -> str:
     return "".join(_UZBEK_CYRILLIC_TO_LATIN.get(char, char) for char in text)
 
 
-__all__ = ["normalize_text"]
+def contains_standalone_c(text: str) -> bool:
+    """Check if text contains 'C' or 'c' not followed by 'h' or 'H'.
+
+    Returns True if the text contains a standalone C/c (i.e., not part of Ch/ch).
+    Used to filter out dataset items with invalid characters.
+    """
+    if not text:
+        return False
+    return bool(_STANDALONE_C_RE.search(text))
+
+
+__all__ = ["normalize_text", "contains_standalone_c"]

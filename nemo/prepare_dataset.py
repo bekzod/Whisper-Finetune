@@ -50,6 +50,7 @@ def _load_cleanup_utils() -> Any:
 
 _cleanup_utils = _load_cleanup_utils()
 normalize_text = _cleanup_utils.normalize_text
+contains_standalone_c = _cleanup_utils.contains_standalone_c
 
 MAX_TRANSCRIPT_CHAR_LIMIT = 680
 DEFAULT_SAMPLE_RATE = 16000
@@ -1405,6 +1406,10 @@ def process_items(
         if max_chars != -1:
             effective_max = min(effective_max, max_chars)
         if len(transcript) > effective_max:
+            counts["text_filtered"] += 1
+            continue
+        # Filter out items containing C/c not followed by h (standalone C/c)
+        if contains_standalone_c(transcript):
             counts["text_filtered"] += 1
             continue
 
