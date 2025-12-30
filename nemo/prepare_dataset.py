@@ -4,11 +4,13 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
 import random
 import re
+import shutil
 import sys
 import tarfile
 import tempfile
@@ -16,7 +18,7 @@ from collections.abc import Iterable as IterableCollection
 from contextlib import contextmanager
 from dataclasses import dataclass
 from itertools import chain
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import librosa
@@ -447,6 +449,28 @@ def download_fleurs_subset(
     return local_dir
 
 
+def _hash_path_component(component: str, *, force: bool = False) -> str:
+    if not force and len(component) <= MAX_TAR_PATH_COMPONENT:
+        return component
+    base, ext = os.path.splitext(component)
+    digest = hashlib.md5(component.encode("utf-8")).hexdigest()
+    if ext and len(ext) <= 10:
+        return f"{digest}{ext}"
+    return digest
+
+
+def _shorten_rel_path(rel_path: str, *, force_filename_hash: bool = False) -> str:
+    parts = PurePosixPath(rel_path).parts
+    if not parts:
+        return rel_path
+    if force_filename_hash:
+        *dirs, last = parts
+        hashed_dirs = [_hash_path_component(part) for part in dirs]
+        hashed_last = _hash_path_component(last, force=True)
+        return "/".join([*hashed_dirs, hashed_last])
+    return "/".join(_hash_path_component(part) for part in parts)
+
+
 def _safe_extract_tarball(
     root_path: Path, tar_name: str, tar_root_to_subdirs: Dict[str, set]
 ) -> None:
@@ -464,25 +488,47 @@ def _safe_extract_tarball(
         return
     tar_path = root_abs / tar_name
     mode = "r:gz" if tar_name.endswith(".tar.gz") else "r:"
+
+    def _extract_with_target(member: tarfile.TarInfo, rel_name: str) -> None:
+        dest_path = root_abs / rel_name
+        if member.isdir():
+            dest_path.mkdir(parents=True, exist_ok=True)
+            return
+        if not member.isfile():
+            print(
+                f"  Warning: skipping unsupported tar entry in {tar_name}: {member.name}"
+            )
+            return
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        file_obj = tar.extractfile(member)
+        if file_obj is None:
+            return
+        with file_obj:
+            with open(dest_path, "wb") as out_f:
+                shutil.copyfileobj(file_obj, out_f)
+
     with tarfile.open(tar_path, mode) as tar:
         for member in tar:
-            member_path = Path(member.name)
+            member_path = PurePosixPath(member.name)
             parts = member_path.parts
-            if any(len(part) > MAX_TAR_PATH_COMPONENT for part in parts):
-                print(
-                    f"  Warning: skipping tar entry with long path in {tar_name}: {member.name}"
-                )
-                continue
             if member_path.is_absolute() or ".." in parts:
                 raise RuntimeError(
                     f"Blocked path traversal while extracting {tar_name}"
                 )
+            shortened_name = _shorten_rel_path(member.name)
+            if shortened_name != member.name:
+                print(
+                    f"  Warning: shortening tar entry in {tar_name}: {member.name} -> {shortened_name}"
+                )
+                _extract_with_target(member, shortened_name)
+                continue
             try:
                 target_path = (root_abs / member.name).resolve()
             except OSError as exc:
-                print(
-                    f"  Warning: skipping tar entry in {tar_name} due to path error: {member.name} ({exc})"
-                )
+                print(f"  Warning: path error in {tar_name} for {member.name}: {exc}")
+                forced_name = _shorten_rel_path(member.name, force_filename_hash=True)
+                if forced_name != member.name:
+                    _extract_with_target(member, forced_name)
                 continue
             if os.path.commonpath([str(root_abs), str(target_path)]) != str(root_abs):
                 raise RuntimeError(
@@ -494,6 +540,9 @@ def _safe_extract_tarball(
                 print(
                     f"  Warning: failed to extract {member.name} from {tar_name}: {exc}"
                 )
+                forced_name = _shorten_rel_path(member.name, force_filename_hash=True)
+                if forced_name != member.name:
+                    _extract_with_target(member, forced_name)
                 continue
 
     marker_path.write_text("extracted", encoding="utf-8")
@@ -749,8 +798,29 @@ def iter_fleurs_items(
         normalized = str(filename).strip().replace("\\", os.sep)
 
         direct = audio_dir_abs / normalized
-        if direct.exists():
-            return str(direct)
+        try:
+            if direct.exists():
+                return str(direct)
+        except OSError:
+            pass
+
+        shortened = _shorten_rel_path(normalized)
+        if shortened != normalized:
+            direct_short = audio_dir_abs / shortened
+            try:
+                if direct_short.exists():
+                    return str(direct_short)
+            except OSError:
+                pass
+
+        forced = _shorten_rel_path(normalized, force_filename_hash=True)
+        if forced != normalized:
+            direct_forced = audio_dir_abs / forced
+            try:
+                if direct_forced.exists():
+                    return str(direct_forced)
+            except OSError:
+                pass
 
         base = os.path.basename(normalized)
         if base in path_index:
@@ -762,8 +832,20 @@ def iter_fleurs_items(
                 cand = base_no_ext + suf
                 if cand in path_index:
                     return path_index[cand]
+                shortened_cand = _hash_path_component(cand)
+                if shortened_cand != cand and shortened_cand in path_index:
+                    return path_index[shortened_cand]
+                forced_cand = _hash_path_component(cand, force=True)
+                if forced_cand != cand and forced_cand in path_index:
+                    return path_index[forced_cand]
         if base_no_ext in noext_index:
             return noext_index[base_no_ext]
+        shortened_base = _hash_path_component(base)
+        if shortened_base != base and shortened_base in path_index:
+            return path_index[shortened_base]
+        forced_base = _hash_path_component(base, force=True)
+        if forced_base != base and forced_base in path_index:
+            return path_index[forced_base]
 
         return None
 
