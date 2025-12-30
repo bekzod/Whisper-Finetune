@@ -14,6 +14,7 @@ import shutil
 import sys
 import tarfile
 import tempfile
+import time
 from collections.abc import Iterable as IterableCollection
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -168,6 +169,42 @@ def parse_args() -> argparse.Namespace:
         help="Optional HuggingFace token for gated datasets.",
     )
     parser.add_argument(
+        "--hf-read-timeout",
+        type=int,
+        default=None,
+        help="Override HF_HUB_READ_TIMEOUT in seconds for Hub requests.",
+    )
+    parser.add_argument(
+        "--hf-connect-timeout",
+        type=int,
+        default=None,
+        help="Override HF_HUB_CONNECT_TIMEOUT in seconds for Hub requests.",
+    )
+    parser.add_argument(
+        "--hf-etag-timeout",
+        type=int,
+        default=None,
+        help="Override HF_HUB_ETAG_TIMEOUT in seconds for Hub metadata calls.",
+    )
+    parser.add_argument(
+        "--hf-max-retries",
+        type=int,
+        default=None,
+        help="Override HF_HUB_MAX_RETRIES for Hub HTTP retries.",
+    )
+    parser.add_argument(
+        "--hf-load-retries",
+        type=int,
+        default=2,
+        help="Retry load_dataset on transient network errors (default: 2).",
+    )
+    parser.add_argument(
+        "--hf-retry-wait",
+        type=float,
+        default=5.0,
+        help="Base backoff in seconds between load_dataset retries (default: 5).",
+    )
+    parser.add_argument(
         "--sample-rate",
         type=int,
         default=DEFAULT_SAMPLE_RATE,
@@ -233,6 +270,92 @@ def parse_args() -> argparse.Namespace:
         help="Optional max rows per split for quick smoke tests.",
     )
     return parser.parse_args()
+
+
+def _configure_hf_http_settings(
+    read_timeout: Optional[int],
+    connect_timeout: Optional[int],
+    etag_timeout: Optional[int],
+    max_retries: Optional[int],
+) -> None:
+    try:
+        from huggingface_hub import constants as hf_constants
+    except Exception:
+        hf_constants = None
+
+    settings = {
+        "HF_HUB_READ_TIMEOUT": read_timeout,
+        "HF_HUB_CONNECT_TIMEOUT": connect_timeout,
+        "HF_HUB_ETAG_TIMEOUT": etag_timeout,
+        "HF_HUB_MAX_RETRIES": max_retries,
+    }
+    for key, value in settings.items():
+        if value is None:
+            continue
+        os.environ[key] = str(value)
+        if hf_constants is not None and hasattr(hf_constants, key):
+            setattr(hf_constants, key, value)
+
+    if hf_constants is None or not hasattr(hf_constants, "DEFAULT_REQUEST_TIMEOUT"):
+        return
+    current_timeout = hf_constants.DEFAULT_REQUEST_TIMEOUT
+    if isinstance(current_timeout, tuple) and len(current_timeout) == 2:
+        current_connect, current_read = current_timeout
+        new_connect = (
+            connect_timeout if connect_timeout is not None else current_connect
+        )
+        new_read = read_timeout if read_timeout is not None else current_read
+        hf_constants.DEFAULT_REQUEST_TIMEOUT = (new_connect, new_read)
+    elif read_timeout is not None:
+        hf_constants.DEFAULT_REQUEST_TIMEOUT = read_timeout
+
+
+def _is_retryable_hf_error(exc: BaseException) -> bool:
+    if isinstance(exc, TimeoutError):
+        return True
+    message = str(exc).lower()
+    retry_markers = (
+        "read timed out",
+        "read timeout",
+        "read operation timed out",
+        "timed out",
+        "timeout",
+        "connection reset",
+        "connection aborted",
+        "connection broken",
+        "temporarily unavailable",
+        "service unavailable",
+        "bad gateway",
+        "gateway timeout",
+        "502",
+        "503",
+        "504",
+    )
+    return any(marker in message for marker in retry_markers)
+
+
+def _load_dataset_with_retries(
+    repo: str,
+    load_kwargs: Dict[str, Any],
+    max_retries: int,
+    retry_wait: float,
+) -> Any:
+    retries = max(0, max_retries)
+    delay = max(0.0, retry_wait)
+    attempt = 0
+    while True:
+        try:
+            return load_dataset(repo, **load_kwargs)
+        except Exception as exc:
+            if attempt >= retries or not _is_retryable_hf_error(exc):
+                raise
+            sleep_for = delay * (2**attempt)
+            print(
+                f"  Network error while loading {repo}; retrying in {sleep_for:.1f}s "
+                f"({attempt + 1}/{retries}): {exc}"
+            )
+            time.sleep(sleep_for)
+            attempt += 1
 
 
 def load_dataset_config(path: Path) -> Dict[str, Sequence[Dict[str, Any]]]:
@@ -1300,6 +1423,8 @@ def prepare_group(
     max_chars: int,
     absolute_paths: bool,
     limit: Optional[int],
+    hf_load_retries: int,
+    hf_retry_wait: float,
 ) -> None:
     manifest_path = output_dir / f"{group}_manifest.jsonl"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1426,7 +1551,12 @@ def prepare_group(
                     if hf_token:
                         load_kwargs["use_auth_token"] = hf_token
 
-                    ds = load_dataset(spec.repo, **load_kwargs)
+                    ds = _load_dataset_with_retries(
+                        spec.repo,
+                        load_kwargs,
+                        hf_load_retries,
+                        hf_retry_wait,
+                    )
                     filter_fn = get_filter_fn(spec.repo)
                     if filter_fn is not None:
                         print(f"  Applying dataset filter for {spec.repo}")
@@ -1465,6 +1595,12 @@ def prepare_group(
 
 def main() -> None:
     args = parse_args()
+    _configure_hf_http_settings(
+        args.hf_read_timeout,
+        args.hf_connect_timeout,
+        args.hf_etag_timeout,
+        args.hf_max_retries,
+    )
     config = load_dataset_config(args.config)
     specs = list(
         iter_dataset_specs(config, args.groups, default_splits=args.default_splits)
@@ -1493,6 +1629,8 @@ def main() -> None:
             max_chars=args.max_chars,
             absolute_paths=args.absolute_paths,
             limit=args.limit,
+            hf_load_retries=args.hf_load_retries,
+            hf_retry_wait=args.hf_retry_wait,
         )
 
 
