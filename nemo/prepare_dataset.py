@@ -26,6 +26,7 @@ import librosa
 import numpy as np
 import soundfile as sf
 from datasets import load_dataset
+from huggingface_hub import constants as hf_constants
 from huggingface_hub import snapshot_download
 from tqdm import tqdm
 
@@ -59,6 +60,8 @@ DEFAULT_MAX_CHARS = 680
 DEFAULT_SAMPLING_SEED = 3407
 DEFAULT_CACHE_ROOT = Path("/workspace")
 MAX_TAR_PATH_COMPONENT = 240
+DEFAULT_HF_LOAD_RETRIES = int(getattr(hf_constants, "HF_HUB_MAX_RETRIES", 5))
+DEFAULT_HF_RETRY_WAIT = 2.0
 
 _HF_AUDIO_CANDIDATE_KEYS = (
     "audio",
@@ -195,14 +198,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--hf-load-retries",
         type=int,
-        default=2,
-        help="Retry load_dataset on transient network errors (default: 2).",
+        default=DEFAULT_HF_LOAD_RETRIES,
+        help=(
+            "Retry load_dataset on transient network errors "
+            f"(default: {DEFAULT_HF_LOAD_RETRIES})."
+        ),
     )
     parser.add_argument(
         "--hf-retry-wait",
         type=float,
-        default=5.0,
-        help="Base backoff in seconds between load_dataset retries (default: 5).",
+        default=DEFAULT_HF_RETRY_WAIT,
+        help=(
+            "Base backoff in seconds between load_dataset retries "
+            f"(default: {DEFAULT_HF_RETRY_WAIT:g})."
+        ),
     )
     parser.add_argument(
         "--sample-rate",
@@ -1423,8 +1432,8 @@ def prepare_group(
     max_chars: int,
     absolute_paths: bool,
     limit: Optional[int],
-    hf_load_retries: int,
-    hf_retry_wait: float,
+    hf_load_retries: int = DEFAULT_HF_LOAD_RETRIES,
+    hf_retry_wait: float = DEFAULT_HF_RETRY_WAIT,
 ) -> None:
     manifest_path = output_dir / f"{group}_manifest.jsonl"
     output_dir.mkdir(parents=True, exist_ok=True)
