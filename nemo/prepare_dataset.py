@@ -581,10 +581,13 @@ def download_common_voice_subset(subset: str, cache_root: Optional[Path]) -> Pat
         cache_root = DEFAULT_CACHE_ROOT
     local_dir = cache_root / "mozilla_common_voice" / subset
     local_dir.mkdir(parents=True, exist_ok=True)
-    print(f"  Downloading mozilla-foundation/common_voice_17_0 files to {local_dir}")
+    # Use fsicoli/common_voice_17_0 mirror since Mozilla removed the original
+    # dataset from HuggingFace (moved to Mozilla Data Collective as of Oct 2025)
+    repo_id = "fsicoli/common_voice_17_0"
+    print(f"  Downloading {repo_id} files to {local_dir}")
     print(f"  Patterns: audio/{subset}/*, transcript/{subset}/*")
     snapshot_download(
-        repo_id="mozilla-foundation/common_voice_17_0",
+        repo_id=repo_id,
         repo_type="dataset",
         allow_patterns=[
             f"audio/{subset}/*",
@@ -1568,7 +1571,10 @@ def prepare_group(
                             f"failed={counts['failed']}"
                         )
                 continue
-            if spec.repo == "mozilla-foundation/common_voice_17_0":
+            if spec.repo in (
+                "mozilla-foundation/common_voice_17_0",
+                "fsicoli/common_voice_17_0",
+            ):
                 if not spec.subset:
                     print(
                         f"[{group}] skipping {spec.repo} because no subset was provided."
