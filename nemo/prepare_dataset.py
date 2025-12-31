@@ -60,7 +60,7 @@ DEFAULT_MIN_CHARS = 1
 DEFAULT_MAX_CHARS = 680
 DEFAULT_SAMPLING_SEED = 3407
 DEFAULT_CACHE_ROOT = Path("/workspace")
-MAX_TAR_PATH_COMPONENT = 480
+MAX_TAR_PATH_COMPONENT = 960
 DEFAULT_HF_LOAD_RETRIES = 8
 DEFAULT_HF_RETRY_WAIT = (
     240  # 4 minutes base backoff; exponential: 240s, 480s, 960s, ...
@@ -437,56 +437,72 @@ def coerce_splits(raw_value: Any, default_splits: Sequence[str]) -> List[str]:
     raise TypeError(f"Unsupported split definition: {raw_value!r}")
 
 
+def _parse_percentage(value: Any, entry: Dict[str, Any]) -> Optional[float]:
+    """Parse and validate percentage from config entry."""
+    if value is None:
+        return None
+    try:
+        percentage = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"Invalid percentage value '{value}' for entry {entry}"
+        ) from exc
+    if not (0 < percentage <= 100):
+        raise ValueError(
+            f"Percentage must be within (0, 100], got {percentage} for entry {entry}"
+        )
+    return percentage
+
+
+def _parse_seed(value: Any, entry: Dict[str, Any]) -> Optional[int]:
+    """Parse and validate seed from config entry."""
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"Seed must be an integer, got {value!r} for entry {entry}"
+        ) from exc
+
+
+def _parse_entry(
+    entry: Dict[str, Any], group: str, default_splits: Sequence[str]
+) -> Optional[DatasetSpec]:
+    """Parse a single config entry into a DatasetSpec."""
+    name = entry.get("name") or entry.get("hf") or entry.get("huggingface")
+    if not name:
+        return None
+
+    repo, revision_inline, subset_inline = parse_repo_spec(str(name))
+
+    return DatasetSpec(
+        group=group,
+        repo=repo,
+        subset=entry.get("subset") or subset_inline,
+        revision=entry.get("revision") or revision_inline,
+        splits=coerce_splits(entry.get("splits") or entry.get("split"), default_splits),
+        percentage=_parse_percentage(entry.get("percentage"), entry),
+        seed=_parse_seed(entry.get("seed"), entry),
+        data_dir=entry.get("data_dir"),
+        data_files=entry.get("data_files"),
+        trust_remote_code=entry.get("trust_remote_code"),
+    )
+
+
 def iter_dataset_specs(
     config: Dict[str, Sequence[Dict[str, Any]]],
     groups: Sequence[str],
     default_splits: Sequence[str],
 ) -> Iterable[DatasetSpec]:
+    """Iterate over dataset specifications from config."""
     for group in groups:
         for entry in config.get(group, []):
             if not isinstance(entry, dict):
                 continue
-            name = entry.get("name") or entry.get("hf") or entry.get("huggingface")
-            if not name:
-                continue
-            repo, revision_inline, subset_inline = parse_repo_spec(str(name))
-            subset = entry.get("subset") or subset_inline
-            revision = entry.get("revision") or revision_inline
-            splits = coerce_splits(
-                entry.get("splits") or entry.get("split"), default_splits
-            )
-            percentage = entry.get("percentage")
-            if percentage is not None:
-                try:
-                    percentage = float(percentage)
-                except (TypeError, ValueError) as exc:
-                    raise ValueError(
-                        f"Invalid percentage value '{percentage}' for entry {entry}"
-                    ) from exc
-                if not (0 < percentage <= 100):
-                    raise ValueError(
-                        f"Percentage must be within (0, 100], got {percentage} for entry {entry}"
-                    )
-            seed = entry.get("seed")
-            if seed is not None:
-                try:
-                    seed = int(seed)
-                except (TypeError, ValueError) as exc:
-                    raise ValueError(
-                        f"Seed must be an integer, got {seed!r} for entry {entry}"
-                    ) from exc
-            yield DatasetSpec(
-                group=group,
-                repo=repo,
-                subset=subset,
-                revision=revision,
-                splits=splits,
-                percentage=percentage,
-                seed=seed,
-                data_dir=entry.get("data_dir"),
-                data_files=entry.get("data_files"),
-                trust_remote_code=entry.get("trust_remote_code"),
-            )
+            spec = _parse_entry(entry, group, default_splits)
+            if spec is not None:
+                yield spec
 
 
 def _flatten_transcript_text(transcript: Any) -> str:
@@ -522,29 +538,59 @@ def pick_text(item: Dict[str, Any]) -> str:
     return ""
 
 
+def _try_extract_array_from_dict(
+    blob: Dict[str, Any],
+) -> Tuple[Optional[np.ndarray], Optional[int], Optional[str]]:
+    """Attempt to extract audio array from a dict blob."""
+    array_candidate = blob.get("array")
+    if array_candidate is None:
+        return None, None, None
+
+    try:
+        arr = np.asarray(array_candidate, dtype=np.float32)
+    except Exception:
+        return None, None, None
+
+    if arr is None or arr.size == 0:
+        return None, None, None
+
+    sample_rate = int(blob.get("sampling_rate") or 0) or None
+    return arr, sample_rate, blob.get("path")
+
+
+def _try_extract_path_from_dict(blob: Dict[str, Any]) -> Optional[str]:
+    """Attempt to extract audio file path from a dict blob."""
+    path_keys = ("path", "audio_path", "audio_filepath", "filename", "file")
+    for key in path_keys:
+        ref = blob.get(key)
+        if isinstance(ref, str) and ref:
+            return ref
+    return None
+
+
 def resolve_audio_blob(
     blob: Any,
 ) -> Tuple[Optional[np.ndarray], Optional[int], Optional[str]]:
+    """Extract audio data from various blob formats.
+
+    Args:
+        blob: Audio data in various formats (dict with 'array'/'path',
+              numpy array, string path, or PathLike).
+
+    Returns:
+        Tuple of (audio_array, sample_rate, file_path). At least one of
+        audio_array or file_path will be non-None on success.
+    """
     if blob is None:
         return None, None, None
+
     if isinstance(blob, dict):
-        array_candidate = blob.get("array")
-        if array_candidate is not None:
-            try:
-                arr = np.asarray(array_candidate, dtype=np.float32)
-            except Exception:
-                arr = None
-            if arr is not None and arr.size > 0:
-                return (
-                    arr,
-                    int(blob.get("sampling_rate") or 0) or None,
-                    blob.get("path"),
-                )
-        for key in ("path", "audio_path", "audio_filepath", "filename", "file"):
-            ref = blob.get(key)
-            if isinstance(ref, str) and ref:
-                return None, None, ref
-        return None, None, None
+        arr, sr, path = _try_extract_array_from_dict(blob)
+        if arr is not None:
+            return arr, sr, path
+        ref = _try_extract_path_from_dict(blob)
+        return None, None, ref
+
     if isinstance(blob, (list, tuple, np.ndarray)):
         try:
             arr = np.asarray(blob, dtype=np.float32)
@@ -553,10 +599,13 @@ def resolve_audio_blob(
         if arr.size == 0:
             return None, None, None
         return arr, None, None
+
     if isinstance(blob, str):
         return None, None, blob
-    if hasattr(os, "PathLike") and isinstance(blob, os.PathLike):
+
+    if isinstance(blob, os.PathLike):
         return None, None, os.fspath(blob)
+
     return None, None, None
 
 
@@ -1202,6 +1251,46 @@ def iter_fleurs_items(
                     missing_logged.add(audio_filename)
 
 
+def _load_audio_from_file(
+    ref: str, mono: bool
+) -> Tuple[Optional[np.ndarray], Optional[int]]:
+    """Load audio samples from a file path."""
+    try:
+        samples, sample_rate = sf.read(ref, dtype="float32", always_2d=True)
+    except Exception:
+        return None, None
+
+    if mono:
+        samples = samples.mean(axis=1).astype(np.float32)
+    else:
+        samples = samples.astype(np.float32)
+
+    return samples, int(sample_rate)
+
+
+def _convert_to_mono(arr: np.ndarray) -> np.ndarray:
+    """Convert multi-channel audio to mono."""
+    if arr.ndim == 2:
+        return arr.mean(axis=1).astype(np.float32)
+    return arr
+
+
+def _resample_audio(arr: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
+    """Resample audio to target sample rate."""
+    if arr.ndim == 1:
+        return librosa.resample(arr, orig_sr=orig_sr, target_sr=target_sr).astype(
+            np.float32
+        )
+
+    channels = [
+        librosa.resample(arr[:, ch], orig_sr=orig_sr, target_sr=target_sr).astype(
+            np.float32
+        )
+        for ch in range(arr.shape[1])
+    ]
+    return np.stack(channels, axis=1)
+
+
 def load_audio(
     arr: Optional[np.ndarray],
     sr: Optional[int],
@@ -1211,48 +1300,40 @@ def load_audio(
     mono: bool,
     no_resample: bool,
 ) -> Tuple[Optional[np.ndarray], Optional[int]]:
+    """Load and optionally resample audio data.
+
+    Args:
+        arr: Pre-loaded audio array, or None to load from file.
+        sr: Sample rate of the pre-loaded array.
+        ref: File path to load audio from (used if arr is None).
+        target_sr: Target sample rate for resampling.
+        mono: Whether to convert to mono.
+        no_resample: If True, skip resampling.
+
+    Returns:
+        Tuple of (audio_array, sample_rate), or (None, None) on failure.
+    """
+    # Load from file if no array provided
     if arr is None:
         if not ref:
             return None, None
-        try:
-            samples, sample_rate = sf.read(ref, dtype="float32", always_2d=True)
-        except Exception:
+        arr, sr = _load_audio_from_file(ref, mono)
+        if arr is None:
             return None, None
-        if mono:
-            samples = samples.mean(axis=1).astype(np.float32)
-        else:
-            samples = samples.astype(np.float32)
-        arr = samples
-        sr = int(sample_rate)
     else:
         arr = arr.astype(np.float32, copy=False)
-        if arr.ndim == 2:
-            if mono:
-                arr = arr.mean(axis=1).astype(np.float32)
-            else:
-                arr = arr.astype(np.float32)
+        if mono:
+            arr = _convert_to_mono(arr)
 
-    if arr is None or arr.size == 0:
+    # Validate loaded audio
+    if arr is None or arr.size == 0 or sr is None:
         return None, None
 
-    if sr is None:
-        return None, None
-
+    # Resample if needed
     if not no_resample and target_sr and sr != target_sr:
-        if arr.ndim == 1:
-            arr = librosa.resample(arr, orig_sr=sr, target_sr=target_sr).astype(
-                np.float32
-            )
-        else:
-            channels = []
-            for ch in range(arr.shape[1]):
-                channels.append(
-                    librosa.resample(
-                        arr[:, ch], orig_sr=sr, target_sr=target_sr
-                    ).astype(np.float32)
-                )
-            arr = np.stack(channels, axis=1)
+        arr = _resample_audio(arr, sr, target_sr)
         sr = target_sr
+
     return arr, sr
 
 
