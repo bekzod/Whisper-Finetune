@@ -3,8 +3,7 @@
     {
       "name": "mozilla-foundation/common_voice_17_0",
       "subset": "uz",
-      "splits": ["train", "test"],
-      "percentage": 100
+      "splits": ["train", "test"]
     }
   ],
   "eval": [
