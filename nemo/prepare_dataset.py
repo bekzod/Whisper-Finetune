@@ -576,14 +576,25 @@ def read_audio_from_item(
     return None, None, None
 
 
-def download_common_voice_subset(subset: str, cache_root: Optional[Path]) -> Path:
+def download_common_voice_subset(
+    repo_id: str, subset: str, cache_root: Optional[Path]
+) -> Path:
+    """Download Common Voice dataset files for a specific language subset.
+
+    Args:
+        repo_id: HuggingFace repository ID (e.g., 'fsicoli/common_voice_17_0').
+        subset: Language code (e.g., 'uz' for Uzbek).
+        cache_root: Root directory for caching downloaded files.
+
+    Returns:
+        Path to the local directory containing downloaded files.
+    """
     if cache_root is None:
         cache_root = DEFAULT_CACHE_ROOT
-    local_dir = cache_root / "mozilla_common_voice" / subset
+    # Use sanitized repo name for cache directory
+    repo_name = sanitize_name(repo_id)
+    local_dir = cache_root / repo_name / subset
     local_dir.mkdir(parents=True, exist_ok=True)
-    # Use fsicoli/common_voice_17_0 mirror since Mozilla removed the original
-    # dataset from HuggingFace (moved to Mozilla Data Collective as of Oct 2025)
-    repo_id = "fsicoli/common_voice_17_0"
     print(f"  Downloading {repo_id} files to {local_dir}")
     print(f"  Patterns: audio/{subset}/*, transcript/{subset}/*")
     snapshot_download(
@@ -596,20 +607,6 @@ def download_common_voice_subset(subset: str, cache_root: Optional[Path]) -> Pat
         local_dir=str(local_dir),
         local_dir_use_symlinks=False,
     )
-    # Debug: list what was downloaded
-    print(f"  Downloaded to: {local_dir}")
-    if local_dir.exists():
-        for item in local_dir.iterdir():
-            print(f"    - {item.name}/ " if item.is_dir() else f"    - {item.name}")
-            if item.is_dir():
-                for subitem in item.iterdir():
-                    print(
-                        f"      - {subitem.name}/ "
-                        if subitem.is_dir()
-                        else f"      - {subitem.name}"
-                    )
-    else:
-        print(f"  WARNING: local_dir does not exist after download!")
     return local_dir
 
 
@@ -746,26 +743,6 @@ def iter_common_voice_items(
     transcript_dir = local_dir / "transcript" / subset
     audio_dir_abs = audio_dir.resolve()
 
-    # Debug: Check directory structure
-    print(f"  Debug: local_dir={local_dir}")
-    print(f"  Debug: audio_dir={audio_dir} (exists={audio_dir.exists()})")
-    print(
-        f"  Debug: transcript_dir={transcript_dir} (exists={transcript_dir.exists()})"
-    )
-    if transcript_dir.exists():
-        tsv_files = list(transcript_dir.glob("*.tsv"))
-        print(
-            f"  Debug: Found {len(tsv_files)} TSV files: {[f.name for f in tsv_files]}"
-        )
-    else:
-        print(f"  Debug: transcript_dir does not exist!")
-        # Try to find TSV files anywhere under local_dir
-        all_tsvs = list(local_dir.rglob("*.tsv"))
-        if all_tsvs:
-            print(
-                f"  Debug: Found TSV files elsewhere: {[str(f.relative_to(local_dir)) for f in all_tsvs[:10]]}"
-            )
-
     tar_root_to_subdirs: Dict[str, set] = {}
     if audio_dir_abs.is_dir():
         for current_dir, _, files in os.walk(audio_dir_abs):
@@ -886,10 +863,8 @@ def iter_common_voice_items(
     kept = 0
 
     seen_tsv: set = set()
-    print(f"  Debug: Looking for TSV variants: {subset_variants}")
     for variant in subset_variants or ["train", "validation", "test"]:
         tsv_file = transcript_dir / f"{variant}.tsv"
-        print(f"  Debug: Checking {tsv_file} (exists={tsv_file.exists()})")
         if not tsv_file.exists() or str(tsv_file) in seen_tsv:
             continue
         seen_tsv.add(str(tsv_file))
@@ -1581,7 +1556,9 @@ def prepare_group(
                     )
                     continue
                 with dataset_cache_context(cache_mode, cache_dir) as cache_path:
-                    local_dir = download_common_voice_subset(spec.subset, cache_path)
+                    local_dir = download_common_voice_subset(
+                        spec.repo, spec.subset, cache_path
+                    )
                     for split in spec.splits:
                         print(
                             f"[{group}] loading {spec.repo} split={split} (subset={spec.subset})"
