@@ -1353,27 +1353,27 @@ def dataset_cache_context(
         yield cache_root
         return
 
-    temp_dir = tempfile.TemporaryDirectory(
-        prefix="hf_cache_", dir=str(cache_root) if cache_root else None
-    )
-    tmp_path = Path(temp_dir.name)
+    # Use a persistent cache directory instead of a temporary one.
+    # This allows reusing downloaded datasets across runs.
+    persistent_cache = cache_root / "hf_cache"
+    persistent_cache.mkdir(parents=True, exist_ok=True)
     prev_env = {
         "HF_HOME": os.environ.get("HF_HOME"),
         "HF_DATASETS_CACHE": os.environ.get("HF_DATASETS_CACHE"),
         "HUGGINGFACE_HUB_CACHE": os.environ.get("HUGGINGFACE_HUB_CACHE"),
     }
-    os.environ["HF_HOME"] = str(tmp_path)
-    os.environ["HF_DATASETS_CACHE"] = str(tmp_path)
-    os.environ["HUGGINGFACE_HUB_CACHE"] = str(tmp_path / "hub")
+    os.environ["HF_HOME"] = str(persistent_cache)
+    os.environ["HF_DATASETS_CACHE"] = str(persistent_cache)
+    os.environ["HUGGINGFACE_HUB_CACHE"] = str(persistent_cache / "hub")
     try:
-        yield tmp_path
+        yield persistent_cache
     finally:
         for key, value in prev_env.items():
             if value is None:
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
-        temp_dir.cleanup()
+        # Do not cleanup - reuse the cache for subsequent runs
 
 
 def to_manifest_path(output_dir: Path, audio_path: Path, absolute: bool) -> str:
