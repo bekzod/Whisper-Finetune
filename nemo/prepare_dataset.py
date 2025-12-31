@@ -671,6 +671,8 @@ def _safe_extract_tarball(
     tar_path = root_abs / tar_name
     mode = "r:gz" if tar_name.endswith(".tar.gz") else "r:"
 
+    print(f"  Extracting {tar_name}...")
+
     def _extract_with_target(member: tarfile.TarInfo, rel_name: str) -> None:
         dest_path = root_abs / rel_name
         if member.isdir():
@@ -690,7 +692,8 @@ def _safe_extract_tarball(
                 shutil.copyfileobj(file_obj, out_f)
 
     with tarfile.open(tar_path, mode) as tar:
-        for member in tar:
+        members = tar.getmembers()
+        for member in tqdm(members, desc=f"    {tar_name}", unit="files"):
             member_path = PurePosixPath(member.name)
             parts = member_path.parts
             if member_path.is_absolute() or ".." in parts:
