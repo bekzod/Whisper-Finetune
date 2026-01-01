@@ -635,13 +635,53 @@ def _looks_like_audio_path(s: str) -> bool:
     return False
 
 
+def _read_audio_from_bytes(
+    audio_bytes: bytes, mono: bool = True
+) -> Tuple[Optional[np.ndarray], Optional[int]]:
+    """Read audio data from raw bytes."""
+    try:
+        import io
+
+        samples, sample_rate = sf.read(
+            io.BytesIO(audio_bytes), dtype="float32", always_2d=True
+        )
+        if mono:
+            samples = samples.mean(axis=1).astype(np.float32)
+        else:
+            samples = samples.astype(np.float32)
+        return samples, int(sample_rate)
+    except Exception as exc:
+        print(f"  [DEBUG] Failed to read audio from bytes: {exc}")
+        return None, None
+
+
 def resolve_audio_blob(
     blob: Any,
+    mono: bool = True,
 ) -> Tuple[Optional[np.ndarray], Optional[int], Optional[str]]:
+    """
+    Resolve various audio representations to (array, sample_rate, path_reference).
+
+    Handles:
+    - dict with 'array' key (decoded HuggingFace Audio)
+    - dict with 'bytes' key (raw audio bytes)
+    - dict with 'path' key (file path reference)
+    - raw numpy array or list
+    - file path string
+    - bytes/bytearray
+    """
     if blob is None:
         return None, None, None
     if isinstance(blob, dict):
+        # Try to get decoded array first
         array_candidate = blob.get("array")
+        # Also check alternative keys used by some datasets
+        if array_candidate is None:
+            for alt_key in ("waveform", "samples", "values"):
+                if alt_key in blob and blob[alt_key] is not None:
+                    array_candidate = blob[alt_key]
+                    break
+
         if array_candidate is not None:
             try:
                 arr = np.asarray(array_candidate, dtype=np.float32)
@@ -653,11 +693,21 @@ def resolve_audio_blob(
                     int(blob.get("sampling_rate") or 0) or None,
                     blob.get("path"),
                 )
+
+        # Check for raw bytes (some datasets provide audio as bytes)
+        bytes_value = blob.get("bytes")
+        if isinstance(bytes_value, (bytes, bytearray, memoryview)):
+            arr, sr = _read_audio_from_bytes(bytes(bytes_value), mono=mono)
+            if arr is not None:
+                return arr, sr, None
+
+        # Fall back to path reference
         for key in ("path", "audio_path", "audio_filepath", "filename", "file"):
             ref = blob.get(key)
             if isinstance(ref, str) and ref and _looks_like_audio_path(ref):
                 return None, None, ref
         return None, None, None
+
     if isinstance(blob, (list, tuple, np.ndarray)):
         try:
             arr = np.asarray(blob, dtype=np.float32)
@@ -666,11 +716,20 @@ def resolve_audio_blob(
         if arr.size == 0:
             return None, None, None
         return arr, None, None
+
+    # Handle raw bytes
+    if isinstance(blob, (bytes, bytearray, memoryview)):
+        arr, sr = _read_audio_from_bytes(bytes(blob), mono=mono)
+        if arr is not None:
+            return arr, sr, None
+        return None, None, None
+
     if isinstance(blob, str):
         # Only treat as audio path if it looks like a file path, not arbitrary text
         if _looks_like_audio_path(blob):
             return None, None, blob
         return None, None, None
+
     if hasattr(os, "PathLike") and isinstance(blob, os.PathLike):
         return None, None, os.fspath(blob)
     return None, None, None
@@ -1451,6 +1510,7 @@ def load_audio(
     if arr is None:
         if not ref:
             return None, None
+        # Regular file path
         try:
             samples, sample_rate = sf.read(ref, dtype="float32", always_2d=True)
         except Exception as exc:
@@ -1980,30 +2040,85 @@ def _process_single_spec(
                 hf_retry_wait,
                 hf_rate_limit_wait,
             )
-            # Debug: print dataset features
+            # Debug: print dataset features and first item
             print(f"  [DEBUG] Dataset features: {ds.features}")
             print(f"  [DEBUG] Dataset columns: {ds.column_names}")
+            print(f"  [DEBUG] Dataset length: {len(ds)}")
+
+            # Print first 3 items raw structure before any processing
+            print(f"  [DEBUG] First 3 raw items from dataset:")
+            for i in range(min(3, len(ds))):
+                item = ds[i]
+                print(f"    [DEBUG] Item {i}:")
+                for k, v in item.items():
+                    v_type = type(v).__name__
+                    if v is None:
+                        print(f"      {k}: None")
+                    elif isinstance(v, dict):
+                        dict_keys = list(v.keys())
+                        has_array = "array" in v and v["array"] is not None
+                        sr = v.get("sampling_rate")
+                        path = v.get("path")
+                        print(
+                            f"      {k}: dict with keys={dict_keys}, has_array={has_array}, sr={sr}, path={str(path)[:80] if path else None}"
+                        )
+                    elif isinstance(v, str):
+                        print(
+                            f"      {k}: str = '{v[:100]}{'...' if len(v) > 100 else ''}'"
+                        )
+                    else:
+                        print(f"      {k}: {v_type} = {str(v)[:100]}")
 
             # Ensure Audio features are decoded - find and cast audio columns
+            audio_columns_found = []
             for col_name in ds.column_names:
                 feature = ds.features.get(col_name)
                 if feature is None:
                     continue
+                feature_str = str(feature)
+                feature_type = type(feature).__name__
+                print(
+                    f"  [DEBUG] Column '{col_name}': feature_type={feature_type}, feature_str={feature_str[:100]}"
+                )
                 # Check if it's an Audio feature type
                 is_audio_feature = (
                     isinstance(feature, Audio)
-                    or type(feature).__name__ == "Audio"
-                    or str(feature).startswith("Audio")
+                    or feature_type == "Audio"
+                    or feature_str.startswith("Audio")
+                    or "audio" in feature_str.lower()
                     or (
                         hasattr(feature, "dtype")
                         and "audio" in str(getattr(feature, "dtype", "")).lower()
                     )
                 )
                 if is_audio_feature:
+                    audio_columns_found.append(col_name)
                     print(
-                        f"  [DEBUG] Casting audio column '{col_name}' to ensure decoding (feature type: {type(feature).__name__})"
+                        f"  [DEBUG] Casting audio column '{col_name}' to ensure decoding (feature type: {feature_type})"
                     )
                     ds = ds.cast_column(col_name, Audio(sampling_rate=16000))
+
+            if not audio_columns_found:
+                print(
+                    f"  [WARNING] No audio columns detected! Available columns: {ds.column_names}"
+                )
+
+            # Print first item AFTER audio casting to verify decoding
+            if len(ds) > 0:
+                print(f"  [DEBUG] First item AFTER audio casting:")
+                item = ds[0]
+                for k, v in item.items():
+                    if isinstance(v, dict):
+                        has_array = "array" in v and v["array"] is not None
+                        array_len = len(v["array"]) if has_array else 0
+                        sr = v.get("sampling_rate")
+                        print(
+                            f"      {k}: dict has_array={has_array}, array_len={array_len}, sr={sr}"
+                        )
+                    elif isinstance(v, str):
+                        print(f"      {k}: str = '{v[:60]}...'")
+                    else:
+                        print(f"      {k}: {type(v).__name__}")
             filter_fn = get_filter_fn(spec.repo)
             if filter_fn is not None:
                 print(f"  Applying dataset filter for {spec.repo}")
