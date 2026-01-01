@@ -47,6 +47,30 @@ def main():
         feature = ds.features.get(col_name)
         print(f"   - {col_name}: {type(feature).__name__} = {feature}")
 
+    def try_decode_audio(v):
+        """Try to decode an AudioDecoder or similar object."""
+        # Check if it's an AudioDecoder (callable)
+        if callable(v):
+            try:
+                decoded = v()
+                if isinstance(decoded, dict):
+                    return decoded
+            except Exception as e:
+                print(f"         Failed to call decoder: {e}")
+
+        # Check for array/sampling_rate attributes
+        if hasattr(v, "array") and hasattr(v, "sampling_rate"):
+            try:
+                return {
+                    "array": v.array,
+                    "sampling_rate": v.sampling_rate,
+                    "path": getattr(v, "path", None),
+                }
+            except Exception as e:
+                print(f"         Failed to access attributes: {e}")
+
+        return None
+
     print(f"\n3. First 3 raw items (BEFORE any casting)")
     print("-" * 40)
     for i in range(min(3, len(ds))):
@@ -71,6 +95,24 @@ def main():
                 print(f"         array: {array_info}")
                 print(f"         sampling_rate: {sr}")
                 print(f"         path: {path}")
+            elif "AudioDecoder" in v_type or "Decoder" in v_type:
+                print(f"      {k}: {v_type} (lazy decoder)")
+                # Try to decode it
+                decoded = try_decode_audio(v)
+                if decoded:
+                    arr = decoded.get("array")
+                    sr = decoded.get("sampling_rate")
+                    if arr is not None:
+                        arr = np.asarray(arr)
+                        print(
+                            f"         ✓ Decoded: shape={arr.shape}, dtype={arr.dtype}, sr={sr}"
+                        )
+                    else:
+                        print(
+                            f"         ✗ Decoded but no array, keys={list(decoded.keys())}"
+                        )
+                else:
+                    print(f"         ✗ Failed to decode")
             elif isinstance(v, str):
                 preview = v[:80] + "..." if len(v) > 80 else v
                 print(f"      {k}: str = '{preview}'")
@@ -137,6 +179,24 @@ def main():
                         print(f"         array_info: {array_info}")
                         print(f"         sampling_rate: {sr}")
                         print(f"         path: {path}")
+                    elif "AudioDecoder" in v_type or "Decoder" in v_type:
+                        print(
+                            f"      {k}: {v_type} (lazy decoder) - STILL NOT DECODED!"
+                        )
+                        # Try to decode it
+                        decoded = try_decode_audio(v)
+                        if decoded:
+                            arr = decoded.get("array")
+                            sr = decoded.get("sampling_rate")
+                            if arr is not None:
+                                arr = np.asarray(arr)
+                                print(
+                                    f"         ✓ Manual decode: shape={arr.shape}, dtype={arr.dtype}, sr={sr}"
+                                )
+                            else:
+                                print(f"         ✗ Manual decode but no array")
+                        else:
+                            print(f"         ✗ Manual decode failed")
                     elif isinstance(v, str):
                         preview = v[:80] + "..." if len(v) > 80 else v
                         print(f"      {k}: str = '{preview}'")

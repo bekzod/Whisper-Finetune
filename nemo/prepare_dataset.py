@@ -655,6 +655,61 @@ def _read_audio_from_bytes(
         return None, None
 
 
+def _decode_audio_decoder(
+    decoder: Any, mono: bool = True
+) -> Tuple[Optional[np.ndarray], Optional[int]]:
+    """
+    Decode an AudioDecoder object from newer HuggingFace datasets versions.
+
+    AudioDecoder is a lazy decoder that needs to be called to get audio data.
+    """
+    try:
+        # Try calling the decoder (newer HF datasets API)
+        if callable(decoder):
+            decoded = decoder()
+            if isinstance(decoded, dict):
+                arr = decoded.get("array")
+                sr = decoded.get("sampling_rate")
+                if arr is not None:
+                    arr = np.asarray(arr, dtype=np.float32)
+                    if mono and arr.ndim == 2:
+                        arr = arr.mean(axis=0).astype(np.float32)
+                    elif mono and arr.ndim == 1:
+                        pass  # already mono
+                    return arr, int(sr) if sr else None
+
+        # Try accessing as an object with array attribute
+        if hasattr(decoder, "array") and hasattr(decoder, "sampling_rate"):
+            arr = np.asarray(decoder.array, dtype=np.float32)
+            sr = int(decoder.sampling_rate) if decoder.sampling_rate else None
+            if mono and arr.ndim == 2:
+                arr = arr.mean(axis=0).astype(np.float32)
+            return arr, sr
+
+        # Try the __call__ method explicitly
+        if hasattr(decoder, "__call__"):
+            result = decoder.__call__()
+            if isinstance(result, dict):
+                arr = result.get("array")
+                sr = result.get("sampling_rate")
+                if arr is not None:
+                    arr = np.asarray(arr, dtype=np.float32)
+                    if mono and arr.ndim == 2:
+                        arr = arr.mean(axis=0).astype(np.float32)
+                    return arr, int(sr) if sr else None
+            elif isinstance(result, tuple) and len(result) >= 2:
+                arr, sr = result[0], result[1]
+                arr = np.asarray(arr, dtype=np.float32)
+                if mono and arr.ndim == 2:
+                    arr = arr.mean(axis=0).astype(np.float32)
+                return arr, int(sr) if sr else None
+
+    except Exception as e:
+        print(f"  [DEBUG] Failed to decode AudioDecoder: {e}")
+
+    return None, None
+
+
 def resolve_audio_blob(
     blob: Any,
     mono: bool = True,
@@ -663,6 +718,7 @@ def resolve_audio_blob(
     Resolve various audio representations to (array, sample_rate, path_reference).
 
     Handles:
+    - AudioDecoder objects (lazy decoding from newer HuggingFace datasets)
     - dict with 'array' key (decoded HuggingFace Audio)
     - dict with 'bytes' key (raw audio bytes)
     - dict with 'path' key (file path reference)
@@ -672,6 +728,15 @@ def resolve_audio_blob(
     """
     if blob is None:
         return None, None, None
+
+    # Handle AudioDecoder objects from newer HuggingFace datasets
+    blob_type_name = type(blob).__name__
+    if "AudioDecoder" in blob_type_name or "Decoder" in blob_type_name:
+        arr, sr = _decode_audio_decoder(blob, mono=mono)
+        if arr is not None:
+            return arr, sr, None
+        # If decoding failed, continue to try other methods
+
     if isinstance(blob, dict):
         # Try to get decoded array first
         array_candidate = blob.get("array")
@@ -762,6 +827,11 @@ def read_audio_from_item(
                     except:
                         pass
                 blob_preview = f"dict keys={dict_info}, has_array={has_array}, array_shape={array_shape}, sr={blob.get('sampling_rate')}"
+            elif (
+                "AudioDecoder" in type(blob).__name__
+                or "Decoder" in type(blob).__name__
+            ):
+                blob_preview = f"AudioDecoder object (lazy decoding)"
             else:
                 blob_preview = str(blob)[:100]
             print(
