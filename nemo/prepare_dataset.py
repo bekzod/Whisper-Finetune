@@ -25,7 +25,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 import librosa
 import numpy as np
 import soundfile as sf
-from datasets import load_dataset
+from datasets import Audio, load_dataset
 from huggingface_hub import constants as hf_constants
 from huggingface_hub import snapshot_download
 from tqdm import tqdm
@@ -1572,6 +1572,7 @@ def process_items(
     max_chars: int,
     absolute_paths: bool,
     frequency_collector: Optional["WordFrequencyCollector"] = None,
+    debug: bool = False,
 ) -> Dict[str, int]:
     counts = {
         "total": 0,
@@ -1587,11 +1588,23 @@ def process_items(
         counts["total"] += 1
         if not isinstance(item, dict):
             counts["failed"] += 1
+            if debug and idx < 3:
+                print(f"  [DEBUG] Item {idx}: not a dict, type={type(item).__name__}")
             continue
+
+        # Debug: print first few items' structure
+        if debug and idx < 3:
+            print(f"  [DEBUG] Item {idx} keys: {list(item.keys())}")
+            for k, v in item.items():
+                v_type = type(v).__name__
+                v_preview = repr(v)[:100] if v is not None else "None"
+                print(f"    {k}: {v_type} = {v_preview}")
 
         transcript = pick_text(item)
         if not transcript:
             counts["no_text"] += 1
+            if debug and idx < 5:
+                print(f"  [DEBUG] Item {idx}: no text found")
             continue
         if len(transcript) < min_chars:
             counts["text_filtered"] += 1
@@ -1608,6 +1621,10 @@ def process_items(
             continue
 
         arr, sr, ref = read_audio_from_item(item)
+        if debug and idx < 5:
+            print(
+                f"  [DEBUG] Item {idx}: audio read result: arr={arr is not None}, sr={sr}, ref={ref}"
+            )
         arr, sr = load_audio(
             arr,
             sr,
@@ -1618,6 +1635,8 @@ def process_items(
         )
         if arr is None or sr is None:
             counts["no_audio"] += 1
+            if debug and idx < 5:
+                print(f"  [DEBUG] Item {idx}: no audio after load_audio")
             continue
 
         duration = float(arr.shape[0] / float(sr))
@@ -1775,6 +1794,7 @@ def _process_single_spec(
                     max_chars=max_chars,
                     absolute_paths=absolute_paths,
                     frequency_collector=frequency_collector,
+                    debug=True,
                 )
                 print(
                     f"[{group}] {spec.repo}:{split} "
@@ -1821,6 +1841,7 @@ def _process_single_spec(
                     max_chars=max_chars,
                     absolute_paths=absolute_paths,
                     frequency_collector=frequency_collector,
+                    debug=True,
                 )
                 print(
                     f"[{group}] {spec.repo}:{split} "
@@ -1860,6 +1881,24 @@ def _process_single_spec(
                 hf_retry_wait,
                 hf_rate_limit_wait,
             )
+            # Debug: print dataset features
+            print(f"  [DEBUG] Dataset features: {ds.features}")
+            print(f"  [DEBUG] Dataset columns: {ds.column_names}")
+
+            # Ensure Audio features are decoded - find and cast audio columns
+            for col_name in ds.column_names:
+                feature = ds.features.get(col_name)
+                if feature is not None and (
+                    str(feature).startswith("Audio")
+                    or (
+                        hasattr(feature, "dtype")
+                        and "audio" in str(getattr(feature, "dtype", "")).lower()
+                    )
+                ):
+                    print(
+                        f"  [DEBUG] Casting audio column '{col_name}' to ensure decoding"
+                    )
+                    ds = ds.cast_column(col_name, Audio(sampling_rate=16000))
             filter_fn = get_filter_fn(spec.repo)
             if filter_fn is not None:
                 print(f"  Applying dataset filter for {spec.repo}")
@@ -1887,6 +1926,7 @@ def _process_single_spec(
                 max_chars=max_chars,
                 absolute_paths=absolute_paths,
                 frequency_collector=frequency_collector,
+                debug=True,
             )
             print(
                 f"[{group}] {spec.repo}:{split} "
