@@ -5,12 +5,5 @@
       "splits": ["train"]
     }
   ],
-  "eval": [
-    {
-      "name": "fsicoli/common_voice_18_0",
-      "subset": "uz",
-      "splits": ["validation"],
-      "percentage": 50
-    }
-  ]
+  "eval": []
 }
