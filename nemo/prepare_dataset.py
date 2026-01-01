@@ -579,6 +579,62 @@ def pick_text(item: Dict[str, Any]) -> str:
     return ""
 
 
+# Common audio file extensions for path validation
+_AUDIO_EXTENSIONS = frozenset(
+    {
+        ".wav",
+        ".mp3",
+        ".flac",
+        ".ogg",
+        ".m4a",
+        ".aac",
+        ".wma",
+        ".opus",
+        ".webm",
+        ".mp4",
+        ".aiff",
+        ".aif",
+        ".au",
+        ".raw",
+        ".pcm",
+        ".sph",
+    }
+)
+
+
+def _looks_like_audio_path(s: str) -> bool:
+    """Check if a string looks like an audio file path rather than plain text.
+
+    Returns True if the string:
+    - Has a recognized audio file extension, OR
+    - Contains path separators (/ or \) suggesting it's a file path
+    - AND does not contain multiple spaces (suggesting it's text/sentence)
+    """
+    if not s or len(s) > 1000:  # Too long to be a reasonable path
+        return False
+    # If it contains multiple consecutive spaces, it's likely text
+    if "  " in s:
+        return False
+    # Check for audio file extension
+    s_lower = s.lower()
+    for ext in _AUDIO_EXTENSIONS:
+        if s_lower.endswith(ext):
+            return True
+    # Check if it looks like a file path (contains path separators)
+    if "/" in s or "\\" in s:
+        # But filter out things that look like sentences with slashes
+        # (e.g., "this/that" patterns in text)
+        # Real paths typically have extensions or start with common patterns
+        if any(s_lower.endswith(ext) for ext in _AUDIO_EXTENSIONS):
+            return True
+        # Paths often start with / or ./ or drive letters
+        if s.startswith("/") or s.startswith("./") or s.startswith("../"):
+            return True
+        if len(s) > 2 and s[1] == ":" and s[2] == "\\":  # Windows drive path
+            return True
+    return False
+
+
 def resolve_audio_blob(
     blob: Any,
 ) -> Tuple[Optional[np.ndarray], Optional[int], Optional[str]]:
@@ -599,7 +655,7 @@ def resolve_audio_blob(
                 )
         for key in ("path", "audio_path", "audio_filepath", "filename", "file"):
             ref = blob.get(key)
-            if isinstance(ref, str) and ref:
+            if isinstance(ref, str) and ref and _looks_like_audio_path(ref):
                 return None, None, ref
         return None, None, None
     if isinstance(blob, (list, tuple, np.ndarray)):
@@ -611,7 +667,10 @@ def resolve_audio_blob(
             return None, None, None
         return arr, None, None
     if isinstance(blob, str):
-        return None, None, blob
+        # Only treat as audio path if it looks like a file path, not arbitrary text
+        if _looks_like_audio_path(blob):
+            return None, None, blob
+        return None, None, None
     if hasattr(os, "PathLike") and isinstance(blob, os.PathLike):
         return None, None, os.fspath(blob)
     return None, None, None
@@ -628,9 +687,26 @@ def read_audio_from_item(
         blob = item.get(key)
         if debug:
             blob_type = type(blob).__name__
-            blob_preview = str(blob)[:100] if blob is not None else "None"
+            if blob is None:
+                blob_preview = "None"
+            elif isinstance(blob, dict):
+                # Show dict keys and types for audio dicts
+                dict_info = {k: type(v).__name__ for k, v in blob.items()}
+                has_array = "array" in blob and blob["array"] is not None
+                array_shape = None
+                if has_array:
+                    try:
+                        import numpy as np
+
+                        arr = np.asarray(blob["array"])
+                        array_shape = arr.shape
+                    except:
+                        pass
+                blob_preview = f"dict keys={dict_info}, has_array={has_array}, array_shape={array_shape}, sr={blob.get('sampling_rate')}"
+            else:
+                blob_preview = str(blob)[:100]
             print(
-                f"    [DEBUG] read_audio_from_item: checking key='{key}', type={blob_type}, preview={blob_preview}"
+                f"    [DEBUG] read_audio_from_item: key='{key}', type={blob_type}, {blob_preview}"
             )
         arr, sr, ref = resolve_audio_blob(blob)
         if arr is not None or ref:
