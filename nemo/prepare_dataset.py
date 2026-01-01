@@ -594,7 +594,12 @@ def sanitize_name(name: str) -> str:
     return cleaned or "dataset"
 
 
-def pick_text(item: Dict[str, Any]) -> str:
+def pick_text(item: Dict[str, Any], text_key: Optional[str] = None) -> str:
+    if text_key:
+        value = item.get(text_key)
+        if value is not None:
+            text = _flatten_transcript_text(value)
+            return unicodedata.normalize("NFKC", text)
     if "sentences" in item and item["sentences"] is not None:
         text = _flatten_transcript_text(item["sentences"])
         return unicodedata.normalize("NFKC", text)
@@ -603,6 +608,83 @@ def pick_text(item: Dict[str, Any]) -> str:
             text = _flatten_transcript_text(item[key])
             return unicodedata.normalize("NFKC", text)
     return ""
+
+
+def _detect_text_key_from_columns(column_names: Sequence[str]) -> Optional[str]:
+    lookup = {str(name).lower(): name for name in column_names}
+    for key in ("sentences",) + _HF_TEXT_CANDIDATE_KEYS:
+        match = lookup.get(key)
+        if match is not None:
+            return match
+    return None
+
+
+def _detect_audio_key_from_columns(column_names: Sequence[str]) -> Optional[str]:
+    lookup = {str(name).lower(): name for name in column_names}
+    for key in _HF_AUDIO_CANDIDATE_KEYS:
+        match = lookup.get(key)
+        if match is not None:
+            return match
+    return None
+
+
+def _detect_audio_key_from_features(features: Any) -> Optional[str]:
+    if features is None:
+        return None
+    try:
+        for key, feature in features.items():
+            if isinstance(feature, Audio):
+                return key
+    except Exception:
+        return None
+    return None
+
+
+def _detect_text_key_from_item(item: Dict[str, Any]) -> Optional[str]:
+    if "sentences" in item and item["sentences"] is not None:
+        return "sentences"
+    for key in _HF_TEXT_CANDIDATE_KEYS:
+        if key in item and item[key] is not None:
+            return key
+    return None
+
+
+def _detect_audio_key_from_item(item: Dict[str, Any]) -> Optional[str]:
+    for key in _HF_AUDIO_CANDIDATE_KEYS:
+        if key not in item:
+            continue
+        arr, sr, ref = resolve_audio_blob(item.get(key))
+        if arr is not None or ref:
+            return key
+    return None
+
+
+def _detect_preferred_keys(
+    items: Iterable[Dict[str, Any]],
+) -> Tuple[Optional[str], Optional[str]]:
+    text_key = None
+    audio_key = None
+    columns: Optional[List[str]] = None
+
+    column_names = getattr(items, "column_names", None)
+    if column_names:
+        columns = list(column_names)
+
+    features = getattr(items, "features", None)
+    if columns is None and features is not None:
+        try:
+            columns = list(features.keys())
+        except Exception:
+            columns = None
+
+    if columns:
+        text_key = _detect_text_key_from_columns(columns)
+
+    audio_key = _detect_audio_key_from_features(features)
+    if audio_key is None and columns:
+        audio_key = _detect_audio_key_from_columns(columns)
+
+    return text_key, audio_key
 
 
 # Common audio file extensions for path validation
@@ -859,9 +941,18 @@ def resolve_audio_blob(
 
 def read_audio_from_item(
     item: Dict[str, Any],
+    audio_key: Optional[str] = None,
 ) -> Tuple[Optional[np.ndarray], Optional[int], Optional[str]]:
+    if audio_key:
+        blob = item.get(audio_key)
+        if blob is not None:
+            arr, sr, ref = resolve_audio_blob(blob)
+            if arr is not None or ref:
+                return arr, sr, ref
     # First try known audio column names
     for key in _HF_AUDIO_CANDIDATE_KEYS:
+        if key == audio_key:
+            continue
         if key not in item:
             continue
         blob = item.get(key)
@@ -870,6 +961,8 @@ def read_audio_from_item(
             return arr, sr, ref
     # Fallback: try all values
     for key, value in item.items():
+        if key == audio_key:
+            continue
         if key in _HF_AUDIO_CANDIDATE_KEYS:
             continue  # Already checked
         arr, sr, ref = resolve_audio_blob(value)
@@ -1876,8 +1969,9 @@ def _process_audio_item(
     max_duration: float,
     max_chars_per_sec: Optional[float],
     compute_audio_hash: bool,
+    audio_key: Optional[str] = None,
 ) -> AudioProcessResult:
-    arr, sr, ref = read_audio_from_item(item)
+    arr, sr, ref = read_audio_from_item(item, audio_key=audio_key)
     arr, sr = load_audio(
         arr,
         sr,
@@ -1961,6 +2055,27 @@ def process_items(
     elif dedupe_index is None:
         dedupe_index = {}
 
+    total = None
+    try:
+        total = len(items)  # type: ignore[arg-type]
+    except Exception:
+        total = None
+
+    text_key, audio_key = _detect_preferred_keys(items)
+    items_iterable: Iterable[Dict[str, Any]] = items
+    if text_key is None or audio_key is None:
+        item_iter = iter(items)
+        try:
+            first_item = next(item_iter)
+        except StopIteration:
+            return counts
+        if isinstance(first_item, dict):
+            if text_key is None:
+                text_key = _detect_text_key_from_item(first_item)
+            if audio_key is None:
+                audio_key = _detect_audio_key_from_item(first_item)
+        items_iterable = chain([first_item], item_iter)
+
     def _handle_result(result: AudioProcessResult) -> None:
         if result.status == "kept":
             if dedupe_text_audio:
@@ -2000,13 +2115,13 @@ def process_items(
             counts["failed"] += 1
 
     if num_workers <= 1:
-        for idx, item in enumerate(tqdm(items, desc=desc)):
+        for idx, item in enumerate(tqdm(items_iterable, desc=desc, total=total)):
             counts["total"] += 1
             if not isinstance(item, dict):
                 counts["failed"] += 1
                 continue
 
-            transcript = pick_text(item)
+            transcript = pick_text(item, text_key=text_key)
             skip_reason = _validate_transcript(
                 transcript, min_chars=min_chars, max_chars=max_chars
             )
@@ -2026,18 +2141,13 @@ def process_items(
                 max_duration=max_duration,
                 max_chars_per_sec=max_chars_per_sec,
                 compute_audio_hash=dedupe_text_audio,
+                audio_key=audio_key,
             )
             _handle_result(result)
         return counts
 
-    total = None
-    try:
-        total = len(items)  # type: ignore[arg-type]
-    except Exception:
-        total = None
-
     max_pending = max(1, num_workers * 4)
-    item_iter = enumerate(items)
+    item_iter = enumerate(items_iterable)
     pending = set()
     exhausted = False
 
@@ -2060,7 +2170,7 @@ def process_items(
                     progress.update(1)
                     return True
 
-                transcript = pick_text(item)
+                transcript = pick_text(item, text_key=text_key)
                 skip_reason = _validate_transcript(
                     transcript, min_chars=min_chars, max_chars=max_chars
                 )
@@ -2082,6 +2192,7 @@ def process_items(
                     max_duration=max_duration,
                     max_chars_per_sec=max_chars_per_sec,
                     compute_audio_hash=dedupe_text_audio,
+                    audio_key=audio_key,
                 )
                 pending.add(future)
                 return True
