@@ -650,8 +650,7 @@ def _read_audio_from_bytes(
         else:
             samples = samples.astype(np.float32)
         return samples, int(sample_rate)
-    except Exception as exc:
-        print(f"  [DEBUG] Failed to read audio from bytes: {exc}")
+    except Exception:
         return None, None
 
 
@@ -736,11 +735,8 @@ def _decode_audio_decoder(
                     arr = arr.mean(axis=0).astype(np.float32)
                 return arr, int(sr) if sr else None
 
-    except Exception as e:
-        print(f"  [DEBUG] Failed to decode AudioDecoder: {e}")
-        import traceback
-
-        traceback.print_exc()
+    except Exception:
+        pass
 
     return None, None
 
@@ -837,47 +833,14 @@ def resolve_audio_blob(
 
 def read_audio_from_item(
     item: Dict[str, Any],
-    debug: bool = False,
 ) -> Tuple[Optional[np.ndarray], Optional[int], Optional[str]]:
     # First try known audio column names
     for key in _HF_AUDIO_CANDIDATE_KEYS:
         if key not in item:
             continue
         blob = item.get(key)
-        if debug:
-            blob_type = type(blob).__name__
-            if blob is None:
-                blob_preview = "None"
-            elif isinstance(blob, dict):
-                # Show dict keys and types for audio dicts
-                dict_info = {k: type(v).__name__ for k, v in blob.items()}
-                has_array = "array" in blob and blob["array"] is not None
-                array_shape = None
-                if has_array:
-                    try:
-                        import numpy as np
-
-                        arr = np.asarray(blob["array"])
-                        array_shape = arr.shape
-                    except:
-                        pass
-                blob_preview = f"dict keys={dict_info}, has_array={has_array}, array_shape={array_shape}, sr={blob.get('sampling_rate')}"
-            elif (
-                "AudioDecoder" in type(blob).__name__
-                or "Decoder" in type(blob).__name__
-            ):
-                blob_preview = f"AudioDecoder object (lazy decoding)"
-            else:
-                blob_preview = str(blob)[:100]
-            print(
-                f"    [DEBUG] read_audio_from_item: key='{key}', type={blob_type}, {blob_preview}"
-            )
         arr, sr, ref = resolve_audio_blob(blob)
         if arr is not None or ref:
-            if debug:
-                print(
-                    f"    [DEBUG] read_audio_from_item: found audio via key='{key}', arr={arr is not None}, sr={sr}, ref={ref}"
-                )
             return arr, sr, ref
     # Fallback: try all values
     for key, value in item.items():
@@ -885,13 +848,7 @@ def read_audio_from_item(
             continue  # Already checked
         arr, sr, ref = resolve_audio_blob(value)
         if arr is not None or ref:
-            if debug:
-                print(
-                    f"    [DEBUG] read_audio_from_item: found audio via fallback key='{key}'"
-                )
             return arr, sr, ref
-    if debug:
-        print(f"    [DEBUG] read_audio_from_item: no audio found in item")
     return None, None, None
 
 
@@ -1618,8 +1575,7 @@ def load_audio(
         # Regular file path
         try:
             samples, sample_rate = sf.read(ref, dtype="float32", always_2d=True)
-        except Exception as exc:
-            print(f"  [DEBUG] Failed to read audio from '{ref}': {exc}")
+        except Exception:
             return None, None
         if mono:
             samples = samples.mean(axis=1).astype(np.float32)
@@ -1836,7 +1792,6 @@ def process_items(
     max_chars: int,
     absolute_paths: bool,
     frequency_collector: Optional["WordFrequencyCollector"] = None,
-    debug: bool = False,
 ) -> Dict[str, int]:
     counts = {
         "total": 0,
@@ -1852,23 +1807,11 @@ def process_items(
         counts["total"] += 1
         if not isinstance(item, dict):
             counts["failed"] += 1
-            if debug and idx < 3:
-                print(f"  [DEBUG] Item {idx}: not a dict, type={type(item).__name__}")
             continue
-
-        # Debug: print first few items' structure
-        if debug and idx < 3:
-            print(f"  [DEBUG] Item {idx} keys: {list(item.keys())}")
-            for k, v in item.items():
-                v_type = type(v).__name__
-                v_preview = repr(v)[:100] if v is not None else "None"
-                print(f"    {k}: {v_type} = {v_preview}")
 
         transcript = pick_text(item)
         if not transcript:
             counts["no_text"] += 1
-            if debug and idx < 5:
-                print(f"  [DEBUG] Item {idx}: no text found")
             continue
         if len(transcript) < min_chars:
             counts["text_filtered"] += 1
@@ -1884,11 +1827,7 @@ def process_items(
             counts["text_filtered"] += 1
             continue
 
-        arr, sr, ref = read_audio_from_item(item, debug=(debug and idx < 5))
-        if debug and idx < 5:
-            print(
-                f"  [DEBUG] Item {idx}: audio read result: arr={arr is not None}, sr={sr}, ref={ref}"
-            )
+        arr, sr, ref = read_audio_from_item(item)
         arr, sr = load_audio(
             arr,
             sr,
@@ -1899,8 +1838,6 @@ def process_items(
         )
         if arr is None or sr is None:
             counts["no_audio"] += 1
-            if debug and idx < 5:
-                print(f"  [DEBUG] Item {idx}: no audio after load_audio")
             continue
 
         duration = float(arr.shape[0] / float(sr))
@@ -2058,7 +1995,6 @@ def _process_single_spec(
                     max_chars=max_chars,
                     absolute_paths=absolute_paths,
                     frequency_collector=frequency_collector,
-                    debug=True,
                 )
                 print(
                     f"[{group}] {spec.repo}:{split} "
@@ -2105,7 +2041,6 @@ def _process_single_spec(
                     max_chars=max_chars,
                     absolute_paths=absolute_paths,
                     frequency_collector=frequency_collector,
-                    debug=True,
                 )
                 print(
                     f"[{group}] {spec.repo}:{split} "
@@ -2145,85 +2080,6 @@ def _process_single_spec(
                 hf_retry_wait,
                 hf_rate_limit_wait,
             )
-            # Debug: print dataset features and first item
-            print(f"  [DEBUG] Dataset features: {ds.features}")
-            print(f"  [DEBUG] Dataset columns: {ds.column_names}")
-            print(f"  [DEBUG] Dataset length: {len(ds)}")
-
-            # Print first 3 items raw structure before any processing
-            print(f"  [DEBUG] First 3 raw items from dataset:")
-            for i in range(min(3, len(ds))):
-                item = ds[i]
-                print(f"    [DEBUG] Item {i}:")
-                for k, v in item.items():
-                    v_type = type(v).__name__
-                    if v is None:
-                        print(f"      {k}: None")
-                    elif isinstance(v, dict):
-                        dict_keys = list(v.keys())
-                        has_array = "array" in v and v["array"] is not None
-                        sr = v.get("sampling_rate")
-                        path = v.get("path")
-                        print(
-                            f"      {k}: dict with keys={dict_keys}, has_array={has_array}, sr={sr}, path={str(path)[:80] if path else None}"
-                        )
-                    elif isinstance(v, str):
-                        print(
-                            f"      {k}: str = '{v[:100]}{'...' if len(v) > 100 else ''}'"
-                        )
-                    else:
-                        print(f"      {k}: {v_type} = {str(v)[:100]}")
-
-            # Ensure Audio features are decoded - find and cast audio columns
-            audio_columns_found = []
-            for col_name in ds.column_names:
-                feature = ds.features.get(col_name)
-                if feature is None:
-                    continue
-                feature_str = str(feature)
-                feature_type = type(feature).__name__
-                print(
-                    f"  [DEBUG] Column '{col_name}': feature_type={feature_type}, feature_str={feature_str[:100]}"
-                )
-                # Check if it's an Audio feature type
-                is_audio_feature = (
-                    isinstance(feature, Audio)
-                    or feature_type == "Audio"
-                    or feature_str.startswith("Audio")
-                    or "audio" in feature_str.lower()
-                    or (
-                        hasattr(feature, "dtype")
-                        and "audio" in str(getattr(feature, "dtype", "")).lower()
-                    )
-                )
-                if is_audio_feature:
-                    audio_columns_found.append(col_name)
-                    print(
-                        f"  [DEBUG] Casting audio column '{col_name}' to ensure decoding (feature type: {feature_type})"
-                    )
-                    ds = ds.cast_column(col_name, Audio(sampling_rate=16000))
-
-            if not audio_columns_found:
-                print(
-                    f"  [WARNING] No audio columns detected! Available columns: {ds.column_names}"
-                )
-
-            # Print first item AFTER audio casting to verify decoding
-            if len(ds) > 0:
-                print(f"  [DEBUG] First item AFTER audio casting:")
-                item = ds[0]
-                for k, v in item.items():
-                    if isinstance(v, dict):
-                        has_array = "array" in v and v["array"] is not None
-                        array_len = len(v["array"]) if has_array else 0
-                        sr = v.get("sampling_rate")
-                        print(
-                            f"      {k}: dict has_array={has_array}, array_len={array_len}, sr={sr}"
-                        )
-                    elif isinstance(v, str):
-                        print(f"      {k}: str = '{v[:60]}...'")
-                    else:
-                        print(f"      {k}: {type(v).__name__}")
             filter_fn = get_filter_fn(spec.repo)
             if filter_fn is not None:
                 print(f"  Applying dataset filter for {spec.repo}")
@@ -2251,7 +2107,6 @@ def _process_single_spec(
                 max_chars=max_chars,
                 absolute_paths=absolute_paths,
                 frequency_collector=frequency_collector,
-                debug=True,
             )
             print(
                 f"[{group}] {spec.repo}:{split} "

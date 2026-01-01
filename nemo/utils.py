@@ -21,7 +21,7 @@ _APOSTROPHE_TRANSLATION = str.maketrans(
         "‛": "'",  # SINGLE HIGH-REVERSED-9 QUOTATION MARK
     }
 )
-_ALLOWED_TEXT_RE = re.compile(r"[^a-zA-ZА-Яа-яЎўҚқҒғҲҳ0-9\s,.'-]+")
+_ALLOWED_TEXT_RE = re.compile(r"[^a-zA-ZА-Яа-яЎўҚқҒғҲҳ0-9\s,.!?'-]+")
 
 # Common Uzbek misspellings: missing apostrophes, variant spellings, etc.
 # Format: incorrect -> correct
@@ -89,6 +89,8 @@ _UZBEK_MISSPELLING_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _MULTISPACE_RE = re.compile(r"\s+")
+# Pattern to match spaces before punctuation (e.g., "qurildi ." => "qurildi.")
+_SPACE_BEFORE_PUNCT_RE = re.compile(r"\s+([.,!?])")
 _UZBEK_CYRILLIC_TO_LATIN = {
     "А": "A",
     "а": "a",
@@ -252,6 +254,7 @@ def normalize_text(text: Any, stats: Optional[MisspellingStats] = None) -> str:
     normalized = normalized.translate(_APOSTROPHE_TRANSLATION)
     normalized = _fix_uzbek_misspellings(normalized, stats)
     normalized = _ALLOWED_TEXT_RE.sub("", normalized)
+    normalized = _SPACE_BEFORE_PUNCT_RE.sub(r"\1", normalized)
     normalized = _MULTISPACE_RE.sub(" ", normalized).strip()
     return normalized
 
@@ -452,11 +455,11 @@ class FrequencyBasedTypoDetector:
     def __init__(
         self,
         frequency_collector: WordFrequencyCollector,
-        min_frequency_ratio: float = 10.0,
+        min_frequency_ratio: float = 50.0,
         max_edit_distance: int = 2,
-        min_correction_frequency: int = 100,
+        min_correction_frequency: int = 500,
         min_typo_length: int = 3,
-        confidence_threshold: float = 0.5,
+        confidence_threshold: float = 0.7,
     ) -> None:
         """Initialize the typo detector.
 
@@ -744,11 +747,11 @@ def reset_frequency_collector() -> None:
 
 
 def get_typo_detector(
-    min_frequency_ratio: float = 10.0,
+    min_frequency_ratio: float = 50.0,
     max_edit_distance: int = 2,
-    min_correction_frequency: int = 100,
+    min_correction_frequency: int = 500,
     min_typo_length: int = 3,
-    confidence_threshold: float = 0.5,
+    confidence_threshold: float = 0.7,
 ) -> FrequencyBasedTypoDetector:
     """Get or create the global typo detector.
 
