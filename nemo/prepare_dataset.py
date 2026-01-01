@@ -801,12 +801,17 @@ def iter_common_voice_items(
     audio_dir_abs = audio_dir.resolve()
 
     tar_root_to_subdirs: Dict[str, set] = {}
-    if audio_dir_abs.is_dir():
-        for current_dir, _, files in os.walk(audio_dir_abs):
-            current_path = Path(current_dir)
-            for tar_file in files:
-                if tar_file.endswith((".tar", ".tar.gz")):
-                    _safe_extract_tarball(current_path, tar_file, tar_root_to_subdirs)
+    # Search for tarballs in audio_dir and its parent (Common Voice structure can vary)
+    search_dirs = [audio_dir_abs, audio_dir_abs.parent, local_dir / "audio"]
+    for search_dir in search_dirs:
+        if search_dir.is_dir():
+            for current_dir, _, files in os.walk(search_dir):
+                current_path = Path(current_dir)
+                for tar_file in files:
+                    if tar_file.endswith((".tar", ".tar.gz")):
+                        _safe_extract_tarball(
+                            current_path, tar_file, tar_root_to_subdirs
+                        )
 
     subset_aliases = {
         "validation": ["validated"],
@@ -845,13 +850,42 @@ def iter_common_voice_items(
     for variant in subset_variants:
         _add_candidate(audio_dir_abs / variant)
 
+    # Also check parent directories - Common Voice structure can vary
+    # e.g., audio might be directly under audio/{subset} without split subdirs
+    _add_candidate(audio_dir_abs.parent)
+    _add_candidate(local_dir / "audio")
+    _add_candidate(local_dir)
+
+    # Check for common audio subdirectory patterns
+    for variant in subset_variants:
+        _add_candidate(audio_dir_abs.parent / variant)
+        _add_candidate(local_dir / "audio" / variant)
+
     for base_dir in list(candidate_dirs):
         for suffix in tar_root_to_subdirs.get(base_dir, set()):
             _add_candidate(Path(base_dir) / suffix)
         _add_candidate(Path(base_dir) / "clips")
+        # Also check for nested subset directories inside extracted tarballs
+        _add_candidate(Path(base_dir) / subset)
+
+    # Recursively scan audio_dir parent for any subdirectories containing audio files
+    audio_parent = audio_dir_abs.parent
+    if audio_parent.is_dir():
+        for subdir in audio_parent.iterdir():
+            if subdir.is_dir():
+                _add_candidate(subdir)
+                for variant in subset_variants:
+                    _add_candidate(subdir / variant)
 
     if not candidate_dirs:
         candidate_dirs.append(str(audio_dir_abs))
+
+    # Print diagnostic info about search directories
+    print(f"  Audio search directories ({len(candidate_dirs)} candidates):")
+    for i, d in enumerate(candidate_dirs[:5]):  # Show first 5
+        print(f"    [{i + 1}] {d}")
+    if len(candidate_dirs) > 5:
+        print(f"    ... and {len(candidate_dirs) - 5} more")
 
     path_cache: Dict[str, Optional[str]] = {}
     missing_logged: set = set()
@@ -906,6 +940,23 @@ def iter_common_voice_items(
                 fallback_path = os.path.join(base_dir, base_name)
                 if os.path.exists(fallback_path):
                     resolved = fallback_path
+                    break
+
+        # Last resort: recursive search in audio directory tree (caches results)
+        if resolved is None:
+            search_roots = [audio_dir_abs, audio_dir_abs.parent, local_dir / "audio"]
+            for search_root in search_roots:
+                if not search_root.is_dir():
+                    continue
+                for root, dirs, files in os.walk(search_root):
+                    if base_name in files:
+                        resolved = os.path.join(root, base_name)
+                        # Cache all files found in this directory for faster future lookups
+                        for f in files:
+                            if f not in path_cache:
+                                path_cache[f] = os.path.join(root, f)
+                        break
+                if resolved:
                     break
 
         if resolved:
@@ -990,12 +1041,24 @@ def iter_common_voice_items(
                     yield {"audio": {"path": resolved_path}, "text": transcription}
                     kept += 1
                     if limit and kept >= limit:
+                        print(
+                            f"  Summary: {kept} audio files found, {len(missing_logged)} unique files missing"
+                        )
                         return
                 elif audio_filename not in missing_logged:
                     print(
                         f"  Warning (line {row_number}): audio file '{audio_filename}' not found under {audio_dir_abs}"
                     )
                     missing_logged.add(audio_filename)
+
+    # Print summary after processing all TSV files
+    print(
+        f"  Summary: {kept} audio files found, {len(missing_logged)} unique files missing"
+    )
+    if missing_logged:
+        print(
+            f"  Tip: Check that all tar archives were extracted and audio files exist in the cache directory"
+        )
 
 
 def iter_fleurs_items(
