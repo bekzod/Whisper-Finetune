@@ -25,7 +25,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 import librosa
 import numpy as np
 import soundfile as sf
-from datasets import Audio, load_dataset
+from datasets import Audio, Features, load_dataset
 from huggingface_hub import constants as hf_constants
 from huggingface_hub import snapshot_download
 from tqdm import tqdm
@@ -619,17 +619,39 @@ def resolve_audio_blob(
 
 def read_audio_from_item(
     item: Dict[str, Any],
+    debug: bool = False,
 ) -> Tuple[Optional[np.ndarray], Optional[int], Optional[str]]:
+    # First try known audio column names
     for key in _HF_AUDIO_CANDIDATE_KEYS:
         if key not in item:
             continue
-        arr, sr, ref = resolve_audio_blob(item.get(key))
+        blob = item.get(key)
+        if debug:
+            blob_type = type(blob).__name__
+            blob_preview = str(blob)[:100] if blob is not None else "None"
+            print(
+                f"    [DEBUG] read_audio_from_item: checking key='{key}', type={blob_type}, preview={blob_preview}"
+            )
+        arr, sr, ref = resolve_audio_blob(blob)
         if arr is not None or ref:
+            if debug:
+                print(
+                    f"    [DEBUG] read_audio_from_item: found audio via key='{key}', arr={arr is not None}, sr={sr}, ref={ref}"
+                )
             return arr, sr, ref
-    for value in item.values():
+    # Fallback: try all values
+    for key, value in item.items():
+        if key in _HF_AUDIO_CANDIDATE_KEYS:
+            continue  # Already checked
         arr, sr, ref = resolve_audio_blob(value)
         if arr is not None or ref:
+            if debug:
+                print(
+                    f"    [DEBUG] read_audio_from_item: found audio via fallback key='{key}'"
+                )
             return arr, sr, ref
+    if debug:
+        print(f"    [DEBUG] read_audio_from_item: no audio found in item")
     return None, None, None
 
 
@@ -1621,7 +1643,7 @@ def process_items(
             counts["text_filtered"] += 1
             continue
 
-        arr, sr, ref = read_audio_from_item(item)
+        arr, sr, ref = read_audio_from_item(item, debug=(debug and idx < 5))
         if debug and idx < 5:
             print(
                 f"  [DEBUG] Item {idx}: audio read result: arr={arr is not None}, sr={sr}, ref={ref}"
@@ -1889,15 +1911,21 @@ def _process_single_spec(
             # Ensure Audio features are decoded - find and cast audio columns
             for col_name in ds.column_names:
                 feature = ds.features.get(col_name)
-                if feature is not None and (
-                    str(feature).startswith("Audio")
+                if feature is None:
+                    continue
+                # Check if it's an Audio feature type
+                is_audio_feature = (
+                    isinstance(feature, Audio)
+                    or type(feature).__name__ == "Audio"
+                    or str(feature).startswith("Audio")
                     or (
                         hasattr(feature, "dtype")
                         and "audio" in str(getattr(feature, "dtype", "")).lower()
                     )
-                ):
+                )
+                if is_audio_feature:
                     print(
-                        f"  [DEBUG] Casting audio column '{col_name}' to ensure decoding"
+                        f"  [DEBUG] Casting audio column '{col_name}' to ensure decoding (feature type: {type(feature).__name__})"
                     )
                     ds = ds.cast_column(col_name, Audio(sampling_rate=16000))
             filter_fn = get_filter_fn(spec.repo)
