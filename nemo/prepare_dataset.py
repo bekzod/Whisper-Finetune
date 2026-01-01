@@ -1529,8 +1529,11 @@ def prepare_group(
             except Exception as exc:
                 print(f"[{group}] ERROR processing {spec.repo}: {exc}")
                 import traceback
+
                 traceback.print_exc()
-                print(f"[{group}] Skipping {spec.repo} and continuing with next dataset...")
+                print(
+                    f"[{group}] Skipping {spec.repo} and continuing with next dataset..."
+                )
                 continue
 
 
@@ -1559,66 +1562,56 @@ def _process_single_spec(
 ) -> None:
     """Process a single dataset spec and write to manifest."""
     if spec.repo == "google/fleurs":
-                if not spec.subset:
-                    print(
-                        f"[{group}] skipping {spec.repo} because no subset was provided."
-                    )
-                    continue
-                with dataset_cache_context(cache_mode, cache_dir) as cache_path:
-                    local_dir = download_fleurs_subset(
-                        spec.subset, cache_path, spec.revision
-                    )
-                    for split in spec.splits:
-                        print(
-                            f"[{group}] loading {spec.repo} split={split} (subset={spec.subset})"
-                        )
-                        items = iter_fleurs_items(
-                            local_dir=local_dir,
-                            subset=spec.subset,
-                            split=split,
-                            percentage=spec.percentage,
-                            seed=spec.seed
-                            if spec.seed is not None
-                            else DEFAULT_SAMPLING_SEED,
-                            limit=limit,
-                        )
-                        audio_root = output_dir / "audio" / group / dataset_id / split
-                        counts = process_items(
-                            items,
-                            output_dir=output_dir,
-                            audio_root=audio_root,
-                            manifest_file=manifest_file,
-                            desc=f"{dataset_id}:{split}",
-                            sample_rate=sample_rate,
-                            no_resample=no_resample,
-                            mono=mono,
-                            min_duration=min_duration,
-                            max_duration=max_duration,
-                            min_chars=min_chars,
-                            max_chars=max_chars,
-                            absolute_paths=absolute_paths,
-                        )
-                        print(
-                        f"[{group}] {spec.repo}:{split} "
-                        f"total={counts['total']} kept={counts['kept']} "
-                        f"no_text={counts['no_text']} no_audio={counts['no_audio']} "
-                        f"dur_filtered={counts['dur_filtered']} text_filtered={counts['text_filtered']} "
-                        f"failed={counts['failed']}"
-                    )
+        if not spec.subset:
+            print(f"[{group}] skipping {spec.repo} because no subset was provided.")
             return
+        with dataset_cache_context(cache_mode, cache_dir) as cache_path:
+            local_dir = download_fleurs_subset(spec.subset, cache_path, spec.revision)
+            for split in spec.splits:
+                print(
+                    f"[{group}] loading {spec.repo} split={split} (subset={spec.subset})"
+                )
+                items = iter_fleurs_items(
+                    local_dir=local_dir,
+                    subset=spec.subset,
+                    split=split,
+                    percentage=spec.percentage,
+                    seed=spec.seed if spec.seed is not None else DEFAULT_SAMPLING_SEED,
+                    limit=limit,
+                )
+                audio_root = output_dir / "audio" / group / dataset_id / split
+                counts = process_items(
+                    items,
+                    output_dir=output_dir,
+                    audio_root=audio_root,
+                    manifest_file=manifest_file,
+                    desc=f"{dataset_id}:{split}",
+                    sample_rate=sample_rate,
+                    no_resample=no_resample,
+                    mono=mono,
+                    min_duration=min_duration,
+                    max_duration=max_duration,
+                    min_chars=min_chars,
+                    max_chars=max_chars,
+                    absolute_paths=absolute_paths,
+                )
+                print(
+                    f"[{group}] {spec.repo}:{split} "
+                    f"total={counts['total']} kept={counts['kept']} "
+                    f"no_text={counts['no_text']} no_audio={counts['no_audio']} "
+                    f"dur_filtered={counts['dur_filtered']} text_filtered={counts['text_filtered']} "
+                    f"failed={counts['failed']}"
+                )
+        return
     if spec.repo in (
         "mozilla-foundation/common_voice_17_0",
         "fsicoli/common_voice_17_0",
     ):
         if not spec.subset:
-            print(
-                f"[{group}] skipping {spec.repo} because no subset was provided."
-            )
+            print(f"[{group}] skipping {spec.repo} because no subset was provided.")
             return
         with dataset_cache_context(cache_mode, cache_dir) as cache_path:
-            local_dir = download_common_voice_subset(
-                spec.repo, spec.subset, cache_path
-            )
+            local_dir = download_common_voice_subset(spec.repo, spec.subset, cache_path)
             for split in spec.splits:
                 print(
                     f"[{group}] loading {spec.repo} split={split} (subset={spec.subset})"
@@ -1628,9 +1621,7 @@ def _process_single_spec(
                     subset=spec.subset,
                     split=split,
                     percentage=spec.percentage,
-                    seed=spec.seed
-                    if spec.seed is not None
-                    else DEFAULT_SAMPLING_SEED,
+                    seed=spec.seed if spec.seed is not None else DEFAULT_SAMPLING_SEED,
                     limit=limit,
                 )
                 audio_root = output_dir / "audio" / group / dataset_id / split
