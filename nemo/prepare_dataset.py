@@ -603,7 +603,7 @@ def download_common_voice_subset(
         repo_id=repo_id,
         repo_type="dataset",
         allow_patterns=[
-            f"audio/{subset}/*",
+            f"audio/{subset}/**",
             f"transcript/{subset}/*",
         ],
         local_dir=str(local_dir),
@@ -1503,7 +1503,62 @@ def prepare_group(
             if spec.group != group:
                 continue
             dataset_id = sanitize_name(spec.repo)
-            if spec.repo == "google/fleurs":
+            try:
+                _process_single_spec(
+                    spec=spec,
+                    group=group,
+                    dataset_id=dataset_id,
+                    manifest_file=manifest_file,
+                    output_dir=output_dir,
+                    cache_dir=cache_dir,
+                    cache_mode=cache_mode,
+                    hf_token=hf_token,
+                    sample_rate=sample_rate,
+                    no_resample=no_resample,
+                    mono=mono,
+                    min_duration=min_duration,
+                    max_duration=max_duration,
+                    min_chars=min_chars,
+                    max_chars=max_chars,
+                    absolute_paths=absolute_paths,
+                    limit=limit,
+                    hf_load_retries=hf_load_retries,
+                    hf_retry_wait=hf_retry_wait,
+                    hf_rate_limit_wait=hf_rate_limit_wait,
+                )
+            except Exception as exc:
+                print(f"[{group}] ERROR processing {spec.repo}: {exc}")
+                import traceback
+                traceback.print_exc()
+                print(f"[{group}] Skipping {spec.repo} and continuing with next dataset...")
+                continue
+
+
+def _process_single_spec(
+    *,
+    spec: DatasetSpec,
+    group: str,
+    dataset_id: str,
+    manifest_file,
+    output_dir: Path,
+    cache_dir: Optional[Path],
+    cache_mode: str,
+    hf_token: Optional[str],
+    sample_rate: int,
+    no_resample: bool,
+    mono: bool,
+    min_duration: float,
+    max_duration: float,
+    min_chars: int,
+    max_chars: int,
+    absolute_paths: bool,
+    limit: Optional[int],
+    hf_load_retries: int,
+    hf_retry_wait: float,
+    hf_rate_limit_wait: float,
+) -> None:
+    """Process a single dataset spec and write to manifest."""
+    if spec.repo == "google/fleurs":
                 if not spec.subset:
                     print(
                         f"[{group}] skipping {spec.repo} because no subset was provided."
@@ -1544,128 +1599,128 @@ def prepare_group(
                             absolute_paths=absolute_paths,
                         )
                         print(
-                            f"[{group}] {spec.repo}:{split} "
-                            f"total={counts['total']} kept={counts['kept']} "
-                            f"no_text={counts['no_text']} no_audio={counts['no_audio']} "
-                            f"dur_filtered={counts['dur_filtered']} text_filtered={counts['text_filtered']} "
-                            f"failed={counts['failed']}"
-                        )
-                continue
-            if spec.repo in (
-                "mozilla-foundation/common_voice_17_0",
-                "fsicoli/common_voice_17_0",
-            ):
-                if not spec.subset:
-                    print(
-                        f"[{group}] skipping {spec.repo} because no subset was provided."
-                    )
-                    continue
-                with dataset_cache_context(cache_mode, cache_dir) as cache_path:
-                    local_dir = download_common_voice_subset(
-                        spec.repo, spec.subset, cache_path
-                    )
-                    for split in spec.splits:
-                        print(
-                            f"[{group}] loading {spec.repo} split={split} (subset={spec.subset})"
-                        )
-                        items = iter_common_voice_items(
-                            local_dir=local_dir,
-                            subset=spec.subset,
-                            split=split,
-                            percentage=spec.percentage,
-                            seed=spec.seed
-                            if spec.seed is not None
-                            else DEFAULT_SAMPLING_SEED,
-                            limit=limit,
-                        )
-                        audio_root = output_dir / "audio" / group / dataset_id / split
-                        counts = process_items(
-                            items,
-                            output_dir=output_dir,
-                            audio_root=audio_root,
-                            manifest_file=manifest_file,
-                            desc=f"{dataset_id}:{split}",
-                            sample_rate=sample_rate,
-                            no_resample=no_resample,
-                            mono=mono,
-                            min_duration=min_duration,
-                            max_duration=max_duration,
-                            min_chars=min_chars,
-                            max_chars=max_chars,
-                            absolute_paths=absolute_paths,
-                        )
-                        print(
-                            f"[{group}] {spec.repo}:{split} "
-                            f"total={counts['total']} kept={counts['kept']} "
-                            f"no_text={counts['no_text']} no_audio={counts['no_audio']} "
-                            f"dur_filtered={counts['dur_filtered']} text_filtered={counts['text_filtered']} "
-                            f"failed={counts['failed']}"
-                        )
-                continue
-
-            for split in spec.splits:
-                print(
-                    f"[{group}] loading {spec.repo} split={split}"
-                    + (f" (subset={spec.subset})" if spec.subset else "")
-                )
-                with dataset_cache_context(cache_mode, cache_dir) as cache_path:
-                    load_kwargs: Dict[str, Any] = {"split": split}
-                    if spec.subset:
-                        load_kwargs["name"] = spec.subset
-                    if spec.revision:
-                        load_kwargs["revision"] = spec.revision
-                    if spec.data_dir:
-                        load_kwargs["data_dir"] = spec.data_dir
-                    if spec.data_files is not None:
-                        load_kwargs["data_files"] = spec.data_files
-                    if spec.trust_remote_code is not None:
-                        load_kwargs["trust_remote_code"] = spec.trust_remote_code
-                    if cache_path:
-                        load_kwargs["cache_dir"] = str(cache_path)
-                    if hf_token:
-                        load_kwargs["use_auth_token"] = hf_token
-
-                    ds = _load_dataset_with_retries(
-                        spec.repo,
-                        load_kwargs,
-                        hf_load_retries,
-                        hf_retry_wait,
-                        hf_rate_limit_wait,
-                    )
-                    filter_fn = get_filter_fn(spec.repo)
-                    if filter_fn is not None:
-                        print(f"  Applying dataset filter for {spec.repo}")
-                        ds = apply_dataset_filter(ds, filter_fn, f"{spec.repo}:{split}")
-                    ds = apply_sampling(
-                        ds,
-                        spec.percentage,
-                        spec.seed if spec.seed is not None else DEFAULT_SAMPLING_SEED,
-                        limit,
-                    )
-
-                    audio_root = output_dir / "audio" / group / dataset_id / split
-                    counts = process_items(
-                        ds,
-                        output_dir=output_dir,
-                        audio_root=audio_root,
-                        manifest_file=manifest_file,
-                        desc=f"{dataset_id}:{split}",
-                        sample_rate=sample_rate,
-                        no_resample=no_resample,
-                        mono=mono,
-                        min_duration=min_duration,
-                        max_duration=max_duration,
-                        min_chars=min_chars,
-                        max_chars=max_chars,
-                        absolute_paths=absolute_paths,
-                    )
-                    print(
                         f"[{group}] {spec.repo}:{split} "
                         f"total={counts['total']} kept={counts['kept']} "
                         f"no_text={counts['no_text']} no_audio={counts['no_audio']} "
                         f"dur_filtered={counts['dur_filtered']} text_filtered={counts['text_filtered']} "
                         f"failed={counts['failed']}"
                     )
+            return
+    if spec.repo in (
+        "mozilla-foundation/common_voice_17_0",
+        "fsicoli/common_voice_17_0",
+    ):
+        if not spec.subset:
+            print(
+                f"[{group}] skipping {spec.repo} because no subset was provided."
+            )
+            return
+        with dataset_cache_context(cache_mode, cache_dir) as cache_path:
+            local_dir = download_common_voice_subset(
+                spec.repo, spec.subset, cache_path
+            )
+            for split in spec.splits:
+                print(
+                    f"[{group}] loading {spec.repo} split={split} (subset={spec.subset})"
+                )
+                items = iter_common_voice_items(
+                    local_dir=local_dir,
+                    subset=spec.subset,
+                    split=split,
+                    percentage=spec.percentage,
+                    seed=spec.seed
+                    if spec.seed is not None
+                    else DEFAULT_SAMPLING_SEED,
+                    limit=limit,
+                )
+                audio_root = output_dir / "audio" / group / dataset_id / split
+                counts = process_items(
+                    items,
+                    output_dir=output_dir,
+                    audio_root=audio_root,
+                    manifest_file=manifest_file,
+                    desc=f"{dataset_id}:{split}",
+                    sample_rate=sample_rate,
+                    no_resample=no_resample,
+                    mono=mono,
+                    min_duration=min_duration,
+                    max_duration=max_duration,
+                    min_chars=min_chars,
+                    max_chars=max_chars,
+                    absolute_paths=absolute_paths,
+                )
+                print(
+                    f"[{group}] {spec.repo}:{split} "
+                    f"total={counts['total']} kept={counts['kept']} "
+                    f"no_text={counts['no_text']} no_audio={counts['no_audio']} "
+                    f"dur_filtered={counts['dur_filtered']} text_filtered={counts['text_filtered']} "
+                    f"failed={counts['failed']}"
+                )
+        return
+
+    for split in spec.splits:
+        print(
+            f"[{group}] loading {spec.repo} split={split}"
+            + (f" (subset={spec.subset})" if spec.subset else "")
+        )
+        with dataset_cache_context(cache_mode, cache_dir) as cache_path:
+            load_kwargs: Dict[str, Any] = {"split": split}
+            if spec.subset:
+                load_kwargs["name"] = spec.subset
+            if spec.revision:
+                load_kwargs["revision"] = spec.revision
+            if spec.data_dir:
+                load_kwargs["data_dir"] = spec.data_dir
+            if spec.data_files is not None:
+                load_kwargs["data_files"] = spec.data_files
+            if spec.trust_remote_code is not None:
+                load_kwargs["trust_remote_code"] = spec.trust_remote_code
+            if cache_path:
+                load_kwargs["cache_dir"] = str(cache_path)
+            if hf_token:
+                load_kwargs["use_auth_token"] = hf_token
+
+            ds = _load_dataset_with_retries(
+                spec.repo,
+                load_kwargs,
+                hf_load_retries,
+                hf_retry_wait,
+                hf_rate_limit_wait,
+            )
+            filter_fn = get_filter_fn(spec.repo)
+            if filter_fn is not None:
+                print(f"  Applying dataset filter for {spec.repo}")
+                ds = apply_dataset_filter(ds, filter_fn, f"{spec.repo}:{split}")
+            ds = apply_sampling(
+                ds,
+                spec.percentage,
+                spec.seed if spec.seed is not None else DEFAULT_SAMPLING_SEED,
+                limit,
+            )
+
+            audio_root = output_dir / "audio" / group / dataset_id / split
+            counts = process_items(
+                ds,
+                output_dir=output_dir,
+                audio_root=audio_root,
+                manifest_file=manifest_file,
+                desc=f"{dataset_id}:{split}",
+                sample_rate=sample_rate,
+                no_resample=no_resample,
+                mono=mono,
+                min_duration=min_duration,
+                max_duration=max_duration,
+                min_chars=min_chars,
+                max_chars=max_chars,
+                absolute_paths=absolute_paths,
+            )
+            print(
+                f"[{group}] {spec.repo}:{split} "
+                f"total={counts['total']} kept={counts['kept']} "
+                f"no_text={counts['no_text']} no_audio={counts['no_audio']} "
+                f"dur_filtered={counts['dur_filtered']} text_filtered={counts['text_filtered']} "
+                f"failed={counts['failed']}"
+            )
 
 
 def main() -> None:
