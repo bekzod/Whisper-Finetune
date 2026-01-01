@@ -13,8 +13,8 @@ import re
 import shutil
 import sys
 import tarfile
-import tempfile
 import time
+import unicodedata
 from collections.abc import Iterable as IterableCollection
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -51,6 +51,8 @@ def _load_cleanup_utils() -> Any:
 _cleanup_utils = _load_cleanup_utils()
 normalize_text = _cleanup_utils.normalize_text
 contains_standalone_c = _cleanup_utils.contains_standalone_c
+get_misspelling_stats = _cleanup_utils.get_misspelling_stats
+reset_misspelling_stats = _cleanup_utils.reset_misspelling_stats
 
 MAX_TRANSCRIPT_CHAR_LIMIT = 680
 DEFAULT_SAMPLE_RATE = 16000
@@ -517,10 +519,12 @@ def sanitize_name(name: str) -> str:
 
 def pick_text(item: Dict[str, Any]) -> str:
     if "sentences" in item and item["sentences"] is not None:
-        return _flatten_transcript_text(item["sentences"])
+        text = _flatten_transcript_text(item["sentences"])
+        return unicodedata.normalize("NFKC", text)
     for key in _HF_TEXT_CANDIDATE_KEYS:
         if key in item and item[key] is not None:
-            return _flatten_transcript_text(item[key])
+            text = _flatten_transcript_text(item[key])
+            return unicodedata.normalize("NFKC", text)
     return ""
 
 
@@ -1716,6 +1720,7 @@ def _process_single_spec(
 
 def main() -> None:
     args = parse_args()
+    reset_misspelling_stats()
     _configure_hf_http_settings(
         args.hf_read_timeout,
         args.hf_connect_timeout,
@@ -1754,6 +1759,15 @@ def main() -> None:
             hf_retry_wait=args.hf_retry_wait,
             hf_rate_limit_wait=args.hf_rate_limit_wait,
         )
+
+    # Report misspelling fix statistics
+    stats = get_misspelling_stats()
+    if stats.total_fixes > 0:
+        print("\n" + "=" * 50)
+        print("MISSPELLING CORRECTION REPORT")
+        print("=" * 50)
+        print(stats.report())
+        print("=" * 50 + "\n")
 
 
 if __name__ == "__main__":
