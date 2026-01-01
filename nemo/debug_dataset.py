@@ -144,7 +144,43 @@ def main():
                 if verbose:
                     print(f"         Attribute access failed: {e}")
 
-        # Method 3: Try decode() method
+        # Method 3: Try get_all_samples() for torchcodec AudioDecoder
+        if hasattr(v, "get_all_samples"):
+            try:
+                samples = v.get_all_samples()
+                if verbose:
+                    print(
+                        f"         v.get_all_samples() returned: {type(samples).__name__}"
+                    )
+                if samples is not None:
+                    # torchcodec returns a tensor, convert to numpy
+                    if hasattr(samples, "numpy"):
+                        arr = samples.numpy()
+                    elif hasattr(samples, "data"):
+                        arr = np.asarray(samples.data)
+                    else:
+                        arr = np.asarray(samples)
+                    if verbose:
+                        print(f"         Array shape: {arr.shape}")
+                    # Get sample rate from metadata if available
+                    sr = None
+                    if hasattr(v, "metadata"):
+                        meta = v.metadata
+                        if verbose:
+                            print(f"         metadata: {meta}")
+                        if hasattr(meta, "sample_rate"):
+                            sr = meta.sample_rate
+                        elif isinstance(meta, dict):
+                            sr = meta.get("sample_rate") or meta.get("sampling_rate")
+                    return {"array": arr, "sampling_rate": sr}
+            except Exception as e:
+                if verbose:
+                    print(f"         v.get_all_samples() failed: {e}")
+                    import traceback
+
+                    traceback.print_exc()
+
+        # Method 4: Try decode() method
         if hasattr(v, "decode"):
             try:
                 decoded = v.decode()
@@ -156,7 +192,7 @@ def main():
                 if verbose:
                     print(f"         v.decode() failed: {e}")
 
-        # Method 4: Try __getitem__ with slice
+        # Method 5: Try __getitem__ with slice
         if hasattr(v, "__getitem__"):
             try:
                 decoded = v[:]
@@ -170,7 +206,7 @@ def main():
                 if verbose:
                     print(f"         v[:] failed: {e}")
 
-        # Method 5: Try to_dict
+        # Method 6: Try to_dict
         if hasattr(v, "to_dict"):
             try:
                 decoded = v.to_dict()
