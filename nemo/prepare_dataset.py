@@ -11,11 +11,13 @@ import os
 import random
 import re
 import shutil
+import struct
 import sys
 import tarfile
 import time
 import unicodedata
 from collections.abc import Iterable as IterableCollection
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextlib import contextmanager
 from dataclasses import dataclass
 from itertools import chain
@@ -80,6 +82,8 @@ DEFAULT_HF_RETRY_WAIT = (
 DEFAULT_HF_RATE_LIMIT_WAIT = (
     300  # Base wait for 429 rate limits (5 min per HF quota window)
 )
+DEDUP_TEXT_HASH_BYTES = 16
+DEDUP_AUDIO_HASH_BYTES = 16
 
 _HF_AUDIO_CANDIDATE_KEYS = (
     "audio",
@@ -304,6 +308,17 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help="Optional max rows per split for quick smoke tests.",
+    )
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=2,
+        help="Number of worker threads for audio processing (default: 2).",
+    )
+    parser.add_argument(
+        "--dedupe-text-audio",
+        action="store_true",
+        help="Drop entries with duplicate text and identical audio hash.",
     )
     # Frequency-based typo detection arguments
     parser.add_argument(
@@ -1776,6 +1791,104 @@ def post_process_manifest_with_typo_corrections(
     return corrected_count
 
 
+@dataclass(frozen=True)
+class AudioProcessResult:
+    status: str
+    transcript: str
+    duration: Optional[float] = None
+    audio_path: Optional[Path] = None
+    audio_hash: Optional[bytes] = None
+
+
+def _validate_transcript(
+    transcript: str,
+    *,
+    min_chars: int,
+    max_chars: int,
+) -> Optional[str]:
+    if not transcript:
+        return "no_text"
+    if len(transcript) < min_chars:
+        return "text_filtered"
+    effective_max = MAX_TRANSCRIPT_CHAR_LIMIT
+    if max_chars != -1:
+        effective_max = min(effective_max, max_chars)
+    if len(transcript) > effective_max:
+        return "text_filtered"
+    if contains_standalone_c(transcript):
+        return "text_filtered"
+    return None
+
+
+def _hash_text_key(text: str) -> bytes:
+    hasher = hashlib.blake2b(digest_size=DEDUP_TEXT_HASH_BYTES)
+    hasher.update(text.encode("utf-8", "ignore"))
+    return hasher.digest()
+
+
+def _hash_audio(arr: np.ndarray, sr: int) -> bytes:
+    hasher = hashlib.blake2b(digest_size=DEDUP_AUDIO_HASH_BYTES)
+    hasher.update(struct.pack("<I", sr))
+    hasher.update(struct.pack("<I", arr.ndim))
+    for dim in arr.shape:
+        hasher.update(struct.pack("<I", dim))
+    hasher.update(arr.dtype.str.encode("ascii", "ignore"))
+    if not arr.flags["C_CONTIGUOUS"]:
+        arr = np.ascontiguousarray(arr)
+    hasher.update(memoryview(arr))
+    return hasher.digest()
+
+
+def _process_audio_item(
+    idx: int,
+    item: Dict[str, Any],
+    transcript: str,
+    *,
+    audio_root: Path,
+    sample_rate: int,
+    no_resample: bool,
+    mono: bool,
+    min_duration: float,
+    max_duration: float,
+    compute_audio_hash: bool,
+) -> AudioProcessResult:
+    arr, sr, ref = read_audio_from_item(item)
+    arr, sr = load_audio(
+        arr,
+        sr,
+        ref,
+        target_sr=None if no_resample else sample_rate,
+        mono=mono,
+        no_resample=no_resample,
+    )
+    if arr is None or sr is None:
+        return AudioProcessResult(status="no_audio", transcript=transcript)
+
+    duration = float(arr.shape[0] / float(sr))
+    if duration < min_duration:
+        return AudioProcessResult(status="dur_filtered", transcript=transcript)
+    if max_duration != -1 and duration > max_duration:
+        return AudioProcessResult(status="dur_filtered", transcript=transcript)
+
+    audio_hash = None
+    if compute_audio_hash:
+        audio_hash = _hash_audio(arr, sr)
+
+    audio_path = audio_root / f"{idx:09d}.wav"
+    try:
+        write_audio(arr, sr, audio_path)
+    except Exception:
+        return AudioProcessResult(status="failed", transcript=transcript)
+
+    return AudioProcessResult(
+        status="kept",
+        transcript=transcript,
+        duration=duration,
+        audio_path=audio_path,
+        audio_hash=audio_hash,
+    )
+
+
 def process_items(
     items: Iterable[Dict[str, Any]],
     *,
@@ -1792,10 +1905,14 @@ def process_items(
     max_chars: int,
     absolute_paths: bool,
     frequency_collector: Optional["WordFrequencyCollector"] = None,
+    num_workers: int = 1,
+    dedupe_text_audio: bool = False,
+    dedupe_index: Optional[Dict[bytes, set]] = None,
 ) -> Dict[str, int]:
     counts = {
         "total": 0,
         "kept": 0,
+        "deduped": 0,
         "no_text": 0,
         "no_audio": 0,
         "dur_filtered": 0,
@@ -1803,70 +1920,151 @@ def process_items(
         "failed": 0,
     }
 
-    for idx, item in enumerate(tqdm(items, desc=desc)):
-        counts["total"] += 1
-        if not isinstance(item, dict):
+    if not dedupe_text_audio:
+        dedupe_index = None
+    elif dedupe_index is None:
+        dedupe_index = {}
+
+    def _handle_result(result: AudioProcessResult) -> None:
+        if result.status == "kept":
+            if dedupe_text_audio:
+                if result.audio_hash is None:
+                    counts["failed"] += 1
+                    return
+                text_key = _hash_text_key(result.transcript)
+                seen_hashes = dedupe_index.get(text_key)
+                if seen_hashes is not None and result.audio_hash in seen_hashes:
+                    if result.audio_path is not None:
+                        try:
+                            result.audio_path.unlink()
+                        except OSError:
+                            pass
+                    counts["deduped"] += 1
+                    return
+                if seen_hashes is None:
+                    dedupe_index[text_key] = {result.audio_hash}
+                else:
+                    seen_hashes.add(result.audio_hash)
+            if frequency_collector is not None:
+                frequency_collector.add_text(result.transcript)
+            manifest_entry = {
+                "audio_filepath": to_manifest_path(
+                    output_dir, result.audio_path, absolute_paths
+                ),
+                "duration": round(result.duration or 0.0, 6),
+                "text": result.transcript,
+            }
+            manifest_file.write(json.dumps(manifest_entry, ensure_ascii=False))
+            manifest_file.write("\n")
+            counts["kept"] += 1
+            return
+        if result.status in counts:
+            counts[result.status] += 1
+        else:
             counts["failed"] += 1
-            continue
 
-        transcript = pick_text(item)
-        if not transcript:
-            counts["no_text"] += 1
-            continue
-        if len(transcript) < min_chars:
-            counts["text_filtered"] += 1
-            continue
-        effective_max = MAX_TRANSCRIPT_CHAR_LIMIT
-        if max_chars != -1:
-            effective_max = min(effective_max, max_chars)
-        if len(transcript) > effective_max:
-            counts["text_filtered"] += 1
-            continue
-        # Filter out items containing C/c not followed by h (standalone C/c)
-        if contains_standalone_c(transcript):
-            counts["text_filtered"] += 1
-            continue
+    if num_workers <= 1:
+        for idx, item in enumerate(tqdm(items, desc=desc)):
+            counts["total"] += 1
+            if not isinstance(item, dict):
+                counts["failed"] += 1
+                continue
 
-        arr, sr, ref = read_audio_from_item(item)
-        arr, sr = load_audio(
-            arr,
-            sr,
-            ref,
-            target_sr=None if no_resample else sample_rate,
-            mono=mono,
-            no_resample=no_resample,
-        )
-        if arr is None or sr is None:
-            counts["no_audio"] += 1
-            continue
+            transcript = pick_text(item)
+            skip_reason = _validate_transcript(
+                transcript, min_chars=min_chars, max_chars=max_chars
+            )
+            if skip_reason:
+                counts[skip_reason] += 1
+                continue
 
-        duration = float(arr.shape[0] / float(sr))
-        if duration < min_duration:
-            counts["dur_filtered"] += 1
-            continue
-        if max_duration != -1 and duration > max_duration:
-            counts["dur_filtered"] += 1
-            continue
+            result = _process_audio_item(
+                idx,
+                item,
+                transcript,
+                audio_root=audio_root,
+                sample_rate=sample_rate,
+                no_resample=no_resample,
+                mono=mono,
+                min_duration=min_duration,
+                max_duration=max_duration,
+                compute_audio_hash=dedupe_text_audio,
+            )
+            _handle_result(result)
+        return counts
 
-        audio_path = audio_root / f"{idx:09d}.wav"
-        try:
-            write_audio(arr, sr, audio_path)
-        except Exception:
-            counts["failed"] += 1
-            continue
+    total = None
+    try:
+        total = len(items)  # type: ignore[arg-type]
+    except Exception:
+        total = None
 
-        # Collect word frequencies if collector is provided (for typo detection)
-        if frequency_collector is not None:
-            frequency_collector.add_text(transcript)
+    max_pending = max(1, num_workers * 4)
+    item_iter = enumerate(items)
+    pending = set()
+    exhausted = False
 
-        manifest_entry = {
-            "audio_filepath": to_manifest_path(output_dir, audio_path, absolute_paths),
-            "duration": round(duration, 6),
-            "text": transcript,
-        }
-        manifest_file.write(json.dumps(manifest_entry, ensure_ascii=False))
-        manifest_file.write("\n")
-        counts["kept"] += 1
+    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+        with tqdm(total=total, desc=desc) as progress:
+
+            def submit_next() -> bool:
+                nonlocal exhausted
+                if exhausted:
+                    return False
+                try:
+                    idx, item = next(item_iter)
+                except StopIteration:
+                    exhausted = True
+                    return False
+
+                counts["total"] += 1
+                if not isinstance(item, dict):
+                    counts["failed"] += 1
+                    progress.update(1)
+                    return True
+
+                transcript = pick_text(item)
+                skip_reason = _validate_transcript(
+                    transcript, min_chars=min_chars, max_chars=max_chars
+                )
+                if skip_reason:
+                    counts[skip_reason] += 1
+                    progress.update(1)
+                    return True
+
+                future = executor.submit(
+                    _process_audio_item,
+                    idx,
+                    item,
+                    transcript,
+                    audio_root=audio_root,
+                    sample_rate=sample_rate,
+                    no_resample=no_resample,
+                    mono=mono,
+                    min_duration=min_duration,
+                    max_duration=max_duration,
+                    compute_audio_hash=dedupe_text_audio,
+                )
+                pending.add(future)
+                return True
+
+            while len(pending) < max_pending and submit_next():
+                pass
+
+            while pending:
+                done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                for future in done:
+                    try:
+                        result = future.result()
+                    except Exception:
+                        counts["failed"] += 1
+                        progress.update(1)
+                        continue
+                    _handle_result(result)
+                    progress.update(1)
+
+                while len(pending) < max_pending and submit_next():
+                    pass
 
     return counts
 
@@ -1892,9 +2090,12 @@ def prepare_group(
     hf_retry_wait: float = DEFAULT_HF_RETRY_WAIT,
     hf_rate_limit_wait: float = DEFAULT_HF_RATE_LIMIT_WAIT,
     frequency_collector: Optional["WordFrequencyCollector"] = None,
+    num_workers: int = 1,
+    dedupe_text_audio: bool = False,
 ) -> None:
     manifest_path = output_dir / f"{group}_manifest.jsonl"
     output_dir.mkdir(parents=True, exist_ok=True)
+    dedupe_index = {} if dedupe_text_audio else None
 
     with manifest_path.open("w", encoding="utf-8") as manifest_file:
         for spec in specs:
@@ -1924,6 +2125,9 @@ def prepare_group(
                     hf_retry_wait=hf_retry_wait,
                     hf_rate_limit_wait=hf_rate_limit_wait,
                     frequency_collector=frequency_collector,
+                    num_workers=num_workers,
+                    dedupe_text_audio=dedupe_text_audio,
+                    dedupe_index=dedupe_index,
                 )
             except Exception as exc:
                 print(f"[{group}] ERROR processing {spec.repo}: {exc}")
@@ -1959,6 +2163,9 @@ def _process_single_spec(
     hf_retry_wait: float,
     hf_rate_limit_wait: float,
     frequency_collector: Optional["WordFrequencyCollector"] = None,
+    num_workers: int = 1,
+    dedupe_text_audio: bool = False,
+    dedupe_index: Optional[Dict[bytes, set]] = None,
 ) -> None:
     """Process a single dataset spec and write to manifest."""
     if spec.repo == "google/fleurs":
@@ -1995,10 +2202,13 @@ def _process_single_spec(
                     max_chars=max_chars,
                     absolute_paths=absolute_paths,
                     frequency_collector=frequency_collector,
+                    num_workers=num_workers,
+                    dedupe_text_audio=dedupe_text_audio,
+                    dedupe_index=dedupe_index,
                 )
                 print(
                     f"[{group}] {spec.repo}:{split} "
-                    f"total={counts['total']} kept={counts['kept']} "
+                    f"total={counts['total']} kept={counts['kept']} deduped={counts['deduped']} "
                     f"no_text={counts['no_text']} no_audio={counts['no_audio']} "
                     f"dur_filtered={counts['dur_filtered']} text_filtered={counts['text_filtered']} "
                     f"failed={counts['failed']}"
@@ -2041,10 +2251,13 @@ def _process_single_spec(
                     max_chars=max_chars,
                     absolute_paths=absolute_paths,
                     frequency_collector=frequency_collector,
+                    num_workers=num_workers,
+                    dedupe_text_audio=dedupe_text_audio,
+                    dedupe_index=dedupe_index,
                 )
                 print(
                     f"[{group}] {spec.repo}:{split} "
-                    f"total={counts['total']} kept={counts['kept']} "
+                    f"total={counts['total']} kept={counts['kept']} deduped={counts['deduped']} "
                     f"no_text={counts['no_text']} no_audio={counts['no_audio']} "
                     f"dur_filtered={counts['dur_filtered']} text_filtered={counts['text_filtered']} "
                     f"failed={counts['failed']}"
@@ -2107,10 +2320,13 @@ def _process_single_spec(
                 max_chars=max_chars,
                 absolute_paths=absolute_paths,
                 frequency_collector=frequency_collector,
+                num_workers=num_workers,
+                dedupe_text_audio=dedupe_text_audio,
+                dedupe_index=dedupe_index,
             )
             print(
                 f"[{group}] {spec.repo}:{split} "
-                f"total={counts['total']} kept={counts['kept']} "
+                f"total={counts['total']} kept={counts['kept']} deduped={counts['deduped']} "
                 f"no_text={counts['no_text']} no_audio={counts['no_audio']} "
                 f"dur_filtered={counts['dur_filtered']} text_filtered={counts['text_filtered']} "
                 f"failed={counts['failed']}"
@@ -2174,6 +2390,8 @@ def main() -> None:
             hf_retry_wait=args.hf_retry_wait,
             hf_rate_limit_wait=args.hf_rate_limit_wait,
             frequency_collector=frequency_collector,
+            num_workers=args.num_workers,
+            dedupe_text_audio=args.dedupe_text_audio,
         )
 
     # Report misspelling fix statistics (static dictionary-based)
