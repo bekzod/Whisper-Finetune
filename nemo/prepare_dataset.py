@@ -662,9 +662,41 @@ def _decode_audio_decoder(
     Decode an AudioDecoder object from newer HuggingFace datasets versions.
 
     AudioDecoder is a lazy decoder that needs to be called to get audio data.
+    Supports torchcodec AudioDecoder which uses get_all_samples() method.
     """
     try:
-        # Try calling the decoder (newer HF datasets API)
+        # Method 1: Try get_all_samples() for torchcodec AudioDecoder
+        if hasattr(decoder, "get_all_samples"):
+            samples = decoder.get_all_samples()
+            if samples is not None:
+                # torchcodec returns a tensor, convert to numpy
+                if hasattr(samples, "numpy"):
+                    arr = samples.numpy().astype(np.float32)
+                elif hasattr(samples, "data"):
+                    arr = np.asarray(samples.data, dtype=np.float32)
+                else:
+                    arr = np.asarray(samples, dtype=np.float32)
+
+                # Get sample rate from metadata
+                sr = None
+                if hasattr(decoder, "metadata"):
+                    meta = decoder.metadata
+                    if hasattr(meta, "sample_rate"):
+                        sr = int(meta.sample_rate)
+                    elif isinstance(meta, dict):
+                        sr = meta.get("sample_rate") or meta.get("sampling_rate")
+                        if sr:
+                            sr = int(sr)
+
+                # Handle mono conversion - torchcodec returns (channels, samples)
+                if mono and arr.ndim == 2:
+                    arr = arr.mean(axis=0).astype(np.float32)
+                elif arr.ndim == 2 and arr.shape[0] == 1:
+                    arr = arr[0]  # Remove channel dimension if single channel
+
+                return arr, sr
+
+        # Method 2: Try calling the decoder (older HF datasets API)
         if callable(decoder):
             decoded = decoder()
             if isinstance(decoded, dict):
@@ -678,7 +710,7 @@ def _decode_audio_decoder(
                         pass  # already mono
                     return arr, int(sr) if sr else None
 
-        # Try accessing as an object with array attribute
+        # Method 3: Try accessing as an object with array attribute
         if hasattr(decoder, "array") and hasattr(decoder, "sampling_rate"):
             arr = np.asarray(decoder.array, dtype=np.float32)
             sr = int(decoder.sampling_rate) if decoder.sampling_rate else None
@@ -686,7 +718,7 @@ def _decode_audio_decoder(
                 arr = arr.mean(axis=0).astype(np.float32)
             return arr, sr
 
-        # Try the __call__ method explicitly
+        # Method 4: Try the __call__ method explicitly
         if hasattr(decoder, "__call__"):
             result = decoder.__call__()
             if isinstance(result, dict):
@@ -706,6 +738,9 @@ def _decode_audio_decoder(
 
     except Exception as e:
         print(f"  [DEBUG] Failed to decode AudioDecoder: {e}")
+        import traceback
+
+        traceback.print_exc()
 
     return None, None
 
