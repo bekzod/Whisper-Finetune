@@ -52,7 +52,7 @@
     },
     {
       "name": "k2speech/FeruzaSpeech",
-      "splits": ["train", "test", "dev"]
+      "splits": ["train", "test", "validation"]
     },
     {
       "name": "Beehzod/dataset_for_STT_TTSmodels",
