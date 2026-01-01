@@ -53,6 +53,13 @@ normalize_text = _cleanup_utils.normalize_text
 contains_standalone_c = _cleanup_utils.contains_standalone_c
 get_misspelling_stats = _cleanup_utils.get_misspelling_stats
 reset_misspelling_stats = _cleanup_utils.reset_misspelling_stats
+# Frequency-based typo detection
+WordFrequencyCollector = _cleanup_utils.WordFrequencyCollector
+FrequencyBasedTypoDetector = _cleanup_utils.FrequencyBasedTypoDetector
+get_frequency_collector = _cleanup_utils.get_frequency_collector
+reset_frequency_collector = _cleanup_utils.reset_frequency_collector
+get_typo_detector = _cleanup_utils.get_typo_detector
+reset_typo_detector = _cleanup_utils.reset_typo_detector
 
 MAX_TRANSCRIPT_CHAR_LIMIT = 680
 DEFAULT_SAMPLE_RATE = 16000
@@ -294,6 +301,47 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help="Optional max rows per split for quick smoke tests.",
+    )
+    # Frequency-based typo detection arguments
+    parser.add_argument(
+        "--enable-typo-detection",
+        action="store_true",
+        help="Enable frequency-based typo detection (two-pass processing).",
+    )
+    parser.add_argument(
+        "--typo-min-frequency-ratio",
+        type=float,
+        default=10.0,
+        help="Minimum ratio of correction_freq / typo_freq to consider a typo (default: 10.0).",
+    )
+    parser.add_argument(
+        "--typo-max-edit-distance",
+        type=int,
+        default=2,
+        help="Maximum edit distance to consider for corrections (default: 2).",
+    )
+    parser.add_argument(
+        "--typo-min-correction-frequency",
+        type=int,
+        default=100,
+        help="Minimum frequency of the correction word (default: 100).",
+    )
+    parser.add_argument(
+        "--typo-min-word-length",
+        type=int,
+        default=3,
+        help="Minimum length of word to consider as potential typo (default: 3).",
+    )
+    parser.add_argument(
+        "--typo-confidence-threshold",
+        type=float,
+        default=0.5,
+        help="Minimum confidence score to include a typo (default: 0.5).",
+    )
+    parser.add_argument(
+        "--typo-report-only",
+        action="store_true",
+        help="Only report detected typos without applying corrections.",
     )
     return parser.parse_args()
 
@@ -1388,6 +1436,60 @@ def to_manifest_path(output_dir: Path, audio_path: Path, absolute: bool) -> str:
     return str(audio_path.relative_to(output_dir))
 
 
+# =============================================================================
+# Frequency Collection (Single-Pass) and Manifest Post-Processing
+# =============================================================================
+
+
+def post_process_manifest_with_typo_corrections(
+    manifest_path: Path,
+    typo_detector: "FrequencyBasedTypoDetector",
+) -> int:
+    """Apply typo corrections to an existing manifest file.
+
+    Reads the manifest, applies corrections to text fields, and writes back.
+
+    Args:
+        manifest_path: Path to the manifest file
+        typo_detector: Configured typo detector with analyzed frequencies
+
+    Returns:
+        Number of entries corrected
+    """
+    if not manifest_path.exists():
+        print(f"  Warning: Manifest not found: {manifest_path}")
+        return 0
+
+    # Read all entries
+    entries = []
+    with manifest_path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                entries.append(json.loads(line))
+
+    if not entries:
+        return 0
+
+    # Apply corrections
+    corrected_count = 0
+    for entry in entries:
+        if "text" in entry and entry["text"]:
+            original = entry["text"]
+            corrected = typo_detector.correct_text(original, record_stats=True)
+            if corrected != original:
+                entry["text"] = corrected
+                corrected_count += 1
+
+    # Write back
+    with manifest_path.open("w", encoding="utf-8") as f:
+        for entry in entries:
+            f.write(json.dumps(entry, ensure_ascii=False))
+            f.write("\n")
+
+    return corrected_count
+
+
 def process_items(
     items: Iterable[Dict[str, Any]],
     *,
@@ -1403,6 +1505,7 @@ def process_items(
     min_chars: int,
     max_chars: int,
     absolute_paths: bool,
+    frequency_collector: Optional["WordFrequencyCollector"] = None,
 ) -> Dict[str, int]:
     counts = {
         "total": 0,
@@ -1466,6 +1569,10 @@ def process_items(
             counts["failed"] += 1
             continue
 
+        # Collect word frequencies if collector is provided (for typo detection)
+        if frequency_collector is not None:
+            frequency_collector.add_text(transcript)
+
         manifest_entry = {
             "audio_filepath": to_manifest_path(output_dir, audio_path, absolute_paths),
             "duration": round(duration, 6),
@@ -1498,6 +1605,7 @@ def prepare_group(
     hf_load_retries: int = DEFAULT_HF_LOAD_RETRIES,
     hf_retry_wait: float = DEFAULT_HF_RETRY_WAIT,
     hf_rate_limit_wait: float = DEFAULT_HF_RATE_LIMIT_WAIT,
+    frequency_collector: Optional["WordFrequencyCollector"] = None,
 ) -> None:
     manifest_path = output_dir / f"{group}_manifest.jsonl"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1529,6 +1637,7 @@ def prepare_group(
                     hf_load_retries=hf_load_retries,
                     hf_retry_wait=hf_retry_wait,
                     hf_rate_limit_wait=hf_rate_limit_wait,
+                    frequency_collector=frequency_collector,
                 )
             except Exception as exc:
                 print(f"[{group}] ERROR processing {spec.repo}: {exc}")
@@ -1563,6 +1672,7 @@ def _process_single_spec(
     hf_load_retries: int,
     hf_retry_wait: float,
     hf_rate_limit_wait: float,
+    frequency_collector: Optional["WordFrequencyCollector"] = None,
 ) -> None:
     """Process a single dataset spec and write to manifest."""
     if spec.repo == "google/fleurs":
@@ -1598,6 +1708,7 @@ def _process_single_spec(
                     min_chars=min_chars,
                     max_chars=max_chars,
                     absolute_paths=absolute_paths,
+                    frequency_collector=frequency_collector,
                 )
                 print(
                     f"[{group}] {spec.repo}:{split} "
@@ -1643,6 +1754,7 @@ def _process_single_spec(
                     min_chars=min_chars,
                     max_chars=max_chars,
                     absolute_paths=absolute_paths,
+                    frequency_collector=frequency_collector,
                 )
                 print(
                     f"[{group}] {spec.repo}:{split} "
@@ -1708,6 +1820,7 @@ def _process_single_spec(
                 min_chars=min_chars,
                 max_chars=max_chars,
                 absolute_paths=absolute_paths,
+                frequency_collector=frequency_collector,
             )
             print(
                 f"[{group}] {spec.repo}:{split} "
@@ -1721,6 +1834,9 @@ def _process_single_spec(
 def main() -> None:
     args = parse_args()
     reset_misspelling_stats()
+    reset_frequency_collector()
+    reset_typo_detector()
+
     _configure_hf_http_settings(
         args.hf_read_timeout,
         args.hf_connect_timeout,
@@ -1734,7 +1850,20 @@ def main() -> None:
 
     if not specs:
         raise SystemExit("No dataset entries found for the selected groups.")
+
     groups_present = {spec.group for spec in specs}
+
+    # Initialize frequency collector if typo detection is enabled
+    frequency_collector: Optional[WordFrequencyCollector] = None
+    if args.enable_typo_detection:
+        frequency_collector = get_frequency_collector()
+        frequency_collector.reset()
+        print("\n" + "=" * 50)
+        print("Frequency-based typo detection ENABLED")
+        print("Collecting word frequencies during processing...")
+        print("=" * 50 + "\n")
+
+    # Process datasets (single pass - collects frequencies if enabled)
     for group in args.groups:
         if group not in groups_present:
             print(f"Skipping group '{group}' (no entries in config).")
@@ -1758,16 +1887,77 @@ def main() -> None:
             hf_load_retries=args.hf_load_retries,
             hf_retry_wait=args.hf_retry_wait,
             hf_rate_limit_wait=args.hf_rate_limit_wait,
+            frequency_collector=frequency_collector,
         )
 
-    # Report misspelling fix statistics
+    # Report misspelling fix statistics (static dictionary-based)
     stats = get_misspelling_stats()
     if stats.total_fixes > 0:
         print("\n" + "=" * 50)
-        print("MISSPELLING CORRECTION REPORT")
+        print("STATIC MISSPELLING CORRECTION REPORT")
         print("=" * 50)
         print(stats.report())
         print("=" * 50 + "\n")
+
+    # Apply frequency-based typo corrections if enabled
+    if frequency_collector is not None and args.enable_typo_detection:
+        print("\n" + "=" * 50)
+        print("Analyzing collected word frequencies...")
+        print("=" * 50)
+        print(f"  Total words collected: {frequency_collector.total_words:,}")
+        print(f"  Unique vocabulary size: {frequency_collector.vocabulary_size:,}")
+        print(f"  Top 20 most common words:")
+        for word, count in frequency_collector.most_common(20):
+            print(f"    '{word}': {count:,}")
+
+        # Create and configure the typo detector
+        typo_detector = FrequencyBasedTypoDetector(
+            frequency_collector,
+            min_frequency_ratio=args.typo_min_frequency_ratio,
+            max_edit_distance=args.typo_max_edit_distance,
+            min_correction_frequency=args.typo_min_correction_frequency,
+            min_typo_length=args.typo_min_word_length,
+            confidence_threshold=args.typo_confidence_threshold,
+        )
+
+        # Analyze and detect typos
+        candidates = typo_detector.analyze()
+        print(f"\nDetected {len(candidates)} potential typos")
+
+        # Print typo report
+        print("\n" + typo_detector.get_typo_report())
+
+        if args.typo_report_only:
+            print("\n[typo-report-only] Typos reported but not applied to manifests.")
+        else:
+            # Apply corrections to manifest files
+            print("\n" + "=" * 50)
+            print("Applying typo corrections to manifest files...")
+            print("=" * 50)
+
+            total_corrected = 0
+            for group in args.groups:
+                if group not in groups_present:
+                    continue
+                manifest_path = args.output_dir / f"{group}_manifest.jsonl"
+                corrected = post_process_manifest_with_typo_corrections(
+                    manifest_path, typo_detector
+                )
+                print(
+                    f"  [{group}] Corrected {corrected} entries in {manifest_path.name}"
+                )
+                total_corrected += corrected
+
+            print(f"\nTotal entries with typo corrections: {total_corrected}")
+
+            # Report frequency-based typo correction statistics
+            typo_stats = typo_detector.stats
+            if typo_stats.total_corrections_applied > 0:
+                print("\n" + "=" * 50)
+                print("FREQUENCY-BASED TYPO CORRECTION REPORT")
+                print("=" * 50)
+                print(typo_stats.report())
+                print("=" * 50 + "\n")
 
 
 if __name__ == "__main__":
