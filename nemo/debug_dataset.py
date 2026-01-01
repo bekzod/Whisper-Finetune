@@ -47,18 +47,92 @@ def main():
         feature = ds.features.get(col_name)
         print(f"   - {col_name}: {type(feature).__name__} = {feature}")
 
-    def try_decode_audio(v):
+    def inspect_object(obj, name="object"):
+        """Thoroughly inspect an object to understand its interface."""
+        print(f"         --- Inspecting {name} ---")
+        print(f"         Type: {type(obj)}")
+        print(f"         Module: {type(obj).__module__}")
+
+        # Get all attributes and methods
+        attrs = [a for a in dir(obj) if not a.startswith("_")]
+        print(f"         Public attributes/methods: {attrs}")
+
+        # Check for common audio-related attributes
+        for attr in [
+            "array",
+            "waveform",
+            "samples",
+            "data",
+            "audio",
+            "sampling_rate",
+            "sample_rate",
+            "sr",
+            "path",
+            "file",
+        ]:
+            if hasattr(obj, attr):
+                try:
+                    val = getattr(obj, attr)
+                    val_type = type(val).__name__
+                    if isinstance(val, np.ndarray):
+                        print(f"         .{attr}: ndarray shape={val.shape}")
+                    elif val is None:
+                        print(f"         .{attr}: None")
+                    else:
+                        print(f"         .{attr}: {val_type} = {str(val)[:50]}")
+                except Exception as e:
+                    print(f"         .{attr}: ERROR accessing - {e}")
+
+        # Check if callable
+        print(f"         Callable: {callable(obj)}")
+
+        # Check for __getitem__
+        if hasattr(obj, "__getitem__"):
+            print(f"         Has __getitem__: True")
+            try:
+                item = obj[0]
+                print(f"         obj[0] = {type(item).__name__}")
+            except Exception as e:
+                print(f"         obj[0] ERROR: {e}")
+
+        # Check for iter
+        if hasattr(obj, "__iter__"):
+            print(f"         Has __iter__: True")
+
+        # Try to get the actual decoding method
+        for method_name in [
+            "decode",
+            "read",
+            "load",
+            "get",
+            "to_dict",
+            "to_numpy",
+            "__call__",
+        ]:
+            if hasattr(obj, method_name):
+                method = getattr(obj, method_name)
+                print(f"         Has .{method_name}(): {callable(method)}")
+
+    def try_decode_audio(v, verbose=False):
         """Try to decode an AudioDecoder or similar object."""
-        # Check if it's an AudioDecoder (callable)
+        if verbose:
+            inspect_object(v, "AudioDecoder")
+
+        # Method 1: Check if it's an AudioDecoder (callable)
         if callable(v):
             try:
                 decoded = v()
+                if verbose:
+                    print(f"         v() returned: {type(decoded).__name__}")
                 if isinstance(decoded, dict):
                     return decoded
+                if isinstance(decoded, np.ndarray):
+                    return {"array": decoded, "sampling_rate": None}
             except Exception as e:
-                print(f"         Failed to call decoder: {e}")
+                if verbose:
+                    print(f"         v() failed: {e}")
 
-        # Check for array/sampling_rate attributes
+        # Method 2: Check for array/sampling_rate attributes
         if hasattr(v, "array") and hasattr(v, "sampling_rate"):
             try:
                 return {
@@ -67,7 +141,46 @@ def main():
                     "path": getattr(v, "path", None),
                 }
             except Exception as e:
-                print(f"         Failed to access attributes: {e}")
+                if verbose:
+                    print(f"         Attribute access failed: {e}")
+
+        # Method 3: Try decode() method
+        if hasattr(v, "decode"):
+            try:
+                decoded = v.decode()
+                if verbose:
+                    print(f"         v.decode() returned: {type(decoded).__name__}")
+                if isinstance(decoded, dict):
+                    return decoded
+            except Exception as e:
+                if verbose:
+                    print(f"         v.decode() failed: {e}")
+
+        # Method 4: Try __getitem__ with slice
+        if hasattr(v, "__getitem__"):
+            try:
+                decoded = v[:]
+                if verbose:
+                    print(f"         v[:] returned: {type(decoded).__name__}")
+                if isinstance(decoded, dict):
+                    return decoded
+                if isinstance(decoded, np.ndarray):
+                    return {"array": decoded, "sampling_rate": None}
+            except Exception as e:
+                if verbose:
+                    print(f"         v[:] failed: {e}")
+
+        # Method 5: Try to_dict
+        if hasattr(v, "to_dict"):
+            try:
+                decoded = v.to_dict()
+                if verbose:
+                    print(f"         v.to_dict() returned: {type(decoded).__name__}")
+                if isinstance(decoded, dict):
+                    return decoded
+            except Exception as e:
+                if verbose:
+                    print(f"         v.to_dict() failed: {e}")
 
         return None
 
@@ -97,8 +210,8 @@ def main():
                 print(f"         path: {path}")
             elif "AudioDecoder" in v_type or "Decoder" in v_type:
                 print(f"      {k}: {v_type} (lazy decoder)")
-                # Try to decode it
-                decoded = try_decode_audio(v)
+                # Try to decode it with verbose output for first item
+                decoded = try_decode_audio(v, verbose=(i == 0))
                 if decoded:
                     arr = decoded.get("array")
                     sr = decoded.get("sampling_rate")
