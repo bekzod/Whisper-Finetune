@@ -1355,7 +1355,8 @@ def load_audio(
             return None, None
         try:
             samples, sample_rate = sf.read(ref, dtype="float32", always_2d=True)
-        except Exception:
+        except Exception as exc:
+            print(f"  [DEBUG] Failed to read audio from '{ref}': {exc}")
             return None, None
         if mono:
             samples = samples.mean(axis=1).astype(np.float32)
