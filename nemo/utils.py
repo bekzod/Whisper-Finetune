@@ -21,7 +21,7 @@ _APOSTROPHE_TRANSLATION = str.maketrans(
         "‛": "'",  # SINGLE HIGH-REVERSED-9 QUOTATION MARK
     }
 )
-_ALLOWED_TEXT_RE = re.compile(r"[^a-zA-ZА-Яа-яЎўҚқҒғҲҳ0-9\s,.!?'-]+")
+_ALLOWED_TEXT_RE = re.compile(r"[^a-zA-ZА-Яа-яЎўҚқҒғҲҳ0-9\s,.'-]+")
 
 # Common Uzbek misspellings: missing apostrophes, variant spellings, etc.
 # Format: incorrect -> correct
@@ -90,7 +90,7 @@ _UZBEK_MISSPELLING_PATTERN = re.compile(
 )
 _MULTISPACE_RE = re.compile(r"\s+")
 # Pattern to match spaces before punctuation (e.g., "qurildi ." => "qurildi.")
-_SPACE_BEFORE_PUNCT_RE = re.compile(r"\s+([.,!?])")
+_SPACE_BEFORE_PUNCT_RE = re.compile(r"\s+([.,])")
 _UZBEK_CYRILLIC_TO_LATIN = {
     "А": "A",
     "а": "a",

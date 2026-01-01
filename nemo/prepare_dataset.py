@@ -14,6 +14,7 @@ import shutil
 import struct
 import sys
 import tarfile
+import tempfile
 import time
 import unicodedata
 from collections.abc import Iterable as IterableCollection
@@ -72,6 +73,7 @@ DEFAULT_MIN_DURATION = 0.5
 DEFAULT_MAX_DURATION = 30.0
 DEFAULT_MIN_CHARS = 1
 DEFAULT_MAX_CHARS = 680
+DEFAULT_MAX_CHARS_PER_SEC = 25.0
 DEFAULT_SAMPLING_SEED = 3407
 DEFAULT_CACHE_ROOT = Path("/workspace")
 MAX_TAR_PATH_COMPONENT = 960
@@ -291,6 +293,15 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=DEFAULT_MAX_CHARS,
         help="Maximum cleaned transcript length in chars.",
+    )
+    parser.add_argument(
+        "--max-chars-per-sec",
+        type=float,
+        default=DEFAULT_MAX_CHARS_PER_SEC,
+        help=(
+            "Filter items when non-space char count per second exceeds this value "
+            f"(default: {DEFAULT_MAX_CHARS_PER_SEC:g}; set <=0 to disable)."
+        ),
     )
     parser.add_argument(
         "--default-splits",
@@ -1761,32 +1772,45 @@ def post_process_manifest_with_typo_corrections(
         print(f"  Warning: Manifest not found: {manifest_path}")
         return 0
 
-    # Read all entries
-    entries = []
-    with manifest_path.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                entries.append(json.loads(line))
-
-    if not entries:
-        return 0
-
-    # Apply corrections
+    # Apply corrections while streaming to avoid loading the full manifest into memory.
     corrected_count = 0
-    for entry in entries:
-        if "text" in entry and entry["text"]:
-            original = entry["text"]
-            corrected = typo_detector.correct_text(original, record_stats=True)
-            if corrected != original:
-                entry["text"] = corrected
-                corrected_count += 1
+    temp_path: Optional[Path] = None
+    try:
+        with (
+            manifest_path.open("r", encoding="utf-8") as src,
+            tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                delete=False,
+                dir=str(manifest_path.parent),
+                prefix=f"{manifest_path.name}.",
+                suffix=".tmp",
+            ) as tmp,
+        ):
+            temp_path = Path(tmp.name)
+            for line in src:
+                line = line.strip()
+                if not line:
+                    continue
+                entry = json.loads(line)
+                if "text" in entry and entry["text"]:
+                    original = entry["text"]
+                    corrected = typo_detector.correct_text(original, record_stats=True)
+                    if corrected != original:
+                        entry["text"] = corrected
+                        corrected_count += 1
+                tmp.write(json.dumps(entry, ensure_ascii=False))
+                tmp.write("\n")
 
-    # Write back
-    with manifest_path.open("w", encoding="utf-8") as f:
-        for entry in entries:
-            f.write(json.dumps(entry, ensure_ascii=False))
-            f.write("\n")
+        if temp_path is not None:
+            os.replace(temp_path, manifest_path)
+    except Exception:
+        if temp_path is not None:
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
+        raise
 
     return corrected_count
 
@@ -1850,6 +1874,7 @@ def _process_audio_item(
     mono: bool,
     min_duration: float,
     max_duration: float,
+    max_chars_per_sec: Optional[float],
     compute_audio_hash: bool,
 ) -> AudioProcessResult:
     arr, sr, ref = read_audio_from_item(item)
@@ -1869,6 +1894,15 @@ def _process_audio_item(
         return AudioProcessResult(status="dur_filtered", transcript=transcript)
     if max_duration != -1 and duration > max_duration:
         return AudioProcessResult(status="dur_filtered", transcript=transcript)
+
+    if max_chars_per_sec is not None and max_chars_per_sec > 0:
+        non_space_chars = sum(1 for ch in transcript if not ch.isspace())
+        if non_space_chars > 0:
+            chars_per_sec = non_space_chars / duration
+            if chars_per_sec > max_chars_per_sec:
+                return AudioProcessResult(
+                    status="text_audio_mismatch", transcript=transcript
+                )
 
     audio_hash = None
     if compute_audio_hash:
@@ -1903,6 +1937,7 @@ def process_items(
     max_duration: float,
     min_chars: int,
     max_chars: int,
+    max_chars_per_sec: Optional[float],
     absolute_paths: bool,
     frequency_collector: Optional["WordFrequencyCollector"] = None,
     num_workers: int = 1,
@@ -1917,6 +1952,7 @@ def process_items(
         "no_audio": 0,
         "dur_filtered": 0,
         "text_filtered": 0,
+        "text_audio_mismatch": 0,
         "failed": 0,
     }
 
@@ -1988,6 +2024,7 @@ def process_items(
                 mono=mono,
                 min_duration=min_duration,
                 max_duration=max_duration,
+                max_chars_per_sec=max_chars_per_sec,
                 compute_audio_hash=dedupe_text_audio,
             )
             _handle_result(result)
@@ -2043,6 +2080,7 @@ def process_items(
                     mono=mono,
                     min_duration=min_duration,
                     max_duration=max_duration,
+                    max_chars_per_sec=max_chars_per_sec,
                     compute_audio_hash=dedupe_text_audio,
                 )
                 pending.add(future)
@@ -2084,6 +2122,7 @@ def prepare_group(
     max_duration: float,
     min_chars: int,
     max_chars: int,
+    max_chars_per_sec: Optional[float],
     absolute_paths: bool,
     limit: Optional[int],
     hf_load_retries: int = DEFAULT_HF_LOAD_RETRIES,
@@ -2119,6 +2158,7 @@ def prepare_group(
                     max_duration=max_duration,
                     min_chars=min_chars,
                     max_chars=max_chars,
+                    max_chars_per_sec=max_chars_per_sec,
                     absolute_paths=absolute_paths,
                     limit=limit,
                     hf_load_retries=hf_load_retries,
@@ -2157,6 +2197,7 @@ def _process_single_spec(
     max_duration: float,
     min_chars: int,
     max_chars: int,
+    max_chars_per_sec: Optional[float],
     absolute_paths: bool,
     limit: Optional[int],
     hf_load_retries: int,
@@ -2200,6 +2241,7 @@ def _process_single_spec(
                     max_duration=max_duration,
                     min_chars=min_chars,
                     max_chars=max_chars,
+                    max_chars_per_sec=max_chars_per_sec,
                     absolute_paths=absolute_paths,
                     frequency_collector=frequency_collector,
                     num_workers=num_workers,
@@ -2211,6 +2253,7 @@ def _process_single_spec(
                     f"total={counts['total']} kept={counts['kept']} deduped={counts['deduped']} "
                     f"no_text={counts['no_text']} no_audio={counts['no_audio']} "
                     f"dur_filtered={counts['dur_filtered']} text_filtered={counts['text_filtered']} "
+                    f"text_audio_mismatch={counts['text_audio_mismatch']} "
                     f"failed={counts['failed']}"
                 )
         return
@@ -2249,6 +2292,7 @@ def _process_single_spec(
                     max_duration=max_duration,
                     min_chars=min_chars,
                     max_chars=max_chars,
+                    max_chars_per_sec=max_chars_per_sec,
                     absolute_paths=absolute_paths,
                     frequency_collector=frequency_collector,
                     num_workers=num_workers,
@@ -2260,6 +2304,7 @@ def _process_single_spec(
                     f"total={counts['total']} kept={counts['kept']} deduped={counts['deduped']} "
                     f"no_text={counts['no_text']} no_audio={counts['no_audio']} "
                     f"dur_filtered={counts['dur_filtered']} text_filtered={counts['text_filtered']} "
+                    f"text_audio_mismatch={counts['text_audio_mismatch']} "
                     f"failed={counts['failed']}"
                 )
         return
@@ -2318,6 +2363,7 @@ def _process_single_spec(
                 max_duration=max_duration,
                 min_chars=min_chars,
                 max_chars=max_chars,
+                max_chars_per_sec=max_chars_per_sec,
                 absolute_paths=absolute_paths,
                 frequency_collector=frequency_collector,
                 num_workers=num_workers,
@@ -2329,6 +2375,7 @@ def _process_single_spec(
                 f"total={counts['total']} kept={counts['kept']} deduped={counts['deduped']} "
                 f"no_text={counts['no_text']} no_audio={counts['no_audio']} "
                 f"dur_filtered={counts['dur_filtered']} text_filtered={counts['text_filtered']} "
+                f"text_audio_mismatch={counts['text_audio_mismatch']} "
                 f"failed={counts['failed']}"
             )
 
@@ -2384,6 +2431,7 @@ def main() -> None:
             max_duration=args.max_duration,
             min_chars=args.min_chars,
             max_chars=args.max_chars,
+            max_chars_per_sec=args.max_chars_per_sec,
             absolute_paths=args.absolute_paths,
             limit=args.limit,
             hf_load_retries=args.hf_load_retries,
