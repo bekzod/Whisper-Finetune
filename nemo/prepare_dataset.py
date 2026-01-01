@@ -25,7 +25,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 import librosa
 import numpy as np
 import soundfile as sf
-from datasets import Audio, Features, load_dataset
+from datasets import Audio, load_dataset
 from huggingface_hub import constants as hf_constants
 from huggingface_hub import snapshot_download
 from tqdm import tqdm
@@ -621,7 +621,7 @@ def _looks_like_audio_path(s: str) -> bool:
         if s_lower.endswith(ext):
             return True
     # Check if it looks like a file path (contains path separators)
-    if "/" in s or "\\" in s:
+    if "/" in s or "\\" in s:  # noqa: W605
         # But filter out things that look like sentences with slashes
         # (e.g., "this/that" patterns in text)
         # Real paths typically have extensions or start with common patterns
