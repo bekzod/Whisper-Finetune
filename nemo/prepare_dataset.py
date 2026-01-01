@@ -44,6 +44,9 @@ def _load_cleanup_utils() -> Any:
     if spec is None or spec.loader is None:
         raise ImportError(f"Unable to load cleanup utils from {utils_path}")
     module = importlib.util.module_from_spec(spec)
+    # Register module in sys.modules before exec_module so that dataclass
+    # decorator can find it when processing classes during module execution
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
