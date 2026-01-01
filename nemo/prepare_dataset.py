@@ -65,7 +65,9 @@ DEFAULT_HF_LOAD_RETRIES = 8
 DEFAULT_HF_RETRY_WAIT = (
     240  # 4 minutes base backoff; exponential: 240s, 480s, 960s, ...
 )
-DEFAULT_HF_RATE_LIMIT_WAIT = 60  # Base wait for 429 rate limits (60s, 120s, 240s, ...)
+DEFAULT_HF_RATE_LIMIT_WAIT = (
+    300  # Base wait for 429 rate limits (5 min per HF quota window)
+)
 
 _HF_AUDIO_CANDIDATE_KEYS = (
     "audio",
@@ -385,8 +387,8 @@ def _load_dataset_with_retries(
                 raise
             # Use longer backoff for rate limit errors
             if _is_rate_limit_error(exc):
-                # For rate limits, wait longer (60s, 120s, 240s, ...)
-                sleep_for = rate_limit_base_wait * (2**attempt)
+                # For rate limits, wait exactly 5 minutes (no exponential backoff)
+                sleep_for = rate_limit_base_wait
                 print(
                     f"  Rate limited while loading {repo}; waiting {sleep_for:.0f}s "
                     f"before retry ({attempt + 1}/{retries}): {exc}"
