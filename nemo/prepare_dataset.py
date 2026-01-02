@@ -1296,6 +1296,7 @@ def iter_common_voice_items(
         print("    WARNING: No audio files found in top candidate directories!")
 
     path_cache: Dict[str, Optional[str]] = {}
+    walked_roots: set = set()  # Track directories already recursively walked
     missing_logged: set = set()
 
     def _resolve_audio_path(filename: str) -> Optional[str]:
@@ -1376,6 +1377,19 @@ def iter_common_voice_items(
             for search_root in search_roots:
                 if not search_root.is_dir():
                     continue
+                search_root_str = str(search_root.resolve())
+                # Skip if this root is a subdirectory of an already-walked root
+                # or if we've already walked this exact root
+                already_covered = False
+                for walked in walked_roots:
+                    if search_root_str == walked or search_root_str.startswith(
+                        walked + os.sep
+                    ):
+                        already_covered = True
+                        break
+                if already_covered:
+                    continue
+                walked_roots.add(search_root_str)
                 for root, dirs, files in os.walk(search_root):
                     # Cache all files found in this directory for faster future lookups
                     for f in files:
