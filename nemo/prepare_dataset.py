@@ -1885,31 +1885,31 @@ def post_process_manifest_with_typo_corrections(
     corrected_count = 0
     temp_path: Optional[Path] = None
     try:
-        with (
-            manifest_path.open("r", encoding="utf-8") as src,
-            tempfile.NamedTemporaryFile(
+        with manifest_path.open("r", encoding="utf-8") as src:
+            with tempfile.NamedTemporaryFile(
                 "w",
                 encoding="utf-8",
                 delete=False,
                 dir=str(manifest_path.parent),
                 prefix=f"{manifest_path.name}.",
                 suffix=".tmp",
-            ) as tmp,
-        ):
-            temp_path = Path(tmp.name)
-            for line in src:
-                line = line.strip()
-                if not line:
-                    continue
-                entry = json.loads(line)
-                if "text" in entry and entry["text"]:
-                    original = entry["text"]
-                    corrected = typo_detector.correct_text(original, record_stats=True)
-                    if corrected != original:
-                        entry["text"] = corrected
-                        corrected_count += 1
-                tmp.write(json.dumps(entry, ensure_ascii=False))
-                tmp.write("\n")
+            ) as tmp:
+                temp_path = Path(tmp.name)
+                for line in src:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    entry = json.loads(line)
+                    if "text" in entry and entry["text"]:
+                        original = entry["text"]
+                        corrected = typo_detector.correct_text(
+                            original, record_stats=True
+                        )
+                        if corrected != original:
+                            entry["text"] = corrected
+                            corrected_count += 1
+                    tmp.write(json.dumps(entry, ensure_ascii=False))
+                    tmp.write("\n")
 
         if temp_path is not None:
             os.replace(temp_path, manifest_path)
