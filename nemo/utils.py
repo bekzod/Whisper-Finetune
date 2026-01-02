@@ -136,6 +136,108 @@ _UZBEK_MISSPELLINGS = {
     "goyib": "g'oyib",
     "gam": "g'am",
     "gurur": "g'urur",
+    # Soft h -> hard x corrections (common Uzbek pronunciation/spelling errors)
+    # xabar (news) and related forms
+    "habar": "xabar",
+    "habari": "xabari",
+    "habarlar": "xabarlar",
+    "habarlari": "xabarlari",
+    "habarnoma": "xabarnoma",
+    "habarchi": "xabarchi",
+    "habardon": "xabardon",
+    # xafa (upset) and related forms
+    "hafa": "xafa",
+    "hafalik": "xafalik",
+    # xarid (purchase) and related forms
+    "harid": "xarid",
+    "haridor": "xaridor",
+    "haridorlar": "xaridorlar",
+    # xizmat (service) and related forms
+    "hizmat": "xizmat",
+    "hizmati": "xizmati",
+    "hizmatlar": "xizmatlar",
+    "hizmatchi": "xizmatchi",
+    # xalq (people/nation) and related forms
+    "halq": "xalq",
+    "halqi": "xalqi",
+    "halqaro": "xalqaro",
+    "halqlararo": "xalqlararo",
+    # xotin (wife) and related forms
+    "hotin": "xotin",
+    "hotini": "xotini",
+    "hotinlar": "xotinlar",
+    # xona (room) and related forms
+    "hona": "xona",
+    "honada": "xonada",
+    "honasi": "xonasi",
+    "honalar": "xonalar",
+    "honadon": "xonadon",
+    # xotira (memory) and related forms
+    "hotira": "xotira",
+    "hotirasi": "xotirasi",
+    "hotiralar": "xotiralar",
+    "hotirlash": "xotirlash",
+    "hotirladi": "xotirladi",
+    # xavf (danger) and related forms
+    "havf": "xavf",
+    "havfli": "xavfli",
+    "havfsiz": "xavfsiz",
+    "havfsizlik": "xavfsizlik",
+    # xato (mistake) and related forms
+    "hato": "xato",
+    "hatosi": "xatosi",
+    "hatolar": "xatolar",
+    "hatolik": "xatolik",
+    # xush (pleasant) and related forms
+    "hush": "xush",
+    "hushnud": "xushnud",
+    "hushmuomala": "xushmuomala",
+    # xursand (happy) and related forms
+    "hursand": "xursand",
+    "hursandlik": "xursandlik",
+    "hursandchilik": "xursandchilik",
+    # xayr (goodbye) and related forms
+    "hayr": "xayr",
+    "hayrlashdi": "xayrlashdi",
+    "hayriya": "xayriya",
+    "hayriyachi": "xayriyachi",
+    # xudo (god) and related forms
+    "hudo": "xudo",
+    "hudoga": "xudoga",
+    "hudoning": "xudoning",
+    "hudoyo": "xudoyo",
+    # xulosa (conclusion) and related forms
+    "hulosa": "xulosa",
+    "hulosasi": "xulosasi",
+    "hulosalar": "xulosalar",
+    # xuddi (exactly)
+    "huddi": "xuddi",
+    # xo'ja (master/teacher) and related forms
+    "hoja": "xo'ja",
+    "hojalik": "xo'jalik",
+    "hojali": "xo'jali",
+    "hojayin": "xo'jayin",
+    # xo'roz (rooster)
+    "horoz": "xo'roz",
+    # xom (raw) and related forms
+    "hom": "xom",
+    "homashyo": "xomashyo",
+    # xor (choir/humiliated) and related forms
+    "hor": "xor",
+    "horlik": "xorlik",
+    # xossa (property/characteristic)
+    "hossa": "xossa",
+    "hossalar": "xossalar",
+    # xorazm (Khorezm region)
+    "horazm": "xorazm",
+    "horazmlik": "xorazmlik",
+    # xat (letter) and related forms
+    "hat": "xat",
+    "hati": "xati",
+    "hatlar": "xatlar",
+    # xalol (honest/halal in Uzbek context)
+    "halol": "xalol",
+    "halollik": "xalollik",
 }
 
 # Build regex pattern for whole-word matching (case-insensitive)

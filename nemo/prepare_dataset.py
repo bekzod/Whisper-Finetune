@@ -15,6 +15,7 @@ import struct
 import sys
 import tarfile
 import tempfile
+import threading
 import time
 import unicodedata
 from collections.abc import Iterable as IterableCollection
@@ -1138,6 +1139,33 @@ def _safe_extract_tarball(
     marker_path.write_text("extracted", encoding="utf-8")
 
 
+def _extract_all_tarballs(
+    root_dir: Path, tar_root_to_subdirs: Dict[str, set], max_workers: int = 8
+) -> None:
+    """Extract all tarballs under root_dir concurrently."""
+    if not root_dir.is_dir():
+        return
+    tarballs = [
+        (Path(d), f)
+        for d, _, files in os.walk(root_dir)
+        for f in files
+        if f.endswith((".tar", ".tar.gz"))
+    ]
+    if not tarballs:
+        return
+    lock = threading.Lock()
+
+    def extract(item: Tuple[Path, str]) -> None:
+        local: Dict[str, set] = {}
+        _safe_extract_tarball(item[0], item[1], local)
+        with lock:
+            for k, v in local.items():
+                tar_root_to_subdirs.setdefault(k, set()).update(v)
+
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        list(ex.map(extract, tarballs))
+
+
 def iter_common_voice_items(
     *,
     local_dir: Path,
@@ -1149,14 +1177,9 @@ def iter_common_voice_items(
 ) -> Iterable[Dict[str, Any]]:
     transcript_dir = local_dir / "transcript" / subset
 
-    # Extract any tarballs found in the audio directory tree
+    # Extract any tarballs found in the audio directory tree (concurrently)
     audio_root = local_dir / "audio"
-    if audio_root.is_dir():
-        for current_dir, _, files in os.walk(audio_root):
-            current_path = Path(current_dir)
-            for tar_file in files:
-                if tar_file.endswith((".tar", ".tar.gz")):
-                    _safe_extract_tarball(current_path, tar_file, {})
+    _extract_all_tarballs(audio_root, {})
 
     # Build split variants to process (for TSV file selection)
     subset_aliases = {
@@ -1310,12 +1333,7 @@ def iter_fleurs_items(
     audio_dir_abs = audio_dir.resolve()
 
     tar_root_to_subdirs: Dict[str, set] = {}
-    if audio_dir_abs.is_dir():
-        for current_dir, _, files in os.walk(audio_dir_abs):
-            current_path = Path(current_dir)
-            for tar_file in files:
-                if tar_file.endswith((".tar", ".tar.gz")):
-                    _safe_extract_tarball(current_path, tar_file, tar_root_to_subdirs)
+    _extract_all_tarballs(audio_dir_abs, tar_root_to_subdirs)
 
     audio_exts = (".wav", ".mp3", ".flac", ".m4a", ".ogg")
     path_index: Dict[str, str] = {}
