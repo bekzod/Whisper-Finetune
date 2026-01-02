@@ -413,6 +413,10 @@ def normalize_text(text: Any, stats: Optional[MisspellingStats] = None) -> str:
     normalized = _ALLOWED_TEXT_RE.sub("", normalized)
     normalized = _SPACE_BEFORE_PUNCT_RE.sub(r"\1", normalized)
     normalized = _MULTISPACE_RE.sub(" ", normalized).strip()
+    if normalized.startswith("-"):
+        normalized = normalized[1:].lstrip()
+    if normalized.endswith("-"):
+        normalized = normalized[:-1].rstrip()
     return normalized
 
 
