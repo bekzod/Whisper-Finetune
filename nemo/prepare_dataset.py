@@ -18,6 +18,7 @@ import tempfile
 import threading
 import time
 import unicodedata
+import warnings
 from collections.abc import Iterable as IterableCollection
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextlib import contextmanager
@@ -1619,7 +1620,10 @@ def load_audio(
         except Exception:
             # Fallback to librosa for formats like MP3
             try:
-                samples, sample_rate = librosa.load(ref, sr=None, mono=mono)
+                with warnings.catch_warnings():
+                    warnings.filterwarnings("ignore", category=UserWarning)
+                    warnings.filterwarnings("ignore", category=FutureWarning)
+                    samples, sample_rate = librosa.load(ref, sr=None, mono=mono)
                 arr = samples.astype(np.float32)
                 sr = int(sample_rate)
             except Exception:
