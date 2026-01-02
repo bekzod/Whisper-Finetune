@@ -1147,266 +1147,60 @@ def iter_common_voice_items(
     seed: int,
     limit: Optional[int],
 ) -> Iterable[Dict[str, Any]]:
-    audio_dir = local_dir / "audio" / subset
     transcript_dir = local_dir / "transcript" / subset
-    audio_dir_abs = audio_dir.resolve()
 
-    # Diagnostic: show actual paths being used
-    print(f"  Audio directory: {audio_dir_abs}")
-    print(f"  Audio directory exists: {audio_dir_abs.is_dir()}")
-    if audio_dir_abs.is_dir():
-        subdirs = [d.name for d in audio_dir_abs.iterdir() if d.is_dir()]
-        print(
-            f"  Subdirectories in audio_dir: {subdirs[:10]}{'...' if len(subdirs) > 10 else ''}"
-        )
+    # Extract any tarballs found in the audio directory tree
+    audio_root = local_dir / "audio"
+    if audio_root.is_dir():
+        for current_dir, _, files in os.walk(audio_root):
+            current_path = Path(current_dir)
+            for tar_file in files:
+                if tar_file.endswith((".tar", ".tar.gz")):
+                    _safe_extract_tarball(current_path, tar_file, {})
 
-    tar_root_to_subdirs: Dict[str, set] = {}
-    # Search for tarballs in audio_dir and its parent (Common Voice structure can vary)
-    search_dirs = [audio_dir_abs, audio_dir_abs.parent, local_dir / "audio"]
-    for search_dir in search_dirs:
-        if search_dir.is_dir():
-            for current_dir, _, files in os.walk(search_dir):
-                current_path = Path(current_dir)
-                for tar_file in files:
-                    if tar_file.endswith((".tar", ".tar.gz")):
-                        _safe_extract_tarball(
-                            current_path, tar_file, tar_root_to_subdirs
-                        )
-
+    # Build split variants to process (for TSV file selection)
     subset_aliases = {
-        "validation": ["validated"],
-        "validated": ["validation"],
-        "dev": ["development"],
-        "development": ["dev"],
+        "validation": ["validated", "dev"],
+        "validated": ["validation", "dev"],
+        "dev": ["development", "validation"],
     }
-
     subset_variants: List[str] = []
     if split:
         base = str(split).strip().lower()
         if base:
             subset_variants.append(base)
+            subset_variants.extend(subset_aliases.get(base, []))
     else:
-        subset_variants.extend(
-            ["train", "validation", "test", "dev", "validated", "invalidated", "other"]
-        )
+        subset_variants = ["train", "validation", "test", "dev", "validated", "other"]
 
-    for variant in list(subset_variants):
-        for alias in subset_aliases.get(variant, []):
-            if alias not in subset_variants:
-                subset_variants.append(alias)
+    # Pre-scan entire audio directory tree once to build filename -> path cache
+    # This handles any directory structure (flat, split-based, sharded, etc.)
+    path_cache: Dict[str, str] = {}
+    if audio_root.is_dir():
+        print(f"  Scanning {audio_root} for audio files...")
+        for root, _, files in os.walk(audio_root):
+            for f in files:
+                if f not in path_cache:
+                    path_cache[f] = os.path.join(root, f)
+        print(f"  Found {len(path_cache)} audio files")
 
-    candidate_dirs: List[str] = []
-    seen_dirs: set = set()
-
-    def _add_candidate(dir_path: Path) -> None:
-        abs_path = dir_path.resolve()
-        if abs_path.is_dir():
-            abs_str = str(abs_path)
-            if abs_str not in seen_dirs:
-                seen_dirs.add(abs_str)
-                candidate_dirs.append(abs_str)
-
-    _add_candidate(audio_dir_abs)
-    for variant in subset_variants:
-        _add_candidate(audio_dir_abs / variant)
-    if audio_dir_abs.is_dir():
-        for subdir in audio_dir_abs.iterdir():
-            if subdir.is_dir():
-                _add_candidate(subdir)
-                # Also check for sharded subdirectories (e.g., uz_train_0, uz_train_1)
-                for nested in subdir.iterdir():
-                    if nested.is_dir():
-                        _add_candidate(nested)
-                        # Go one level deeper for deeply nested structures
-                        for deep_nested in nested.iterdir():
-                            if deep_nested.is_dir():
-                                _add_candidate(deep_nested)
-
-    # Comprehensive recursive scan for all subdirectories containing audio files
-    # This handles non-standard directory structures like fsicoli Common Voice
-    # where audio may be in train/uz_validation_0/ regardless of the split being processed
-    all_splits = [
-        "train",
-        "validation",
-        "test",
-        "dev",
-        "other",
-        "validated",
-        "invalidated",
-    ]
-    for split_name in all_splits:
-        split_dir = audio_dir_abs / split_name
-        if split_dir.is_dir():
-            _add_candidate(split_dir)
-            # Add all shard directories regardless of their name
-            for shard_dir in split_dir.iterdir():
-                if shard_dir.is_dir():
-                    _add_candidate(shard_dir)
-
-    # Also check parent directories - Common Voice structure can vary
-    # e.g., audio might be directly under audio/{subset} without split subdirs
-    _add_candidate(audio_dir_abs.parent)
-    _add_candidate(local_dir / "audio")
-    _add_candidate(local_dir)
-
-    # Check for common audio subdirectory patterns
-    for variant in subset_variants:
-        _add_candidate(audio_dir_abs.parent / variant)
-        _add_candidate(local_dir / "audio" / variant)
-
-    for base_dir in list(candidate_dirs):
-        for suffix in tar_root_to_subdirs.get(base_dir, set()):
-            suffix_path = Path(base_dir) / suffix
-            _add_candidate(suffix_path)
-            _add_candidate(suffix_path / "clips")
-        _add_candidate(Path(base_dir) / "clips")
-        # Also check for nested subset directories inside extracted tarballs
-        _add_candidate(Path(base_dir) / subset)
-
-    # Recursively scan audio_dir parent for any subdirectories containing audio files
-    audio_parent = audio_dir_abs.parent
-    if audio_parent.is_dir():
-        for subdir in audio_parent.iterdir():
-            if subdir.is_dir():
-                _add_candidate(subdir)
-                for variant in subset_variants:
-                    _add_candidate(subdir / variant)
-
-    if not candidate_dirs:
-        candidate_dirs.append(str(audio_dir_abs))
-
-    # Print diagnostic info about search directories
-    print(f"  Audio search directories ({len(candidate_dirs)} candidates):")
-    for i, d in enumerate(candidate_dirs[:10]):  # Show first 10
-        print(f"    [{i + 1}] {d}")
-    if len(candidate_dirs) > 10:
-        print(f"    ... and {len(candidate_dirs) - 10} more")
-
-    # Check if any candidate directories contain audio files
-    audio_exts = {".mp3", ".wav", ".flac", ".ogg", ".m4a"}
-    for d in candidate_dirs[:5]:
-        if os.path.isdir(d):
-            sample_files = [
-                f for f in os.listdir(d)[:5] if any(f.endswith(e) for e in audio_exts)
-            ]
-            if sample_files:
-                print(f"    Found audio in {d}: {sample_files[:3]}...")
-                break
-    else:
-        print("    WARNING: No audio files found in top candidate directories!")
-
-    path_cache: Dict[str, Optional[str]] = {}
-    walked_roots: set = set()  # Track directories already recursively walked
     missing_logged: set = set()
 
     def _resolve_audio_path(filename: str) -> Optional[str]:
         if not filename:
             return None
-        normalized = filename.strip().replace("\\", os.sep)
-        has_ext = bool(os.path.splitext(normalized)[1])
-        exts = [".mp3", ".wav", ".flac", ".ogg", ".m4a"]
-
-        cached = path_cache.get(normalized)
-        if cached is not None:
-            return cached
-
-        candidates = []
-        names = [normalized]
-        base_name = os.path.basename(normalized)
-        if base_name != normalized:
-            names.append(base_name)
-
-        # Build list of base names with alternative extensions for fallback searches
-        base_name_no_ext, orig_ext = os.path.splitext(base_name)
-        alt_base_names = [base_name]
-        if has_ext:
-            for ext in exts:
-                if ext != orig_ext:
-                    alt_base_names.append(f"{base_name_no_ext}{ext}")
-
-        if has_ext:
-            # First try the original extension
-            candidates.extend(names)
-            # Then try alternative extensions (e.g., .wav when .mp3 not found)
-            base_no_ext, _ = os.path.splitext(normalized)
-            for ext in exts:
-                candidates.append(f"{base_no_ext}{ext}")
-                if base_name_no_ext != base_no_ext:
-                    candidates.append(f"{base_name_no_ext}{ext}")
-        else:
-            for name in names:
-                for ext in exts:
-                    candidates.append(f"{name}{ext}")
-
-        resolved = None
-        for name in candidates:
-            if os.path.isabs(name):
-                if os.path.exists(name):
-                    resolved = name
-                    break
-                continue
-            for base_dir in candidate_dirs:
-                direct_path = os.path.join(base_dir, name)
-                if os.path.exists(direct_path):
-                    resolved = direct_path
-                    break
-                for suffix in tar_root_to_subdirs.get(base_dir, set()):
-                    nested_path = os.path.join(base_dir, suffix, os.path.basename(name))
-                    if os.path.exists(nested_path):
-                        resolved = nested_path
-                        break
-                if resolved:
-                    break
-            if resolved:
-                break
-
-        if resolved is None and os.sep in normalized:
-            for base_dir in candidate_dirs:
-                for alt_name in alt_base_names:
-                    fallback_path = os.path.join(base_dir, alt_name)
-                    if os.path.exists(fallback_path):
-                        resolved = fallback_path
-                        break
-                if resolved:
-                    break
-
-        # Last resort: recursive search in audio directory tree (caches results)
-        # Walk the entire tree to build a complete cache for future lookups
-        if resolved is None:
-            search_roots = [audio_dir_abs, audio_dir_abs.parent, local_dir / "audio"]
-            for search_root in search_roots:
-                if not search_root.is_dir():
-                    continue
-                search_root_str = str(search_root.resolve())
-                # Skip if this root is a subdirectory of an already-walked root
-                # or if we've already walked this exact root
-                already_covered = False
-                for walked in walked_roots:
-                    if search_root_str == walked or search_root_str.startswith(
-                        walked + os.sep
-                    ):
-                        already_covered = True
-                        break
-                if already_covered:
-                    continue
-                walked_roots.add(search_root_str)
-                for root, dirs, files in os.walk(search_root):
-                    # Cache all files found in this directory for faster future lookups
-                    for f in files:
-                        if f not in path_cache:
-                            path_cache[f] = os.path.join(root, f)
-                    # Try all alternative base names (original + other extensions)
-                    # Don't break early - continue walking to build complete cache
-                    if resolved is None:
-                        for alt_name in alt_base_names:
-                            if alt_name in files:
-                                resolved = os.path.join(root, alt_name)
-                                break
-
-        if resolved:
-            resolved = os.path.abspath(resolved)
-        path_cache[normalized] = resolved
-        return resolved
+        name = filename.strip()
+        # Try exact filename first, then basename
+        for key in [name, os.path.basename(name)]:
+            if key in path_cache:
+                return path_cache[key]
+            # Try alternative extensions
+            base, ext = os.path.splitext(key)
+            if ext:
+                for alt_ext in [".mp3", ".wav", ".flac", ".ogg", ".m4a"]:
+                    if alt_ext != ext and (base + alt_ext) in path_cache:
+                        return path_cache[base + alt_ext]
+        return None
 
     keep_prob = 1.0
     if percentage is not None and percentage < 100:
@@ -1491,9 +1285,6 @@ def iter_common_voice_items(
                         return
                 elif audio_filename not in missing_logged:
                     missing_logged.add(audio_filename)
-                    # Log first few missing files for debugging
-                    if len(missing_logged) <= 3:
-                        print(f"    Missing audio: {audio_filename}")
 
     # Print summary after processing all TSV files
     print(
