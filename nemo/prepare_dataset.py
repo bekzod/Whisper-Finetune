@@ -1264,7 +1264,15 @@ def iter_common_voice_items(
         if base_name != normalized:
             names.append(base_name)
         if has_ext:
+            # First try the original extension
             candidates.extend(names)
+            # Then try alternative extensions (e.g., .wav when .mp3 not found)
+            base_no_ext, _ = os.path.splitext(normalized)
+            base_name_no_ext, _ = os.path.splitext(base_name)
+            for ext in exts:
+                candidates.append(f"{base_no_ext}{ext}")
+                if base_name_no_ext != base_no_ext:
+                    candidates.append(f"{base_name_no_ext}{ext}")
         else:
             for name in names:
                 for ext in exts:
