@@ -1426,9 +1426,26 @@ def iter_common_voice_items(
                         )
                         return
                 elif audio_filename not in missing_logged:
+                    # Debug: show what we tried
+                    base_name = os.path.basename(audio_filename)
+                    base_name_no_ext, orig_ext = os.path.splitext(base_name)
+                    alt_names = [base_name]
+                    if orig_ext:
+                        for ext in [".mp3", ".wav", ".flac", ".ogg", ".m4a"]:
+                            if ext != orig_ext:
+                                alt_names.append(f"{base_name_no_ext}{ext}")
                     print(
                         f"  Warning (line {row_number}): audio file '{audio_filename}' not found under {audio_dir_abs}"
                     )
+                    print(f"    Tried candidates: {alt_names[:3]}...")
+                    print(f"    In directories: {candidate_dirs[:2]}...")
+                    # Check if any variant exists
+                    for d in candidate_dirs[:2]:
+                        for alt in alt_names:
+                            check_path = os.path.join(d, alt)
+                            print(
+                                f"    Checking: {check_path} -> exists={os.path.exists(check_path)}"
+                            )
                     missing_logged.add(audio_filename)
 
     # Print summary after processing all TSV files
