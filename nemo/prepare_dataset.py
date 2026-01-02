@@ -1243,10 +1243,10 @@ def iter_common_voice_items(
 
     # Print diagnostic info about search directories
     print(f"  Audio search directories ({len(candidate_dirs)} candidates):")
-    for i, d in enumerate(candidate_dirs[:10]):  # Show first 10
+    for i, d in enumerate(candidate_dirs[:5]):  # Show first 5
         print(f"    [{i + 1}] {d}")
-    if len(candidate_dirs) > 10:
-        print(f"    ... and {len(candidate_dirs) - 10} more")
+    if len(candidate_dirs) > 5:
+        print(f"    ... and {len(candidate_dirs) - 5} more")
 
     path_cache: Dict[str, Optional[str]] = {}
     missing_logged: set = set()
@@ -1430,18 +1430,6 @@ def iter_common_voice_items(
                         )
                         return
                 elif audio_filename not in missing_logged:
-                    print(
-                        f"  Warning (line {row_number}): audio file '{audio_filename}' not found under {audio_dir_abs}"
-                    )
-                    # Debug: check if file exists with .wav extension in sharded dirs
-                    base_name = os.path.basename(audio_filename)
-                    base_no_ext, _ = os.path.splitext(base_name)
-                    for d in candidate_dirs:
-                        for ext in [".mp3", ".wav"]:
-                            check_path = os.path.join(d, f"{base_no_ext}{ext}")
-                            if os.path.exists(check_path):
-                                print(f"    FOUND at: {check_path}")
-                                break
                     missing_logged.add(audio_filename)
 
     # Print summary after processing all TSV files
