@@ -4,7 +4,86 @@
       "name": "fsicoli/common_voice_17_0",
       "subset": "uz",
       "splits": ["train", "test"]
+    },
+    {
+      "name": "islomov/it_youtube_uzbek_speech_dataset",
+      "splits": ["train"]
+    },
+    {
+      "name": "islomov/podcasts_tashkent_dialect_youtube_uzbek_speech_dataset",
+      "splits": ["train"]
+    },
+    {
+      "name": "CrazyMathematician/uzbek_voice_cleaned",
+      "splits": ["train"]
+    },
+    {
+      "name": "IbratDO/uzbekvoice-2k-each-accent",
+      "splits": ["train"]
+    },
+    {
+      "name": "islomov/news_youtube_uzbek_speech_dataset",
+      "splits": ["train"]
+    },
+    {
+      "name": "google/fleurs",
+      "subset": "uz_uz",
+      "splits": ["train", "test", "dev"]
+    },
+    {
+      "name": "bekzod123/uzbek_voice",
+      "splits": ["train"]
+    },
+    {
+      "name": "DavronSherbaev/uzbekvoice-filtered",
+      "splits": ["train", "validate"]
+    },
+    {
+      "name": "bekzod123/uzbek_voice_2",
+      "splits": ["train", "validated", "test", "dev"]
+    },
+    {
+      "name": "bekzod123/uzbek_voice_3",
+      "splits": ["train"]
+    },
+    {
+      "name": "bekzod123/uzbek_voice_4",
+      "splits": ["train"]
+    },
+    {
+      "name": "k2speech/FeruzaSpeech",
+      "splits": ["train", "test", "dev"]
+    },
+    {
+      "name": "Beehzod/dataset_for_STT_TTSmodels",
+      "splits": ["train"]
+    },
+    {
+      "name": "IbratDO/cv_female2546_dataset",
+      "splits": ["train"]
+    },
+    {
+      "name": "IbratDO/cv_female5000_dataset",
+      "splits": ["train"]
+    },
+    {
+      "name": "IbratDO/second_dataset",
+      "splits": ["train"]
+    },
+    {
+      "name": "IbratDO/uzbekvoice-1K",
+      "splits": ["train", "test"]
+    },
+    {
+      "name": "IbratDO/first_dataset",
+      "splits": ["train"]
     }
   ],
-  "eval": []
+  "eval": [
+    {
+      "name": "fsicoli/common_voice_17_0",
+      "subset": "uz",
+      "splits": ["validation"]
+    }
+  ]
 }
