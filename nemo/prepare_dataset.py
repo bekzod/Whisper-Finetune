@@ -1199,12 +1199,13 @@ def iter_common_voice_items(
     # Pre-scan entire audio directory tree once to build filename -> path cache
     # This handles any directory structure (flat, split-based, sharded, etc.)
     path_cache: Dict[str, str] = {}
-    if audio_root.is_dir():
-        print(f"  Scanning {audio_root} for audio files...")
-        for root, _, files in os.walk(audio_root):
+    audio_root_abs = audio_root.resolve()
+    if audio_root_abs.is_dir():
+        print(f"  Scanning {audio_root_abs} for audio files...")
+        for root, _, files in os.walk(audio_root_abs):
             for f in files:
                 if f not in path_cache:
-                    path_cache[f] = os.path.join(root, f)
+                    path_cache[f] = os.path.abspath(os.path.join(root, f))
         print(f"  Found {len(path_cache)} audio files")
 
     missing_logged: set = set()
