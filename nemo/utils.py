@@ -26,7 +26,7 @@ _ALLOWED_TEXT_RE = re.compile(r"[^a-zA-ZА-Яа-яЎўҚқҒғҲҳ0-9\s,.'-]+")
 # Common Uzbek misspellings: missing apostrophes, variant spellings, etc.
 # Format: incorrect -> correct
 _UZBEK_MISSPELLINGS = {
-    # Missing apostrophes in common words
+    # Missing apostrophes in bo'lmoq (to be/become) forms
     "boladi": "bo'ladi",
     "bolish": "bo'lish",
     "bolgan": "bo'lgan",
@@ -37,42 +37,105 @@ _UZBEK_MISSPELLINGS = {
     "bolmaydi": "bo'lmaydi",
     "bolmas": "bo'lmas",
     "bolmasin": "bo'lmasin",
+    # Missing apostrophes in o'z (self) forms
     "ozim": "o'zim",
     "ozing": "o'zing",
-    "ozi": "o'zi",
     "ozimiz": "o'zimiz",
     "ozingiz": "o'zingiz",
     "ozlari": "o'zlari",
+    # Missing apostrophes in qo'ymoq (to put) forms
     "qoydi": "qo'ydi",
     "qoyib": "qo'yib",
     "qoygan": "qo'ygan",
     "qoyar": "qo'yar",
+    "qoyish": "qo'yish",
+    "qoyadi": "qo'yadi",
+    # Missing apostrophes in ko'rmoq (to see) forms
     "korib": "ko'rib",
     "koradi": "ko'radi",
     "korgan": "ko'rgan",
     "korar": "ko'rar",
     "korish": "ko'rish",
+    "kordi": "ko'rdi",
+    "korsat": "ko'rsat",
+    "korsatdi": "ko'rsatdi",
+    "korsatish": "ko'rsatish",
+    # Missing apostrophes in ko'p (many) forms
     "kop": "ko'p",
     "kopchilik": "ko'pchilik",
     "koplab": "ko'plab",
+    "koprok": "ko'proq",
+    # Missing apostrophes in ko'cha (street) forms
     "kocha": "ko'cha",
     "kochada": "ko'chada",
+    "kochasi": "ko'chasi",
+    # Missing apostrophes in to'g'ri (correct/straight)
     "togri": "to'g'ri",
     "togrisida": "to'g'risida",
-    "tola": "to'la",
+    # Missing apostrophes in to'liq (complete) forms
     "toliq": "to'liq",
     "toldirib": "to'ldirib",
+    "toldirish": "to'ldirish",
+    # Missing apostrophes in go'zal (beautiful)
     "gozal": "go'zal",
+    # Missing apostrophes in so'rov (request)
     "sorov": "so'rov",
-    "sozlar": "so'zlar",
-    "sozlash": "so'zlash",
-    # Common g' misspellings
-    "gapiradi": "g'apiradi",
-    "gapirib": "g'apirib",
-    "gapirish": "g'apirish",
-    # Common word variants
-    "kerak": "kerak",
-    "keyingi": "keyingi",
+    # Missing apostrophes in o'rganmoq (to learn) forms
+    "organmoq": "o'rganmoq",
+    "organdi": "o'rgandi",
+    "organib": "o'rganib",
+    "organish": "o'rganish",
+    "organadi": "o'rganadi",
+    # Missing apostrophes in o'ylamoq (to think) forms
+    "oyladi": "o'yladi",
+    "oylab": "o'ylab",
+    "oylash": "o'ylash",
+    "oylaydi": "o'ylaydi",
+    # Missing apostrophes in o'tirmoq (to sit) forms
+    "otirdi": "o'tirdi",
+    "otirib": "o'tirib",
+    "otirish": "o'tirish",
+    "otiradi": "o'tiradi",
+    # Missing apostrophes in o'ynamoq (to play) forms
+    "oynadi": "o'ynadi",
+    "oynab": "o'ynab",
+    "oynash": "o'ynash",
+    "oynaydi": "o'ynaydi",
+    # Missing apostrophes in o'qimoq (to read/study) - careful: oqmoq (to flow) is different
+    "oqituvchi": "o'qituvchi",
+    "oquvchi": "o'quvchi",
+    # Missing apostrophes in o'zgarmoq (to change) forms
+    "ozgardi": "o'zgardi",
+    "ozgarib": "o'zgarib",
+    "ozgarish": "o'zgarish",
+    "ozgaradi": "o'zgaradi",
+    # Missing apostrophes in other o' words
+    "ogil": "o'g'il",
+    "orta": "o'rta",
+    "ortada": "o'rtada",
+    "ormon": "o'rmon",
+    "osha": "o'sha",
+    "oshanda": "o'shanda",
+    "orin": "o'rin",
+    "orinda": "o'rinda",
+    "olik": "o'lik",
+    "otkazdi": "o'tkazdi",
+    "otkazish": "o'tkazish",
+    # Missing apostrophes in g' words
+    "galaba": "g'alaba",
+    "goya": "g'oya",
+    "goyat": "g'oyat",
+    "garb": "g'arb",
+    "garbiy": "g'arbiy",
+    "gayrat": "g'ayrat",
+    "gazab": "g'azab",
+    "galati": "g'alati",
+    "gamgin": "g'amgin",
+    "gildirak": "g'ildirak",
+    "gisht": "g'isht",
+    "goyib": "g'oyib",
+    "gam": "g'am",
+    "gurur": "g'urur",
 }
 
 # Build regex pattern for whole-word matching (case-insensitive)
