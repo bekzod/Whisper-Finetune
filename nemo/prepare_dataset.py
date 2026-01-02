@@ -73,6 +73,7 @@ DEFAULT_MIN_DURATION = 0.4
 DEFAULT_MAX_DURATION = 30.0
 DEFAULT_MIN_CHARS = 1
 DEFAULT_MAX_CHARS = 680
+DEFAULT_MIN_CHARS_PER_SEC = 3.0
 DEFAULT_MAX_CHARS_PER_SEC = 26.0
 DEFAULT_SAMPLING_SEED = 3407
 DEFAULT_CACHE_ROOT = Path("/workspace")
@@ -293,6 +294,15 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=DEFAULT_MAX_CHARS,
         help="Maximum cleaned transcript length in chars.",
+    )
+    parser.add_argument(
+        "--min-chars-per-sec",
+        type=float,
+        default=DEFAULT_MIN_CHARS_PER_SEC,
+        help=(
+            "Filter items when non-space char count per second falls below this value "
+            f"(default: {DEFAULT_MIN_CHARS_PER_SEC:g}; set <=0 to disable)."
+        ),
     )
     parser.add_argument(
         "--max-chars-per-sec",
@@ -1190,6 +1200,10 @@ def iter_common_voice_items(
     _add_candidate(audio_dir_abs)
     for variant in subset_variants:
         _add_candidate(audio_dir_abs / variant)
+    if audio_dir_abs.is_dir():
+        for subdir in audio_dir_abs.iterdir():
+            if subdir.is_dir():
+                _add_candidate(subdir)
 
     # Also check parent directories - Common Voice structure can vary
     # e.g., audio might be directly under audio/{subset} without split subdirs
@@ -1204,7 +1218,9 @@ def iter_common_voice_items(
 
     for base_dir in list(candidate_dirs):
         for suffix in tar_root_to_subdirs.get(base_dir, set()):
-            _add_candidate(Path(base_dir) / suffix)
+            suffix_path = Path(base_dir) / suffix
+            _add_candidate(suffix_path)
+            _add_candidate(suffix_path / "clips")
         _add_candidate(Path(base_dir) / "clips")
         # Also check for nested subset directories inside extracted tarballs
         _add_candidate(Path(base_dir) / subset)
@@ -1967,6 +1983,7 @@ def _process_audio_item(
     mono: bool,
     min_duration: float,
     max_duration: float,
+    min_chars_per_sec: Optional[float],
     max_chars_per_sec: Optional[float],
     compute_audio_hash: bool,
     audio_key: Optional[str] = None,
@@ -1989,14 +2006,22 @@ def _process_audio_item(
     if max_duration != -1 and duration > max_duration:
         return AudioProcessResult(status="dur_filtered", transcript=transcript)
 
-    if max_chars_per_sec is not None and max_chars_per_sec > 0:
+    if (min_chars_per_sec is not None and min_chars_per_sec > 0) or (
+        max_chars_per_sec is not None and max_chars_per_sec > 0
+    ):
         non_space_chars = sum(1 for ch in transcript if not ch.isspace())
         if non_space_chars > 0:
             chars_per_sec = non_space_chars / duration
-            if chars_per_sec > max_chars_per_sec:
-                return AudioProcessResult(
-                    status="text_audio_mismatch", transcript=transcript
-                )
+            if min_chars_per_sec is not None and min_chars_per_sec > 0:
+                if chars_per_sec < min_chars_per_sec:
+                    return AudioProcessResult(
+                        status="text_audio_mismatch", transcript=transcript
+                    )
+            if max_chars_per_sec is not None and max_chars_per_sec > 0:
+                if chars_per_sec > max_chars_per_sec:
+                    return AudioProcessResult(
+                        status="text_audio_mismatch", transcript=transcript
+                    )
 
     audio_hash = None
     if compute_audio_hash:
@@ -2031,6 +2056,7 @@ def process_items(
     max_duration: float,
     min_chars: int,
     max_chars: int,
+    min_chars_per_sec: Optional[float],
     max_chars_per_sec: Optional[float],
     absolute_paths: bool,
     frequency_collector: Optional["WordFrequencyCollector"] = None,
@@ -2139,6 +2165,7 @@ def process_items(
                 mono=mono,
                 min_duration=min_duration,
                 max_duration=max_duration,
+                min_chars_per_sec=min_chars_per_sec,
                 max_chars_per_sec=max_chars_per_sec,
                 compute_audio_hash=dedupe_text_audio,
                 audio_key=audio_key,
@@ -2190,6 +2217,7 @@ def process_items(
                     mono=mono,
                     min_duration=min_duration,
                     max_duration=max_duration,
+                    min_chars_per_sec=min_chars_per_sec,
                     max_chars_per_sec=max_chars_per_sec,
                     compute_audio_hash=dedupe_text_audio,
                     audio_key=audio_key,
@@ -2233,6 +2261,7 @@ def prepare_group(
     max_duration: float,
     min_chars: int,
     max_chars: int,
+    min_chars_per_sec: Optional[float],
     max_chars_per_sec: Optional[float],
     absolute_paths: bool,
     limit: Optional[int],
@@ -2269,6 +2298,7 @@ def prepare_group(
                     max_duration=max_duration,
                     min_chars=min_chars,
                     max_chars=max_chars,
+                    min_chars_per_sec=min_chars_per_sec,
                     max_chars_per_sec=max_chars_per_sec,
                     absolute_paths=absolute_paths,
                     limit=limit,
@@ -2308,6 +2338,7 @@ def _process_single_spec(
     max_duration: float,
     min_chars: int,
     max_chars: int,
+    min_chars_per_sec: Optional[float],
     max_chars_per_sec: Optional[float],
     absolute_paths: bool,
     limit: Optional[int],
@@ -2352,6 +2383,7 @@ def _process_single_spec(
                     max_duration=max_duration,
                     min_chars=min_chars,
                     max_chars=max_chars,
+                    min_chars_per_sec=min_chars_per_sec,
                     max_chars_per_sec=max_chars_per_sec,
                     absolute_paths=absolute_paths,
                     frequency_collector=frequency_collector,
@@ -2403,6 +2435,7 @@ def _process_single_spec(
                     max_duration=max_duration,
                     min_chars=min_chars,
                     max_chars=max_chars,
+                    min_chars_per_sec=min_chars_per_sec,
                     max_chars_per_sec=max_chars_per_sec,
                     absolute_paths=absolute_paths,
                     frequency_collector=frequency_collector,
@@ -2474,6 +2507,7 @@ def _process_single_spec(
                 max_duration=max_duration,
                 min_chars=min_chars,
                 max_chars=max_chars,
+                min_chars_per_sec=min_chars_per_sec,
                 max_chars_per_sec=max_chars_per_sec,
                 absolute_paths=absolute_paths,
                 frequency_collector=frequency_collector,
@@ -2542,6 +2576,7 @@ def main() -> None:
             max_duration=args.max_duration,
             min_chars=args.min_chars,
             max_chars=args.max_chars,
+            min_chars_per_sec=args.min_chars_per_sec,
             max_chars_per_sec=args.max_chars_per_sec,
             absolute_paths=args.absolute_paths,
             limit=args.limit,
