@@ -1207,16 +1207,8 @@ def iter_common_voice_items(
                 if f not in path_cache:
                     path_cache[f] = os.path.abspath(os.path.join(root, f))
         print(f"  Found {len(path_cache)} audio files")
-        # Debug: show sample entries
-        if path_cache:
-            sample_keys = list(path_cache.keys())[:3]
-            for k in sample_keys:
-                p = path_cache[k]
-                exists = os.path.isfile(p)
-                print(f"    Sample: {k} -> {p} (exists={exists})")
 
     missing_logged: set = set()
-    debug_count = [0]  # Use list to allow mutation in nested function
 
     def _resolve_audio_path(filename: str) -> Optional[str]:
         if not filename:
@@ -1232,14 +1224,6 @@ def iter_common_voice_items(
                 for alt_ext in [".mp3", ".wav", ".flac", ".ogg", ".m4a"]:
                     if alt_ext != ext and (base + alt_ext) in path_cache:
                         return path_cache[base + alt_ext]
-        # Debug: show first few misses
-        if debug_count[0] < 5:
-            debug_count[0] += 1
-            sample_cache_keys = list(path_cache.keys())[:3] if path_cache else []
-            print(
-                f"  DEBUG: Cache miss for '{name}' (basename='{os.path.basename(name)}')"
-            )
-            print(f"         Sample cache keys: {sample_cache_keys}")
         return None
 
     keep_prob = 1.0
@@ -1622,19 +1606,24 @@ def load_audio(
             return None, None
         # Regular file path
         if not os.path.isfile(ref):
-            print(f"  DEBUG: File not found: {ref}")
             return None, None
+        # Try soundfile first (faster, but doesn't support MP3)
         try:
             samples, sample_rate = sf.read(ref, dtype="float32", always_2d=True)
-        except Exception as e:
-            print(f"  DEBUG: Failed to read {ref}: {e}")
-            return None, None
-        if mono:
-            samples = samples.mean(axis=1).astype(np.float32)
-        else:
-            samples = samples.astype(np.float32)
-        arr = samples
-        sr = int(sample_rate)
+            if mono:
+                samples = samples.mean(axis=1).astype(np.float32)
+            else:
+                samples = samples.astype(np.float32)
+            arr = samples
+            sr = int(sample_rate)
+        except Exception:
+            # Fallback to librosa for formats like MP3
+            try:
+                samples, sample_rate = librosa.load(ref, sr=None, mono=mono)
+                arr = samples.astype(np.float32)
+                sr = int(sample_rate)
+            except Exception:
+                return None, None
     else:
         arr = arr.astype(np.float32, copy=False)
         if arr.ndim == 2:
