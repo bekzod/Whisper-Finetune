@@ -1263,12 +1263,20 @@ def iter_common_voice_items(
         base_name = os.path.basename(normalized)
         if base_name != normalized:
             names.append(base_name)
+
+        # Build list of base names with alternative extensions for fallback searches
+        base_name_no_ext, orig_ext = os.path.splitext(base_name)
+        alt_base_names = [base_name]
+        if has_ext:
+            for ext in exts:
+                if ext != orig_ext:
+                    alt_base_names.append(f"{base_name_no_ext}{ext}")
+
         if has_ext:
             # First try the original extension
             candidates.extend(names)
             # Then try alternative extensions (e.g., .wav when .mp3 not found)
             base_no_ext, _ = os.path.splitext(normalized)
-            base_name_no_ext, _ = os.path.splitext(base_name)
             for ext in exts:
                 candidates.append(f"{base_no_ext}{ext}")
                 if base_name_no_ext != base_no_ext:
@@ -1302,9 +1310,12 @@ def iter_common_voice_items(
 
         if resolved is None and os.sep in normalized:
             for base_dir in candidate_dirs:
-                fallback_path = os.path.join(base_dir, base_name)
-                if os.path.exists(fallback_path):
-                    resolved = fallback_path
+                for alt_name in alt_base_names:
+                    fallback_path = os.path.join(base_dir, alt_name)
+                    if os.path.exists(fallback_path):
+                        resolved = fallback_path
+                        break
+                if resolved:
                     break
 
         # Last resort: recursive search in audio directory tree (caches results)
@@ -1314,12 +1325,16 @@ def iter_common_voice_items(
                 if not search_root.is_dir():
                     continue
                 for root, dirs, files in os.walk(search_root):
-                    if base_name in files:
-                        resolved = os.path.join(root, base_name)
-                        # Cache all files found in this directory for faster future lookups
-                        for f in files:
-                            if f not in path_cache:
-                                path_cache[f] = os.path.join(root, f)
+                    # Try all alternative base names (original + other extensions)
+                    for alt_name in alt_base_names:
+                        if alt_name in files:
+                            resolved = os.path.join(root, alt_name)
+                            break
+                    # Cache all files found in this directory for faster future lookups
+                    for f in files:
+                        if f not in path_cache:
+                            path_cache[f] = os.path.join(root, f)
+                    if resolved:
                         break
                 if resolved:
                     break
