@@ -30,6 +30,8 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 import librosa
 import numpy as np
 import soundfile as sf
+import torch
+import torchaudio
 from datasets import Audio, load_dataset
 from huggingface_hub import constants as hf_constants
 from huggingface_hub import snapshot_download
@@ -393,11 +395,6 @@ def _configure_hf_http_settings(
     etag_timeout: Optional[int],
     max_retries: Optional[int],
 ) -> None:
-    try:
-        from huggingface_hub import constants as hf_constants
-    except Exception:
-        hf_constants = None
-
     settings = {
         "HF_HUB_READ_TIMEOUT": read_timeout,
         "HF_HUB_CONNECT_TIMEOUT": connect_timeout,
@@ -1593,6 +1590,46 @@ def iter_fleurs_items(
                     missing_logged.add(audio_filename)
 
 
+def _load_audio_with_torchaudio(
+    ref: str, *, mono: bool
+) -> Tuple[Optional[np.ndarray], Optional[int]]:
+    try:
+        waveform, sample_rate = torchaudio.load(ref)
+    except Exception:
+        return None, None
+    if waveform is None:
+        return None, None
+    if waveform.ndim == 2:
+        if mono:
+            waveform = waveform.mean(dim=0)
+        else:
+            waveform = waveform.transpose(0, 1)
+    elif waveform.ndim == 1 and not mono:
+        waveform = waveform.unsqueeze(1)
+    arr = waveform.cpu().numpy().astype(np.float32, copy=False)
+    return arr, int(sample_rate)
+
+
+def _resample_with_torchaudio(
+    arr: np.ndarray, *, sr: int, target_sr: int
+) -> Optional[np.ndarray]:
+    try:
+        if arr.ndim == 1:
+            waveform = torch.from_numpy(arr)
+        else:
+            waveform = torch.from_numpy(arr.T)
+        resampled = torchaudio.functional.resample(
+            waveform, orig_freq=sr, new_freq=target_sr
+        )
+        if arr.ndim == 1:
+            out = resampled
+        else:
+            out = resampled.transpose(0, 1)
+        return out.cpu().numpy().astype(np.float32, copy=False)
+    except Exception:
+        return None
+
+
 def load_audio(
     arr: Optional[np.ndarray],
     sr: Optional[int],
@@ -1608,16 +1645,27 @@ def load_audio(
         # Regular file path
         if not os.path.isfile(ref):
             return None, None
-        # Try soundfile first (faster, but doesn't support MP3)
-        try:
-            samples, sample_rate = sf.read(ref, dtype="float32", always_2d=True)
-            if mono:
-                samples = samples.mean(axis=1).astype(np.float32)
-            else:
-                samples = samples.astype(np.float32)
-            arr = samples
-            sr = int(sample_rate)
-        except Exception:
+        ext = os.path.splitext(ref)[1].lower()
+        tried_torchaudio = False
+        if ext == ".mp3":
+            arr, sr = _load_audio_with_torchaudio(ref, mono=mono)
+            tried_torchaudio = True
+        if arr is None:
+            # Try soundfile first (faster, but doesn't support MP3 by default)
+            try:
+                samples, sample_rate = sf.read(ref, dtype="float32", always_2d=True)
+                if mono:
+                    samples = samples.mean(axis=1).astype(np.float32)
+                else:
+                    samples = samples.astype(np.float32)
+                arr = samples
+                sr = int(sample_rate)
+            except Exception:
+                arr, sr = None, None
+        if arr is None and not tried_torchaudio:
+            arr, sr = _load_audio_with_torchaudio(ref, mono=mono)
+            tried_torchaudio = True
+        if arr is None:
             # Fallback to librosa for formats like MP3
             try:
                 with warnings.catch_warnings():
@@ -1643,7 +1691,10 @@ def load_audio(
         return None, None
 
     if not no_resample and target_sr and sr != target_sr:
-        if arr.ndim == 1:
+        resampled = _resample_with_torchaudio(arr, sr=sr, target_sr=target_sr)
+        if resampled is not None:
+            arr = resampled
+        elif arr.ndim == 1:
             arr = librosa.resample(arr, orig_sr=sr, target_sr=target_sr).astype(
                 np.float32
             )
