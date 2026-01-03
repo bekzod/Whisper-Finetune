@@ -1,3 +1,8 @@
+import os
+
+# Set WandB API key
+os.environ["WANDB_API_KEY"] = "2dfc22d8af7805df156e7f31ea3bc090ec99d52e"
+
 import lightning.pytorch as pl
 import torch
 from nemo.collections.asr.models import EncDecHybridRNNTCTCBPEModel
