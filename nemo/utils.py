@@ -590,6 +590,7 @@ class TypoDetectionStats:
     total_typos_detected: int = 0
     total_corrections_applied: int = 0
     typos_by_word: Counter = field(default_factory=Counter)
+    fixes_by_text: Counter = field(default_factory=Counter)
 
     def record_detection(self, typo: str, correction: str) -> None:
         """Record a detected typo."""
@@ -600,11 +601,16 @@ class TypoDetectionStats:
         """Record an applied correction."""
         self.total_corrections_applied += 1
 
+    def record_text_fix(self, original: str, dataset_label: str) -> None:
+        """Record full text that was corrected along with dataset label."""
+        self.fixes_by_text[(dataset_label, original)] += 1
+
     def reset(self) -> None:
         """Reset all statistics."""
         self.total_typos_detected = 0
         self.total_corrections_applied = 0
         self.typos_by_word.clear()
+        self.fixes_by_text.clear()
 
     def report(self) -> str:
         """Generate a human-readable report."""
@@ -617,6 +623,10 @@ class TypoDetectionStats:
         ]
         for word_pair, count in self.typos_by_word.most_common(50):
             lines.append(f"  {word_pair}: {count}")
+        if self.fixes_by_text:
+            lines.append("Fixes by text (dataset -> original):")
+            for (dataset_label, original), count in self.fixes_by_text.most_common():
+                lines.append(f"  [{dataset_label}] {original}: {count}")
         return "\n".join(lines)
 
 
@@ -635,10 +645,10 @@ class FrequencyBasedTypoDetector:
         self,
         frequency_collector: WordFrequencyCollector,
         min_frequency_ratio: float = 50.0,
-        max_edit_distance: int = 2,
-        min_correction_frequency: int = 500,
+        max_edit_distance: int = 3,
+        min_correction_frequency: int = 450,
         min_typo_length: int = 3,
-        confidence_threshold: float = 0.7,
+        confidence_threshold: float = 0.6,
     ) -> None:
         """Initialize the typo detector.
 

@@ -1827,6 +1827,26 @@ def to_manifest_path(output_dir: Path, audio_path: Path, absolute: bool) -> str:
     return str(audio_path.relative_to(output_dir))
 
 
+def _infer_dataset_label_from_audio_path(
+    audio_path: str, *, fallback: Optional[str] = None
+) -> str:
+    parts = Path(audio_path).parts
+    if "audio" in parts:
+        idx = parts.index("audio")
+        if len(parts) > idx + 3:
+            group = parts[idx + 1]
+            dataset_id = parts[idx + 2]
+            split = parts[idx + 3]
+            return f"{group}:{dataset_id}:{split}"
+        if len(parts) > idx + 2:
+            group = parts[idx + 1]
+            dataset_id = parts[idx + 2]
+            return f"{group}:{dataset_id}"
+    if fallback:
+        return fallback
+    return "unknown"
+
+
 # =============================================================================
 # Frequency Collection (Single-Pass) and Manifest Post-Processing
 # =============================================================================
@@ -1835,6 +1855,8 @@ def to_manifest_path(output_dir: Path, audio_path: Path, absolute: bool) -> str:
 def post_process_manifest_with_typo_corrections(
     manifest_path: Path,
     typo_detector: "FrequencyBasedTypoDetector",
+    *,
+    group_label: Optional[str] = None,
 ) -> int:
     """Apply typo corrections to an existing manifest file.
 
@@ -1876,6 +1898,11 @@ def post_process_manifest_with_typo_corrections(
                             original, record_stats=True
                         )
                         if corrected != original:
+                            dataset_label = _infer_dataset_label_from_audio_path(
+                                entry.get("audio_filepath", ""),
+                                fallback=group_label,
+                            )
+                            typo_detector.stats.record_text_fix(original, dataset_label)
                             entry["text"] = corrected
                             corrected_count += 1
                     tmp.write(json.dumps(entry, ensure_ascii=False))
@@ -2615,7 +2642,7 @@ def main() -> None:
                     continue
                 manifest_path = args.output_dir / f"{group}_manifest.jsonl"
                 corrected = post_process_manifest_with_typo_corrections(
-                    manifest_path, typo_detector
+                    manifest_path, typo_detector, group_label=group
                 )
                 print(
                     f"  [{group}] Corrected {corrected} entries in {manifest_path.name}"
