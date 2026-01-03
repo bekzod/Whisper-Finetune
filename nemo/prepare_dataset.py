@@ -579,23 +579,27 @@ def iter_dataset_specs(
             )
 
 
-def _flatten_transcript_text(transcript: Any) -> str:
+def _flatten_transcript_text(
+    transcript: Any, *, dataset_label: Optional[str] = None
+) -> str:
     if transcript is None:
         return ""
     if isinstance(transcript, str):
-        return normalize_text(transcript)
+        return normalize_text(transcript, dataset_label=dataset_label)
     if isinstance(transcript, dict):
-        return normalize_text(str(transcript.get("text", "")))
+        return normalize_text(
+            str(transcript.get("text", "")), dataset_label=dataset_label
+        )
     if isinstance(transcript, Sequence) and not isinstance(
         transcript, (str, bytes, bytearray)
     ):
         parts: List[str] = []
         for segment in transcript:
-            flattened = _flatten_transcript_text(segment)
+            flattened = _flatten_transcript_text(segment, dataset_label=dataset_label)
             if flattened:
                 parts.append(flattened)
         return " ".join(parts).strip()
-    return normalize_text(str(transcript))
+    return normalize_text(str(transcript), dataset_label=dataset_label)
 
 
 def sanitize_name(name: str) -> str:
@@ -603,18 +607,23 @@ def sanitize_name(name: str) -> str:
     return cleaned or "dataset"
 
 
-def pick_text(item: Dict[str, Any], text_key: Optional[str] = None) -> str:
+def pick_text(
+    item: Dict[str, Any],
+    text_key: Optional[str] = None,
+    *,
+    dataset_label: Optional[str] = None,
+) -> str:
     if text_key:
         value = item.get(text_key)
         if value is not None:
-            text = _flatten_transcript_text(value)
+            text = _flatten_transcript_text(value, dataset_label=dataset_label)
             return unicodedata.normalize("NFKC", text)
     if "sentences" in item and item["sentences"] is not None:
-        text = _flatten_transcript_text(item["sentences"])
+        text = _flatten_transcript_text(item["sentences"], dataset_label=dataset_label)
         return unicodedata.normalize("NFKC", text)
     for key in _HF_TEXT_CANDIDATE_KEYS:
         if key in item and item[key] is not None:
-            text = _flatten_transcript_text(item[key])
+            text = _flatten_transcript_text(item[key], dataset_label=dataset_label)
             return unicodedata.normalize("NFKC", text)
     return ""
 
@@ -2024,6 +2033,7 @@ def process_items(
     num_workers: int = 1,
     dedupe_text_audio: bool = False,
     dedupe_index: Optional[Dict[bytes, set]] = None,
+    dataset_label: Optional[str] = None,
 ) -> Dict[str, int]:
     counts = {
         "total": 0,
@@ -2108,7 +2118,7 @@ def process_items(
                 counts["failed"] += 1
                 continue
 
-            transcript = pick_text(item, text_key=text_key)
+            transcript = pick_text(item, text_key=text_key, dataset_label=dataset_label)
             skip_reason = _validate_transcript(
                 transcript, min_chars=min_chars, max_chars=max_chars
             )
@@ -2158,7 +2168,9 @@ def process_items(
                     progress.update(1)
                     return True
 
-                transcript = pick_text(item, text_key=text_key)
+                transcript = pick_text(
+                    item, text_key=text_key, dataset_label=dataset_label
+                )
                 skip_reason = _validate_transcript(
                     transcript, min_chars=min_chars, max_chars=max_chars
                 )
@@ -2351,6 +2363,7 @@ def _process_single_spec(
                     num_workers=num_workers,
                     dedupe_text_audio=dedupe_text_audio,
                     dedupe_index=dedupe_index,
+                    dataset_label=f"{spec.repo}:{split}",
                 )
                 print(
                     f"[{group}] {spec.repo}:{split} "
@@ -2403,6 +2416,7 @@ def _process_single_spec(
                     num_workers=num_workers,
                     dedupe_text_audio=dedupe_text_audio,
                     dedupe_index=dedupe_index,
+                    dataset_label=f"{spec.repo}:{split}",
                 )
                 print(
                     f"[{group}] {spec.repo}:{split} "
@@ -2475,6 +2489,7 @@ def _process_single_spec(
                 num_workers=num_workers,
                 dedupe_text_audio=dedupe_text_audio,
                 dedupe_index=dedupe_index,
+                dataset_label=f"{spec.repo}:{split}",
             )
             print(
                 f"[{group}] {spec.repo}:{split} "

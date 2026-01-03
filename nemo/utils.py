@@ -336,16 +336,22 @@ class MisspellingStats:
 
     total_fixes: int = 0
     fixes_by_word: Counter = field(default_factory=Counter)
+    fixes_by_text: Counter = field(default_factory=Counter)
 
     def record_fix(self, original: str, replacement: str) -> None:
         """Record a single fix."""
         self.total_fixes += 1
         self.fixes_by_word[f"{original.lower()} -> {replacement}"] += 1
 
+    def record_text_fix(self, original: str, dataset_label: str) -> None:
+        """Record the full text that contained a fix and its dataset label."""
+        self.fixes_by_text[(dataset_label, original)] += 1
+
     def merge(self, other: "MisspellingStats") -> None:
         """Merge another stats object into this one."""
         self.total_fixes += other.total_fixes
         self.fixes_by_word.update(other.fixes_by_word)
+        self.fixes_by_text.update(other.fixes_by_text)
 
     def report(self) -> str:
         """Generate a human-readable report."""
@@ -355,12 +361,17 @@ class MisspellingStats:
         lines.append("Fixes by word:")
         for word_pair, count in self.fixes_by_word.most_common():
             lines.append(f"  {word_pair}: {count}")
+        if self.fixes_by_text:
+            lines.append("Fixes by text (dataset -> original):")
+            for (dataset_label, original), count in self.fixes_by_text.most_common():
+                lines.append(f"  [{dataset_label}] {original}: {count}")
         return "\n".join(lines)
 
     def reset(self) -> None:
         """Reset all statistics."""
         self.total_fixes = 0
         self.fixes_by_word.clear()
+        self.fixes_by_text.clear()
 
 
 # Global stats tracker
@@ -398,7 +409,11 @@ def _fix_uzbek_misspellings(text: str, stats: Optional[MisspellingStats] = None)
     return _UZBEK_MISSPELLING_PATTERN.sub(replace_match, text)
 
 
-def normalize_text(text: Any, stats: Optional[MisspellingStats] = None) -> str:
+def normalize_text(
+    text: Any,
+    stats: Optional[MisspellingStats] = None,
+    dataset_label: Optional[str] = None,
+) -> str:
     """Normalize text to match training cleanup in utils/reader.py."""
     if text is None:
         return ""
@@ -409,7 +424,10 @@ def normalize_text(text: Any, stats: Optional[MisspellingStats] = None) -> str:
 
     normalized = _transliterate_uzbek_cyrillic(normalized)
     normalized = normalized.translate(_APOSTROPHE_TRANSLATION)
+    before_fix = normalized
     normalized = _fix_uzbek_misspellings(normalized, stats)
+    if stats is not None and dataset_label and normalized != before_fix:
+        stats.record_text_fix(before_fix, dataset_label)
     normalized = _ALLOWED_TEXT_RE.sub("", normalized)
     normalized = _SPACE_BEFORE_PUNCT_RE.sub(r"\1", normalized)
     normalized = _MULTISPACE_RE.sub(" ", normalized).strip()
