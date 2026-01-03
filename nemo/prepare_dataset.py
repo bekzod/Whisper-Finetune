@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib.util
+import inspect
 import json
 import os
 import random
@@ -703,6 +704,57 @@ def _detect_preferred_keys(
         audio_key = _detect_audio_key_from_columns(columns)
 
     return text_key, audio_key
+
+
+def _disable_audio_decoding(ds: Any, *, label: str) -> Any:
+    features = getattr(ds, "features", None)
+    if features is None:
+        return ds
+
+    audio_columns: List[Tuple[str, Audio]] = []
+    try:
+        for key, feature in features.items():
+            if isinstance(feature, Audio):
+                if getattr(feature, "decode", True) is False:
+                    continue
+                audio_columns.append((key, feature))
+    except Exception:
+        return ds
+
+    if not audio_columns:
+        return ds
+
+    try:
+        supports_decode = "decode" in inspect.signature(Audio).parameters
+    except (TypeError, ValueError):
+        supports_decode = False
+    if not supports_decode:
+        print(
+            f"  Warning: cannot disable HF audio decoding for {label} "
+            "because this datasets version lacks the decode flag."
+        )
+        return ds
+
+    updated = ds
+    for key, feature in audio_columns:
+        audio_kwargs: Dict[str, Any] = {}
+        if hasattr(feature, "sampling_rate") and feature.sampling_rate is not None:
+            audio_kwargs["sampling_rate"] = feature.sampling_rate
+        if hasattr(feature, "mono") and feature.mono is not None:
+            audio_kwargs["mono"] = feature.mono
+        new_feature = Audio(decode=False, **audio_kwargs)
+        try:
+            updated = updated.cast_column(key, new_feature)
+        except Exception as exc:
+            print(
+                f"  Warning: failed to disable audio decoding for {label} "
+                f"column '{key}': {exc}"
+            )
+            return updated
+
+    columns_list = ", ".join(key for key, _ in audio_columns)
+    print(f"  Disabled HF audio decoding for {label} (columns: {columns_list})")
+    return updated
 
 
 # Common audio file extensions for path validation
@@ -2484,6 +2536,7 @@ def _process_single_spec(
                 hf_retry_wait,
                 hf_rate_limit_wait,
             )
+            ds = _disable_audio_decoding(ds, label=f"{spec.repo}:{split}")
             filter_fn = get_filter_fn(spec.repo)
             if filter_fn is not None:
                 print(f"  Applying dataset filter for {spec.repo}")
