@@ -191,7 +191,7 @@ model:
     log_softmax: null
     preserve_memory: false
     fuse_loss_wer: true
-    fused_batch_size: 4
+    fused_batch_size: 16
     jointnet:
       joint_hidden: ${model.model_defaults.joint_hidden}
       activation: "relu"
