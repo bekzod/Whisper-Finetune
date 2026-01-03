@@ -549,6 +549,8 @@ _UZBEK_MISSPELLING_PATTERN = re.compile(
 _MULTISPACE_RE = re.compile(r"\s+")
 # Pattern to match spaces before punctuation (e.g., "qurildi ." => "qurildi.")
 _SPACE_BEFORE_PUNCT_RE = re.compile(r"\s+([.,])")
+# Pattern to match spaces between digits (e.g., "600 000" => "600000")
+_SPACED_NUMBER_RE = re.compile(r"(\d)\s+(?=\d)")
 _UZBEK_CYRILLIC_TO_LATIN = {
     "А": "A",
     "а": "a",
@@ -731,6 +733,7 @@ def normalize_text(
         stats.record_text_fix(before_fix, dataset_label)
     normalized = _ALLOWED_TEXT_RE.sub("", normalized)
     normalized = _SPACE_BEFORE_PUNCT_RE.sub(r"\1", normalized)
+    normalized = _SPACED_NUMBER_RE.sub(r"\1", normalized)
     normalized = _MULTISPACE_RE.sub(" ", normalized).strip()
     if normalized.startswith("-"):
         normalized = normalized[1:].lstrip()
