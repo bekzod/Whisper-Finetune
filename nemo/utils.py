@@ -4,9 +4,10 @@
 from __future__ import annotations
 
 import re
-from collections import Counter
+import sys
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
-from typing import Any, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 # Regex to match C or c NOT followed by h or H
 _STANDALONE_C_RE = re.compile(r"[Cc](?![Hh])")
@@ -37,12 +38,31 @@ _UZBEK_MISSPELLINGS = {
     "bolmaydi": "bo'lmaydi",
     "bolmas": "bo'lmas",
     "bolmasin": "bo'lmasin",
+    "bolmoq": "bo'lmoq",
+    "boldi": "bo'ldi",
+    "bolasiz": "bo'lasiz",
+    "bolaman": "bo'laman",
+    "bolishga": "bo'lishga",
+    "bolishini": "bo'lishini",
+    "bolmasa": "bo'lmasa",
+    "bolmasdan": "bo'lmasdan",
+    "bolardi": "bo'lardi",
+    "bolayotgan": "bo'layotgan",
     # Missing apostrophes in o'z (self) forms
     "ozim": "o'zim",
     "ozing": "o'zing",
     "ozimiz": "o'zimiz",
     "ozingiz": "o'zingiz",
     "ozlari": "o'zlari",
+    "oziga": "o'ziga",
+    "ozini": "o'zini",
+    "ozidan": "o'zidan",
+    "ozining": "o'zining",
+    "ozicha": "o'zicha",
+    "ozaro": "o'zaro",
+    "ozbek": "o'zbek",
+    "ozbekiston": "o'zbekiston",
+    "ozbekcha": "o'zbekcha",
     # Missing apostrophes in qo'ymoq (to put) forms
     "qoydi": "qo'ydi",
     "qoyib": "qo'yib",
@@ -50,6 +70,12 @@ _UZBEK_MISSPELLINGS = {
     "qoyar": "qo'yar",
     "qoyish": "qo'yish",
     "qoyadi": "qo'yadi",
+    "qoymoq": "qo'ymoq",
+    "qoyildi": "qo'yildi",
+    "qoyilgan": "qo'yilgan",
+    "qoysa": "qo'ysa",
+    "qoyaman": "qo'yaman",
+    "qoyasiz": "qo'yasiz",
     # Missing apostrophes in ko'rmoq (to see) forms
     "korib": "ko'rib",
     "koradi": "ko'radi",
@@ -60,82 +86,296 @@ _UZBEK_MISSPELLINGS = {
     "korsat": "ko'rsat",
     "korsatdi": "ko'rsatdi",
     "korsatish": "ko'rsatish",
+    "kormoq": "ko'rmoq",
+    "kordim": "ko'rdim",
+    "kording": "ko'rding",
+    "kordik": "ko'rdik",
+    "korishga": "ko'rishga",
+    "korinish": "ko'rinish",
+    "korinadi": "ko'rinadi",
+    "korsatmoq": "ko'rsatmoq",
+    "korsatildi": "ko'rsatildi",
+    "korsatilgan": "ko'rsatilgan",
+    "korgazma": "ko'rgazma",
     # Missing apostrophes in ko'p (many) forms
     "kop": "ko'p",
     "kopchilik": "ko'pchilik",
     "koplab": "ko'plab",
     "koprok": "ko'proq",
+    "kopdan": "ko'pdan",
+    "kopga": "ko'pga",
+    "kopgina": "ko'pgina",
+    "kopaydi": "ko'paydi",
+    "kopayish": "ko'payish",
+    "kopaytirish": "ko'paytirish",
+    "kopincha": "ko'pincha",
     # Missing apostrophes in ko'cha (street) forms
     "kocha": "ko'cha",
     "kochada": "ko'chada",
     "kochasi": "ko'chasi",
+    "kochalar": "ko'chalar",
+    "kochalarda": "ko'chalarda",
+    "kochaning": "ko'chaning",
+    # Missing apostrophes in ko'z (eye) forms
+    "koz": "ko'z",
+    "kozim": "ko'zim",
+    "kozi": "ko'zi",
+    "kozlar": "ko'zlar",
+    "kozlari": "ko'zlari",
+    "kozga": "ko'zga",
+    "kozdan": "ko'zdan",
+    "kozoynak": "ko'zoynak",
+    # Missing apostrophes in ko'nmoq (to agree/get used to) forms
+    "kondi": "ko'ndi",
+    "konib": "ko'nib",
+    "konish": "ko'nish",
+    "konadi": "ko'nadi",
+    "kongil": "ko'ngil",
+    "kongilsiz": "ko'ngilsiz",
+    "kongilga": "ko'ngilga",
+    # Missing apostrophes in ko'chirmoq (to copy/move) forms
+    "kochirmoq": "ko'chirmoq",
+    "kochirdi": "ko'chirdi",
+    "kochirish": "ko'chirish",
+    "kochirib": "ko'chirib",
+    "kochirgan": "ko'chirgan",
     # Missing apostrophes in to'g'ri (correct/straight)
     "togri": "to'g'ri",
     "togrisida": "to'g'risida",
+    "togridan": "to'g'ridan",
+    "togrisi": "to'g'risi",
+    "togrilab": "to'g'rilab",
+    "togrilash": "to'g'rilash",
     # Missing apostrophes in to'liq (complete) forms
     "toliq": "to'liq",
     "toldirib": "to'ldirib",
     "toldirish": "to'ldirish",
+    "toldirdi": "to'ldirdi",
+    "tolgan": "to'lgan",
+    "toladi": "to'ladi",
+    "tolov": "to'lov",
+    "tolovlar": "to'lovlar",
+    "tolash": "to'lash",
+    # Missing apostrophes in to'xta (stop) forms
+    "toxtamoq": "to'xtamoq",
+    "toxtadi": "to'xtadi",
+    "toxtab": "to'xtab",
+    "toxtash": "to'xtash",
+    "toxtatmoq": "to'xtatmoq",
+    "toxtatdi": "to'xtatdi",
+    "toxtatish": "to'xtatish",
+    # Missing apostrophes in to'pla (collect) forms
+    "toplamoq": "to'plamoq",
+    "topladi": "to'pladi",
+    "toplab": "to'plab",
+    "toplash": "to'plash",
+    "toplam": "to'plam",
+    "toplangan": "to'plangan",
+    # Missing apostrophes in to'y (wedding) forms
+    "toy": "to'y",
+    "toyda": "to'yda",
+    "toyi": "to'yi",
+    "toylar": "to'ylar",
+    "toying": "to'ying",
     # Missing apostrophes in go'zal (beautiful)
     "gozal": "go'zal",
+    "gozallik": "go'zallik",
+    "gozalligi": "go'zalligi",
+    # Missing apostrophes in go'sht (meat) forms
+    "gosht": "go'sht",
+    "goshtli": "go'shtli",
+    "goshtxona": "go'shtxona",
+    # Missing apostrophes in go'yo (as if) forms
+    "goyo": "go'yo",
+    "goyoki": "go'yoki",
+    # Missing apostrophes in so'z (word) forms
+    "soz": "so'z",
+    "sozlar": "so'zlar",
+    "sozlari": "so'zlari",
+    "sozlash": "so'zlash",
+    "sozlashdi": "so'zlashdi",
+    "sozlashmoq": "so'zlashmoq",
+    "sozlashib": "so'zlashib",
+    "sozni": "so'zni",
+    "sozning": "so'zning",
+    "sozga": "so'zga",
+    "sozsiz": "so'zsiz",
+    "sozma": "so'zma",
     # Missing apostrophes in so'rov (request)
     "sorov": "so'rov",
+    "sorovnoma": "so'rovnoma",
+    "sorovlar": "so'rovlar",
+    # Missing apostrophes in so'ng (after/end) forms
+    "song": "so'ng",
+    "songgi": "so'nggi",
+    "songra": "so'ngra",
     # Missing apostrophes in o'rganmoq (to learn) forms
     "organmoq": "o'rganmoq",
     "organdi": "o'rgandi",
     "organib": "o'rganib",
     "organish": "o'rganish",
     "organadi": "o'rganadi",
+    "organdim": "o'rgandim",
+    "organaman": "o'rganaman",
+    "organildi": "o'rganildi",
+    "organilgan": "o'rganilgan",
     # Missing apostrophes in o'ylamoq (to think) forms
     "oyladi": "o'yladi",
     "oylab": "o'ylab",
     "oylash": "o'ylash",
     "oylaydi": "o'ylaydi",
+    "oylamoq": "o'ylamoq",
+    "oyladim": "o'yladim",
+    "oylagan": "o'ylagan",
+    "oylayman": "o'ylayman",
     # Missing apostrophes in o'tirmoq (to sit) forms
     "otirdi": "o'tirdi",
     "otirib": "o'tirib",
     "otirish": "o'tirish",
     "otiradi": "o'tiradi",
+    "otirmoq": "o'tirmoq",
+    "otirdim": "o'tirdim",
+    "otirgan": "o'tirgan",
+    "otiraman": "o'tiraman",
     # Missing apostrophes in o'ynamoq (to play) forms
     "oynadi": "o'ynadi",
     "oynab": "o'ynab",
     "oynash": "o'ynash",
     "oynaydi": "o'ynaydi",
+    "oynamoq": "o'ynamoq",
+    "oynadim": "o'ynadim",
+    "oynagan": "o'ynagan",
+    "oyin": "o'yin",
+    "oyinlar": "o'yinlar",
+    "oyinchi": "o'yinchi",
     # Missing apostrophes in o'qimoq (to read/study) - careful: oqmoq (to flow) is different
     "oqituvchi": "o'qituvchi",
     "oquvchi": "o'quvchi",
+    "oqimoq": "o'qimoq",
+    "oqidi": "o'qidi",
+    "oqib": "o'qib",
+    "oqish": "o'qish",
+    "oqiydi": "o'qiydi",
+    "oqidim": "o'qidim",
+    "oqigan": "o'qigan",
+    "oqiyman": "o'qiyman",
+    "oqitish": "o'qitish",
+    "oqitmoq": "o'qitmoq",
     # Missing apostrophes in o'zgarmoq (to change) forms
     "ozgardi": "o'zgardi",
     "ozgarib": "o'zgarib",
     "ozgarish": "o'zgarish",
     "ozgaradi": "o'zgaradi",
+    "ozgarmoq": "o'zgarmoq",
+    "ozgardim": "o'zgardim",
+    "ozgargan": "o'zgargan",
+    "ozgartirmoq": "o'zgartirmoq",
+    "ozgartirish": "o'zgartirish",
+    "ozgartirdi": "o'zgartirdi",
+    # Missing apostrophes in o'tmoq (to pass) forms
+    "otmoq": "o'tmoq",
+    "otdi": "o'tdi",
+    "otib": "o'tib",
+    "otish": "o'tish",
+    "otadi": "o'tadi",
+    "otgan": "o'tgan",
+    "otmish": "o'tmish",
+    "otgan": "o'tgan",
     # Missing apostrophes in other o' words
     "ogil": "o'g'il",
+    "ogil": "o'g'il",
+    "oglon": "o'g'lon",
+    "ogli": "o'g'li",
+    "ogillar": "o'g'illar",
     "orta": "o'rta",
     "ortada": "o'rtada",
+    "ortadagi": "o'rtadagi",
+    "ortacha": "o'rtacha",
+    "ortasida": "o'rtasida",
+    "ortasidan": "o'rtasidan",
     "ormon": "o'rmon",
+    "ormonda": "o'rmonda",
+    "ormonlar": "o'rmonlar",
     "osha": "o'sha",
     "oshanda": "o'shanda",
+    "oshanday": "o'shanday",
     "orin": "o'rin",
     "orinda": "o'rinda",
+    "orinli": "o'rinli",
+    "orinsiz": "o'rinsiz",
+    "orinbos": "o'rinbos",
     "olik": "o'lik",
+    "olim": "o'lim",
+    "olimli": "o'limli",
+    "oldir": "o'ldir",
     "otkazdi": "o'tkazdi",
     "otkazish": "o'tkazish",
+    "otkazmoq": "o'tkazmoq",
+    "otkazilib": "o'tkazilib",
+    "otkazildi": "o'tkazildi",
+    "otkazilgan": "o'tkazilgan",
+    "olcham": "o'lcham",
+    "olchov": "o'lchov",
+    "olchovlar": "o'lchovlar",
+    "osim": "o'sim",
+    "osimlik": "o'simlik",
+    "osimliklar": "o'simliklar",
+    "oq": "o'q",
+    "oqi": "o'qi",
+    "oqlar": "o'qlar",
+    "otov": "o'tov",
+    "oroq": "o'roq",
+    "ot": "o't",
+    "otlar": "o'tlar",
     # Missing apostrophes in g' words
     "galaba": "g'alaba",
+    "galabali": "g'alabali",
+    "galabaga": "g'alabaga",
     "goya": "g'oya",
+    "goyalar": "g'oyalar",
+    "goyasi": "g'oyasi",
     "goyat": "g'oyat",
     "garb": "g'arb",
     "garbiy": "g'arbiy",
+    "garbda": "g'arbda",
     "gayrat": "g'ayrat",
+    "gayratli": "g'ayratli",
     "gazab": "g'azab",
+    "gazabli": "g'azabli",
+    "gazablandi": "g'azablandi",
     "galati": "g'alati",
+    "galatiroq": "g'alatiroq",
     "gamgin": "g'amgin",
+    "gamginlik": "g'amginlik",
     "gildirak": "g'ildirak",
+    "gildiraklar": "g'ildiraklar",
     "gisht": "g'isht",
+    "gishtlar": "g'ishtlar",
+    "gishtli": "g'ishtli",
     "goyib": "g'oyib",
     "gam": "g'am",
+    "gamxo'rlik": "g'amxo'rlik",
+    "gamli": "g'amli",
     "gurur": "g'urur",
+    "gururli": "g'ururli",
+    "gururlanmoq": "g'ururlanmoq",
+    "govur": "g'ovur",
+    "goz": "g'oz",
+    "gozlar": "g'ozlar",
+    "galla": "g'alla",
+    "gallalar": "g'allalar",
+    "galla": "g'alla",
+    "gov": "g'ov",
+    "govak": "g'ovak",
+    "goldir": "g'oldir",
+    "gol": "g'ol",
+    "golib": "g'olib",
+    "goyilik": "g'oyilik",
+    "gijim": "g'ijim",
+    "gijimlab": "g'ijimlab",
+    "gijimlash": "g'ijimlash",
+    "girrom": "g'irrom",
+    "girt": "g'irt",
     # Soft h -> hard x corrections (common Uzbek pronunciation/spelling errors)
     # xabar (news) and related forms
     "habar": "xabar",
@@ -145,53 +385,73 @@ _UZBEK_MISSPELLINGS = {
     "habarnoma": "xabarnoma",
     "habarchi": "xabarchi",
     "habardon": "xabardon",
+    "habarsiz": "xabarsiz",
+    "habardor": "xabardor",
     # xafa (upset) and related forms
     "hafa": "xafa",
     "hafalik": "xafalik",
+    "hafagarchilik": "xafagarchilik",
     # xarid (purchase) and related forms
     "harid": "xarid",
     "haridor": "xaridor",
     "haridorlar": "xaridorlar",
+    "haridorlik": "xaridorlik",
     # xizmat (service) and related forms
     "hizmat": "xizmat",
     "hizmati": "xizmati",
     "hizmatlar": "xizmatlar",
     "hizmatchi": "xizmatchi",
+    "hizmatchilar": "xizmatchilar",
+    "hizmatkor": "xizmatkor",
     # xalq (people/nation) and related forms
     "halq": "xalq",
     "halqi": "xalqi",
     "halqaro": "xalqaro",
     "halqlararo": "xalqlararo",
+    "halqlar": "xalqlar",
+    "halqning": "xalqning",
+    "halqparvar": "xalqparvar",
     # xotin (wife) and related forms
     "hotin": "xotin",
     "hotini": "xotini",
     "hotinlar": "xotinlar",
+    "hotinlari": "xotinlari",
     # xona (room) and related forms
     "hona": "xona",
     "honada": "xonada",
     "honasi": "xonasi",
     "honalar": "xonalar",
     "honadon": "xonadon",
+    "honalardan": "xonalardan",
+    "honaning": "xonaning",
     # xotira (memory) and related forms
     "hotira": "xotira",
     "hotirasi": "xotirasi",
     "hotiralar": "xotiralar",
     "hotirlash": "xotirlash",
     "hotirladi": "xotirladi",
+    "hotirlamoq": "xotirlamoq",
+    "hotirjam": "xotirjam",
     # xavf (danger) and related forms
     "havf": "xavf",
     "havfli": "xavfli",
     "havfsiz": "xavfsiz",
     "havfsizlik": "xavfsizlik",
+    "havflilik": "xavflilik",
     # xato (mistake) and related forms
     "hato": "xato",
     "hatosi": "xatosi",
     "hatolar": "xatolar",
     "hatolik": "xatolik",
+    "hatosiz": "xatosiz",
     # xush (pleasant) and related forms
     "hush": "xush",
     "hushnud": "xushnud",
     "hushmuomala": "xushmuomala",
+    "hushbo'y": "xushbo'y",
+    "hushhol": "xushhol",
+    "hushxabar": "xushxabar",
+    "hushhavo": "xushhavo",
     # xursand (happy) and related forms
     "hursand": "xursand",
     "hursandlik": "xursandlik",
@@ -201,15 +461,20 @@ _UZBEK_MISSPELLINGS = {
     "hayrlashdi": "xayrlashdi",
     "hayriya": "xayriya",
     "hayriyachi": "xayriyachi",
+    "hayrlashmoq": "xayrlashmoq",
+    "hayrlashish": "xayrlashish",
+    "hayrixoh": "xayrixoh",
     # xudo (god) and related forms
     "hudo": "xudo",
     "hudoga": "xudoga",
     "hudoning": "xudoning",
     "hudoyo": "xudoyo",
+    "hudojo": "xudojo",
     # xulosa (conclusion) and related forms
     "hulosa": "xulosa",
     "hulosasi": "xulosasi",
     "hulosalar": "xulosalar",
+    "hulosalash": "xulosalash",
     # xuddi (exactly)
     "huddi": "xuddi",
     # xo'ja (master/teacher) and related forms
@@ -217,27 +482,63 @@ _UZBEK_MISSPELLINGS = {
     "hojalik": "xo'jalik",
     "hojali": "xo'jali",
     "hojayin": "xo'jayin",
+    "hojayinlar": "xo'jayinlar",
     # xo'roz (rooster)
     "horoz": "xo'roz",
+    "horozlar": "xo'rozlar",
     # xom (raw) and related forms
     "hom": "xom",
     "homashyo": "xomashyo",
+    "homaki": "xomaki",
     # xor (choir/humiliated) and related forms
     "hor": "xor",
     "horlik": "xorlik",
+    "horlangan": "xorlangan",
     # xossa (property/characteristic)
     "hossa": "xossa",
     "hossalar": "xossalar",
+    "hossali": "xossali",
     # xorazm (Khorezm region)
     "horazm": "xorazm",
     "horazmlik": "xorazmlik",
+    "horazmda": "xorazmda",
     # xat (letter) and related forms
     "hat": "xat",
     "hati": "xati",
     "hatlar": "xatlar",
+    "hatni": "xatni",
+    "hatning": "xatning",
     # xalol (honest/halal in Uzbek context)
     "halol": "xalol",
     "halollik": "xalollik",
+    "haloldan": "xaloldan",
+    # xayol (thought/imagination) forms
+    "hayol": "xayol",
+    "hayollar": "xayollar",
+    "hayoliy": "xayoliy",
+    "hayolot": "xayolot",
+    "hayolparast": "xayolparast",
+    # xazon (autumn leaves) forms
+    "hazon": "xazon",
+    "hazonlar": "xazonlar",
+    "hazonrez": "xazonrez",
+    # xurmo (date palm/fruit)
+    "hurmo": "xurmo",
+    "hurmolar": "xurmolar",
+    # xurofot (superstition)
+    "hurofot": "xurofot",
+    "hurofotlar": "xurofotlar",
+    "hurofotchi": "xurofotchi",
+    # xushtor (lover/fan)
+    "hushtor": "xushtor",
+    "hushtorlar": "xushtorlar",
+    # xo'p (okay)
+    "hop": "xo'p",
+    # Additional common words
+    "harakat": "xarakat",
+    "harakatlar": "xarakatlar",
+    "harakatlanmoq": "xarakatlanmoq",
+    "ham": "xam",  # Note: 'ham' (also) is different from 'xam' (bent) - use with caution
 }
 
 # Build regex pattern for whole-word matching (case-insensitive)
@@ -680,8 +981,11 @@ class FrequencyBasedTypoDetector:
         """Get typo detection statistics."""
         return self._stats
 
-    def analyze(self) -> List[TypoCandidate]:
+    def analyze(self, verbose: bool = True) -> List[TypoCandidate]:
         """Analyze the frequency data to detect potential typos.
+
+        Args:
+            verbose: Whether to print progress information
 
         Returns:
             List of TypoCandidate objects representing detected typos
@@ -689,12 +993,20 @@ class FrequencyBasedTypoDetector:
         candidates = []
         word_counts = self._collector.word_counts
 
+        if verbose:
+            print(f"  Building high-frequency word index...")
+            sys.stdout.flush()
+
         # Build set of high-frequency words for faster lookup
         self._high_freq_words = {
             word
             for word, count in word_counts.items()
             if count >= self._min_correction_frequency
         }
+
+        if verbose:
+            print(f"  Found {len(self._high_freq_words)} high-frequency words")
+            sys.stdout.flush()
 
         # Also index by apostrophe-stripped version
         stripped_to_original: Dict[str, List[str]] = {}
@@ -704,14 +1016,36 @@ class FrequencyBasedTypoDetector:
                 stripped_to_original[stripped] = []
             stripped_to_original[stripped].append(word)
 
-        # Check each word for potential typos
-        for word, count in word_counts.items():
-            if len(word) < self._min_typo_length:
-                continue
+        # Build length-based buckets for high-frequency words to speed up edit distance search
+        # Only compare words whose lengths differ by at most max_edit_distance
+        high_freq_by_length: Dict[int, List[str]] = defaultdict(list)
+        for word in self._high_freq_words:
+            high_freq_by_length[len(word)].append(word)
 
-            # Skip if this word is already high frequency
-            if word in self._high_freq_words:
-                continue
+        if verbose:
+            print(f"  Built length-based index for edit distance search")
+            sys.stdout.flush()
+
+        # Filter words that need checking (not high-frequency, meets length requirement)
+        words_to_check = [
+            (word, count)
+            for word, count in word_counts.items()
+            if len(word) >= self._min_typo_length and word not in self._high_freq_words
+        ]
+        total_words = len(words_to_check)
+
+        if verbose:
+            print(f"  Checking {total_words} candidate words for typos...")
+            sys.stdout.flush()
+
+        # Check each word for potential typos
+        for idx, (word, count) in enumerate(words_to_check):
+            # Progress reporting every 10000 words
+            if verbose and idx > 0 and idx % 10000 == 0:
+                print(
+                    f"    Progress: {idx}/{total_words} words checked ({100 * idx // total_words}%), found {len(candidates)} typos so far"
+                )
+                sys.stdout.flush()
 
             # Check 1: Word without apostrophe might be typo for word with apostrophe
             stripped = _remove_apostrophes(word)
@@ -745,53 +1079,71 @@ class FrequencyBasedTypoDetector:
                                 candidates.append(candidate)
                                 self._typo_corrections[word] = potential_correction
 
-            # Check 2: Edit distance to high-frequency words
-            best_match = self._find_best_edit_distance_match(word, count)
-            if best_match and word not in self._typo_corrections:
-                candidates.append(best_match)
-                self._typo_corrections[word] = best_match.correction
+            # Check 2: Edit distance to high-frequency words (using length buckets)
+            if word not in self._typo_corrections:
+                best_match = self._find_best_edit_distance_match(
+                    word, count, high_freq_by_length
+                )
+                if best_match:
+                    candidates.append(best_match)
+                    self._typo_corrections[word] = best_match.correction
+
+        if verbose:
+            print(f"  Analysis complete: found {len(candidates)} potential typos")
+            sys.stdout.flush()
 
         self._analyzed = True
         return candidates
 
     def _find_best_edit_distance_match(
-        self, word: str, word_freq: int
+        self,
+        word: str,
+        word_freq: int,
+        high_freq_by_length: Dict[int, List[str]],
     ) -> Optional[TypoCandidate]:
-        """Find the best high-frequency word within edit distance."""
+        """Find the best high-frequency word within edit distance.
+
+        Uses length-based bucketing to only compare words of similar length,
+        dramatically reducing the number of edit distance calculations.
+        """
         best_candidate = None
         best_confidence = 0.0
+        word_len = len(word)
 
-        for high_freq_word in self._high_freq_words:
-            # Quick length check to avoid expensive edit distance calculation
-            len_diff = abs(len(high_freq_word) - len(word))
-            if len_diff > self._max_edit_distance:
+        # Only check words within max_edit_distance of our word's length
+        for length_offset in range(
+            -self._max_edit_distance, self._max_edit_distance + 1
+        ):
+            target_len = word_len + length_offset
+            if target_len < self._min_typo_length:
                 continue
 
-            edit_dist = _edit_distance(word, high_freq_word)
-            if edit_dist > self._max_edit_distance or edit_dist == 0:
-                continue
+            for high_freq_word in high_freq_by_length.get(target_len, []):
+                edit_dist = _edit_distance(word, high_freq_word)
+                if edit_dist > self._max_edit_distance or edit_dist == 0:
+                    continue
 
-            correction_freq = self._collector.get_frequency(high_freq_word)
-            if (
-                word_freq > 0
-                and correction_freq / word_freq >= self._min_frequency_ratio
-            ):
-                confidence = self._calculate_confidence(
-                    word_freq, correction_freq, edit_dist
-                )
+                correction_freq = self._collector.get_frequency(high_freq_word)
                 if (
-                    confidence > best_confidence
-                    and confidence >= self._confidence_threshold
+                    word_freq > 0
+                    and correction_freq / word_freq >= self._min_frequency_ratio
                 ):
-                    best_confidence = confidence
-                    best_candidate = TypoCandidate(
-                        typo=word,
-                        correction=high_freq_word,
-                        typo_frequency=word_freq,
-                        correction_frequency=correction_freq,
-                        confidence=confidence,
-                        reason=f"edit distance {edit_dist}",
+                    confidence = self._calculate_confidence(
+                        word_freq, correction_freq, edit_dist
                     )
+                    if (
+                        confidence > best_confidence
+                        and confidence >= self._confidence_threshold
+                    ):
+                        best_confidence = confidence
+                        best_candidate = TypoCandidate(
+                            typo=word,
+                            correction=high_freq_word,
+                            typo_frequency=word_freq,
+                            correction_frequency=correction_freq,
+                            confidence=confidence,
+                            reason=f"edit distance {edit_dist}",
+                        )
 
         return best_candidate
 
