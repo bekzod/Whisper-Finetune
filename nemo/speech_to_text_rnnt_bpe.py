@@ -5,6 +5,9 @@ os.environ["WANDB_API_KEY"] = "2dfc22d8af7805df156e7f31ea3bc090ec99d52e"
 
 import lightning.pytorch as pl
 import torch
+
+# Optimize for Tensor Cores on supported GPUs (trades precision for performance)
+torch.set_float32_matmul_precision("high")
 from nemo.collections.asr.models import EncDecHybridRNNTCTCBPEModel
 from nemo.core.config import hydra_runner
 from nemo.utils.exp_manager import exp_manager
