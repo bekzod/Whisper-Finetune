@@ -22,7 +22,7 @@ model:
     num_tdt_durations: 5
 
   train_ds:
-    manifest_filepath: ./output/train_manifest.jsonl
+    manifest_filepath: /workspace/Whisper-Finetune/nemo/output/train_manifest.jsonl
     sample_rate: ${model.sample_rate}
     batch_size: 16 # you may increase batch_size if your memory allows
     shuffle: true
@@ -80,12 +80,12 @@ model:
       # Real-world noise samples (prepared via nemo/prepare_noise.py)
       noise:
         prob: 0.25
-        manifest_path: ./output/noise_hf/noise_manifest.json
+        manifest_path: /workspace/Whisper-Finetune/nemo/output/noise_hf/noise_manifest.json
         min_snr_db: 5
         max_snr_db: 30
 
   validation_ds:
-    manifest_filepath: ./output/eval_manifest.jsonl
+    manifest_filepath: /workspace/Whisper-Finetune/nemo/output/eval_manifest.jsonl
     sample_rate: ${model.sample_rate}
     batch_size: 16
     shuffle: false
@@ -106,7 +106,7 @@ model:
   # /scripts/tokenizers/process_asr_text_tokenizer.py
   # We recommend to use vocab size of 1024 with SPE Unigram for most languages
   tokenizer:
-    dir: ./output/tokenizer_spe_bpe_v2048
+    dir: /workspace/Whisper-Finetune/nemo/output/tokenizer_spe_bpe_v2048
     type: bpe # bpe (SentencePiece) or wpe (WordPiece)
 
   preprocessor:
