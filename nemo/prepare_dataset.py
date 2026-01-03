@@ -816,10 +816,14 @@ def _looks_like_audio_path(s: str) -> bool:
 def _read_audio_from_bytes(
     audio_bytes: bytes, mono: bool = True
 ) -> Tuple[Optional[np.ndarray], Optional[int]]:
-    """Read audio data from raw bytes."""
-    try:
-        import io
+    """Read audio data from raw bytes.
 
+    Supports WAV, FLAC, OGG via soundfile, and MP3 via torchaudio/librosa fallback.
+    """
+    import io
+
+    # Try soundfile first (fast, but doesn't support MP3)
+    try:
         samples, sample_rate = sf.read(
             io.BytesIO(audio_bytes), dtype="float32", always_2d=True
         )
@@ -829,7 +833,39 @@ def _read_audio_from_bytes(
             samples = samples.astype(np.float32)
         return samples, int(sample_rate)
     except Exception:
-        return None, None
+        pass
+
+    # Fallback to torchaudio for MP3 and other formats
+    try:
+        byte_stream = io.BytesIO(audio_bytes)
+        # torchaudio.load can read from file-like objects
+        waveform, sample_rate = torchaudio.load(byte_stream)
+        # waveform shape: (channels, samples)
+        arr = waveform.numpy().astype(np.float32)
+        if mono and arr.shape[0] > 1:
+            arr = arr.mean(axis=0)
+        elif arr.shape[0] == 1:
+            arr = arr[0]
+        else:
+            # Transpose to (samples, channels) for consistency
+            arr = arr.T if not mono else arr.mean(axis=0)
+        return arr, int(sample_rate)
+    except Exception:
+        pass
+
+    # Final fallback to librosa (slower but robust)
+    try:
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=UserWarning)
+            warnings.filterwarnings("ignore", category=FutureWarning)
+            samples, sample_rate = librosa.load(
+                io.BytesIO(audio_bytes), sr=None, mono=mono
+            )
+        return samples.astype(np.float32), int(sample_rate)
+    except Exception:
+        pass
+
+    return None, None
 
 
 def _decode_audio_decoder(
