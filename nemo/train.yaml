@@ -283,7 +283,7 @@ exp_manager:
   resume_ignore_no_checkpoint: false
   create_wandb_logger: true
   wandb_logger_kwargs:
-    name: "parakeet-nemo-asr"
+    name: ${name}
     project: "parakeet-nemo-asr"
     entity: null # set your wandb team/username if needed
     tags: ["fastconformer", "hybrid", "tdt-ctc"]
