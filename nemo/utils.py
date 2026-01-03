@@ -357,7 +357,6 @@ _UZBEK_MISSPELLINGS = {
     "galla": "g'alla",
     "govak": "g'ovak",
     "goldir": "g'oldir",
-    "gol": "go'l",
     "golib": "g'olib",
     "goyilik": "g'oyilik",
     "gijim": "g'ijim",
