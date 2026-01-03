@@ -16,9 +16,9 @@ Install:
   pip install datasets soundfile
 
 Example:
-  python prepare_hf_noise_manifest.py \
-    --out_dir /data/noise_hf \
-    --manifest_path /data/noise_hf/noise_manifest.json
+  python prepare_noise.py \
+    --out_dir ./output/noise_hf \
+    --manifest_path ./output/noise_hf/noise_manifest.json
 
 Optional:
   --datasets Nexdata/Scene_Noise_Data Nexdata/Scene_Noise_Data_by_Voice_Recorder HHoofs/car-noise
@@ -33,7 +33,7 @@ import os
 import re
 import shutil
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import soundfile as sf
 from datasets import load_dataset
