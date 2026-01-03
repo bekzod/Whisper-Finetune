@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
 Download and prepare noise WAVs + a NeMo-compatible noise manifest (JSONL) from multiple
-Hugging Face datasets:
+Hugging Face datasets using direct file downloads (memory-efficient).
 
+Datasets:
   - Nexdata/Scene_Noise_Data
   - Nexdata/Scene_Noise_Data_by_Voice_Recorder
   - HHoofs/car-noise
@@ -13,7 +14,7 @@ Outputs:
        {"audio_filepath": "/abs/path/to/file.wav", "duration": 3.42}
 
 Install:
-  pip install datasets soundfile
+  pip install huggingface_hub soundfile
 
 Example:
   python prepare_noise.py \
@@ -22,23 +23,20 @@ Example:
 
 Optional:
   --datasets Nexdata/Scene_Noise_Data Nexdata/Scene_Noise_Data_by_Voice_Recorder HHoofs/car-noise
-  --split train
-  --max_items_per_split 10000
-  --audio_column audio
+  --max_files 10000
 """
 
 import argparse
-import gc
 import json
 import os
 import re
-import shutil
 import time
 from pathlib import Path
-from typing import Dict, Optional
+from typing import List, Optional
 
 import soundfile as sf
-from datasets import load_dataset
+from huggingface_hub import HfApi, hf_hub_download
+from huggingface_hub.utils import HfHubHTTPError
 
 DEFAULT_DATASETS = [
     "Nexdata/Scene_Noise_Data",
@@ -46,100 +44,68 @@ DEFAULT_DATASETS = [
     "HHoofs/car-noise",
 ]
 
+AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".opus"}
+
 
 def mkdir(p: Path) -> None:
     p.mkdir(parents=True, exist_ok=True)
 
 
 def sanitize(s: str) -> str:
-    # Safe filename component
+    """Safe filename component."""
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", s)
 
 
-def is_wav(path: str) -> bool:
-    return str(path).lower().endswith(".wav")
+def is_audio_file(filename: str) -> bool:
+    """Check if file has an audio extension."""
+    return Path(filename).suffix.lower() in AUDIO_EXTENSIONS
 
 
-def duration_of_wav(path: Path) -> float:
-    info = sf.info(str(path))
-    return float(info.frames) / float(info.samplerate)
+def get_duration(path: Path) -> Optional[float]:
+    """Get audio duration in seconds, returns None on failure."""
+    try:
+        info = sf.info(str(path))
+        return float(info.frames) / float(info.samplerate)
+    except Exception:
+        return None
 
 
-def export_audio_to_wav(audio_obj: Dict, dst: Path) -> float:
+def convert_to_wav(src: Path, dst: Path) -> Optional[float]:
     """
-    audio_obj is typically a datasets Audio feature output:
-      {"path": "...", "array": np.ndarray, "sampling_rate": int}
-
-    Strategy:
-    1) If audio_obj["path"] exists and is already WAV -> copy it (fast, preserves original)
-    2) Else write decoded samples to WAV with soundfile
-
-    Returns: duration in seconds
+    Convert audio file to WAV format if needed.
+    Returns duration in seconds, or None on failure.
     """
-    src = audio_obj.get("path")
-    if src and os.path.exists(src) and is_wav(src):
-        shutil.copy2(src, dst)
-        return duration_of_wav(dst)
-
-    arr = audio_obj["array"]
-    sr = int(audio_obj["sampling_rate"])
-    sf.write(str(dst), arr, sr)
-    duration = float(len(arr)) / float(sr)
-
-    # Explicitly delete array to free memory
-    del arr
-
-    return duration
+    try:
+        # Read audio data
+        data, samplerate = sf.read(str(src))
+        # Write as WAV
+        sf.write(str(dst), data, samplerate)
+        duration = float(len(data)) / float(samplerate)
+        return duration
+    except Exception as e:
+        print(f"    WARNING: Could not process {src.name}: {e}")
+        return None
 
 
-def pick_audio_column(sample_item: Dict, preferred: Optional[str] = None) -> str:
-    """
-    Determine which column contains HF Audio objects.
-
-    Preference order:
-      1) user-specified preferred column if present
-      2) column named 'audio'
-      3) first column that looks like an Audio dict (has array + sampling_rate)
-    """
-    if preferred and preferred in sample_item:
-        return preferred
-    if "audio" in sample_item:
-        return "audio"
-
-    for k, v in sample_item.items():
-        if isinstance(v, dict) and "array" in v and "sampling_rate" in v:
-            return k
-
-    raise KeyError(
-        f"Could not find an audio column. Available keys: {list(sample_item.keys())}. "
-        f"Try --audio_column <name>."
-    )
-
-
-def load_dataset_with_retry(
-    ds_name: str,
-    streaming: bool = True,
-    split: Optional[str] = None,
+def list_repo_audio_files(
+    repo_id: str,
     max_retries: int = 5,
     initial_delay: float = 5.0,
-    backoff_factor: float = 2.0,
-):
+) -> List[str]:
     """
-    Load a HuggingFace dataset with retry logic and exponential backoff.
-
-    Handles transient errors like 504 Gateway Timeout.
-    Uses streaming mode by default to avoid loading entire dataset into memory.
+    List all audio files in a HuggingFace dataset repository.
+    Uses retry logic for transient errors.
     """
+    api = HfApi()
     delay = initial_delay
-    last_exception = None
 
     for attempt in range(1, max_retries + 1):
         try:
-            return load_dataset(ds_name, streaming=streaming, split=split)
+            files = api.list_repo_files(repo_id=repo_id, repo_type="dataset")
+            audio_files = [f for f in files if is_audio_file(f)]
+            return audio_files
         except Exception as e:
-            last_exception = e
             error_str = str(e)
-            # Check for transient/retryable errors
             is_retryable = any(
                 x in error_str
                 for x in [
@@ -154,40 +120,41 @@ def load_dataset_with_retry(
             )
 
             if not is_retryable or attempt == max_retries:
-                print(f"  Failed to load {ds_name} after {attempt} attempt(s): {e}")
                 raise
 
             print(
-                f"  Attempt {attempt}/{max_retries} failed for {ds_name} "
-                f"(retryable error). Retrying in {delay:.1f}s..."
+                f"  Attempt {attempt}/{max_retries} failed. Retrying in {delay:.1f}s..."
             )
             time.sleep(delay)
-            delay *= backoff_factor
+            delay *= 2.0
 
-    # Should not reach here, but just in case
-    raise last_exception
+    return []
 
 
-def get_available_splits(ds_name: str, max_retries: int = 5) -> list:
+def download_file_with_retry(
+    repo_id: str,
+    filename: str,
+    local_dir: Path,
+    max_retries: int = 5,
+    initial_delay: float = 5.0,
+) -> Optional[Path]:
     """
-    Get available splits for a dataset without loading data.
+    Download a single file from HuggingFace with retry logic.
+    Returns local path on success, None on failure.
     """
-    from datasets import get_dataset_config_names, get_dataset_split_names
+    delay = initial_delay
 
-    delay = 5.0
     for attempt in range(1, max_retries + 1):
         try:
-            # Try to get split names directly
-            try:
-                splits = get_dataset_split_names(ds_name)
-                return splits
-            except Exception:
-                # Fallback: load with streaming to check keys
-                ds = load_dataset(ds_name, streaming=True)
-                if hasattr(ds, "keys"):
-                    return list(ds.keys())
-                return ["train"]
-        except Exception as e:
+            local_path = hf_hub_download(
+                repo_id=repo_id,
+                filename=filename,
+                repo_type="dataset",
+                local_dir=str(local_dir),
+                local_dir_use_symlinks=False,
+            )
+            return Path(local_path)
+        except HfHubHTTPError as e:
             error_str = str(e)
             is_retryable = any(
                 x in error_str
@@ -201,97 +168,129 @@ def get_available_splits(ds_name: str, max_retries: int = 5) -> list:
                     "SSLError",
                 ]
             )
+
             if not is_retryable or attempt == max_retries:
-                raise
-            print(f"  Retry {attempt}/{max_retries} getting splits for {ds_name}...")
+                print(f"    Failed to download {filename}: {e}")
+                return None
+
+            print(f"    Retry {attempt}/{max_retries} for {filename}...")
             time.sleep(delay)
             delay *= 2.0
+        except Exception as e:
+            print(f"    Failed to download {filename}: {e}")
+            return None
 
-    return ["train"]
+    return None
 
 
-def process_dataset_streaming(
-    ds_name: str,
-    split: str,
+def process_dataset(
+    repo_id: str,
     wav_dir: Path,
     manifest_file,
-    audio_column: Optional[str],
-    max_items: int,
-    max_retries: int,
-    gc_interval: int = 100,
+    max_files: int = 0,
+    max_retries: int = 5,
+    cache_dir: Optional[Path] = None,
 ) -> int:
     """
-    Process a dataset split using streaming mode to minimize memory usage.
-    Returns number of items written.
+    Process a single dataset: list files, download, convert to WAV, write manifest.
+    Returns number of files successfully processed.
     """
-    print(f"  Loading split '{split}' in streaming mode...")
+    print(f"\n{'=' * 60}")
+    print(f"Processing dataset: {repo_id}")
+    print(f"{'=' * 60}")
 
+    # List audio files in repository
     try:
-        ds_stream = load_dataset_with_retry(
-            ds_name,
-            streaming=True,
-            split=split,
-            max_retries=max_retries,
-        )
+        audio_files = list_repo_audio_files(repo_id, max_retries=max_retries)
+        print(f"  Found {len(audio_files)} audio files")
     except Exception as e:
-        print(f"  ERROR: Could not load {ds_name}:{split} - {e}")
+        print(f"  ERROR: Could not list files in {repo_id}: {e}")
         return 0
 
+    if not audio_files:
+        print(f"  No audio files found, skipping.")
+        return 0
+
+    # Limit files if requested
+    if max_files > 0:
+        audio_files = audio_files[:max_files]
+        print(f"  Processing first {len(audio_files)} files (--max_files limit)")
+
+    # Create a temp download directory
+    download_dir = cache_dir or (wav_dir.parent / ".hf_cache" / sanitize(repo_id))
+    mkdir(download_dir)
+
     written = 0
-    audio_col = None
+    dataset_prefix = sanitize(repo_id)
 
-    for idx, item in enumerate(ds_stream):
-        if max_items and written >= max_items:
-            break
+    for idx, remote_file in enumerate(audio_files):
+        # Download file
+        local_file = download_file_with_retry(
+            repo_id=repo_id,
+            filename=remote_file,
+            local_dir=download_dir,
+            max_retries=max_retries,
+        )
 
-        # Detect audio column from first item
-        if audio_col is None:
+        if local_file is None:
+            continue
+
+        # Determine output WAV path
+        base_name = Path(remote_file).stem
+        wav_name = f"{dataset_prefix}_{idx:08d}_{sanitize(base_name)}.wav"
+        wav_path = wav_dir / wav_name
+
+        # Convert to WAV (or copy if already WAV)
+        if local_file.suffix.lower() == ".wav":
+            # Already WAV - get duration and copy/link
+            duration = get_duration(local_file)
+            if duration is None:
+                print(f"    WARNING: Could not read {local_file.name}, skipping")
+                continue
+            # Copy to output directory
             try:
-                audio_col = pick_audio_column(item, audio_column)
-                print(f"  Detected audio column: '{audio_col}'")
-            except KeyError as e:
-                print(f"  ERROR: {e}")
-                return 0
+                import shutil
 
-        audio_obj = item.get(audio_col)
-        if audio_obj is None:
-            continue
+                shutil.copy2(local_file, wav_path)
+            except Exception as e:
+                print(f"    WARNING: Could not copy {local_file.name}: {e}")
+                continue
+        else:
+            # Convert to WAV
+            duration = convert_to_wav(local_file, wav_path)
+            if duration is None:
+                continue
 
-        # Filename embeds dataset + split + index
-        fname = f"{sanitize(ds_name)}_{sanitize(split)}_{idx:08d}.wav"
-        wav_path = (wav_dir / fname).resolve()
-
-        try:
-            duration = export_audio_to_wav(audio_obj, wav_path)
-        except Exception as e:
-            print(f"    WARNING: failed item {idx} ({e}); skipped")
-            continue
-
+        # Write manifest entry
         manifest_file.write(
             json.dumps(
-                {"audio_filepath": str(wav_path), "duration": duration},
+                {"audio_filepath": str(wav_path.resolve()), "duration": duration},
                 ensure_ascii=False,
             )
             + "\n"
         )
-        manifest_file.flush()  # Flush after each write for safety
+        manifest_file.flush()
 
         written += 1
 
-        # Periodic garbage collection to free memory
-        if written % gc_interval == 0:
-            gc.collect()
-            print(f"    Processed {written} items...")
+        # Progress indicator
+        if written % 50 == 0:
+            print(f"    Processed {written} files...")
 
-        # Clear references to free memory
-        del audio_obj
-        del item
+        # Clean up downloaded file to save space
+        try:
+            local_file.unlink()
+        except Exception:
+            pass
 
+    print(f"  Completed: {written} WAV files exported")
     return written
 
 
 def main():
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(
+        description="Download noise datasets from HuggingFace and create NeMo manifest"
+    )
     ap.add_argument(
         "--out_dir",
         required=True,
@@ -309,20 +308,10 @@ def main():
         help="HF dataset identifiers to process (space-separated).",
     )
     ap.add_argument(
-        "--split",
-        default=None,
-        help="Optional: process only one split name (e.g., 'train'). If omitted, process all splits found.",
-    )
-    ap.add_argument(
-        "--max_items_per_split",
+        "--max_files",
         type=int,
         default=0,
-        help="Optional: limit number of items per split (0 = no limit).",
-    )
-    ap.add_argument(
-        "--audio_column",
-        default=None,
-        help="Optional: specify the name of the dataset column containing audio.",
+        help="Max files to download per dataset (0 = no limit).",
     )
     ap.add_argument(
         "--max_retries",
@@ -331,62 +320,35 @@ def main():
         help="Max retries for transient download failures (default: 5).",
     )
     ap.add_argument(
-        "--gc_interval",
-        type=int,
-        default=100,
-        help="Run garbage collection every N items (default: 100).",
+        "--cache_dir",
+        default=None,
+        help="Optional: directory for temporary downloads (cleaned up after processing).",
     )
     args = ap.parse_args()
 
     out_dir = Path(args.out_dir).expanduser().resolve()
     wav_dir = out_dir / "wav"
     manifest_path = Path(args.manifest_path).expanduser().resolve()
+    cache_dir = Path(args.cache_dir).expanduser().resolve() if args.cache_dir else None
 
     mkdir(wav_dir)
     mkdir(manifest_path.parent)
+    if cache_dir:
+        mkdir(cache_dir)
 
     total_written = 0
 
     with open(manifest_path, "w", encoding="utf-8") as mf:
         for ds_name in args.datasets:
-            print(f"\n{'=' * 60}")
-            print(f"Processing dataset: {ds_name}")
-            print(f"{'=' * 60}")
-
-            # Get available splits
-            try:
-                available_splits = get_available_splits(ds_name, args.max_retries)
-                print(f"  Available splits: {available_splits}")
-            except Exception as e:
-                print(f"  ERROR: Could not get splits for {ds_name}: {e}")
-                print(f"  Skipping this dataset.")
-                continue
-
-            splits = [args.split] if args.split else available_splits
-
-            for split in splits:
-                if split not in available_splits:
-                    print(
-                        f"  WARNING: Split '{split}' not found. Available: {available_splits}"
-                    )
-                    continue
-
-                written_split = process_dataset_streaming(
-                    ds_name=ds_name,
-                    split=split,
-                    wav_dir=wav_dir,
-                    manifest_file=mf,
-                    audio_column=args.audio_column,
-                    max_items=args.max_items_per_split,
-                    max_retries=args.max_retries,
-                    gc_interval=args.gc_interval,
-                )
-
-                print(f"  Split '{split}': exported {written_split} WAVs")
-                total_written += written_split
-
-                # Force garbage collection between splits
-                gc.collect()
+            written = process_dataset(
+                repo_id=ds_name,
+                wav_dir=wav_dir,
+                manifest_file=mf,
+                max_files=args.max_files,
+                max_retries=args.max_retries,
+                cache_dir=cache_dir,
+            )
+            total_written += written
 
     print(f"\n{'=' * 60}")
     print("Completed.")
