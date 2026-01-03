@@ -26,7 +26,7 @@ model:
     sample_rate: ${model.sample_rate}
     batch_size: 16 # you may increase batch_size if your memory allows
     shuffle: true
-    num_workers: 8
+    num_workers: 0
     pin_memory: true
     max_duration: 30 # aligned with nemo/prepare_nemo_dataset.py defaults
     min_duration: 0.5
@@ -55,6 +55,10 @@ model:
         max_speed_rate: 1.10
         num_rates: 5
 
+      # Codec/telephone-style distortion (requires sox available in environment)
+      transcode_aug:
+        prob: 0.1
+
       # Random gain (loudness)
       gain:
         prob: 0.20
@@ -72,6 +76,13 @@ model:
         prob: 0.20
         min_level: -50
         max_level: -10
+
+      # Real-world noise samples (prepared via nemo/prepare_noise.py)
+      noise:
+        prob: 0.25
+        manifest_path: output/noise_hf/noise_manifest.json
+        min_snr_db: 5
+        max_snr_db: 30
 
   validation_ds:
     manifest_filepath: output/eval_manifest.jsonl
@@ -239,7 +250,7 @@ model:
       min_lr: 1e-6
 
 trainer:
-  devices: -1
+  devices: 1
   num_nodes: 1
   max_epochs: 500
   max_steps: -1
