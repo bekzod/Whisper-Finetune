@@ -15,11 +15,23 @@ _STANDALONE_C_RE = re.compile(r"[Cc](?![Hh])")
 _APOSTROPHE_TRANSLATION = str.maketrans(
     {
         "\u2019": "'",  # RIGHT SINGLE QUOTATION MARK
+        "\u2018": "'",  # LEFT SINGLE QUOTATION MARK
         "\u02bc": "'",  # MODIFIER LETTER APOSTROPHE
         "\u02bb": "'",  # MODIFIER LETTER TURNED COMMA
+        "\u02b9": "'",  # MODIFIER LETTER PRIME
+        "\u02c8": "'",  # MODIFIER LETTER VERTICAL LINE
         "`": "'",  # GRAVE ACCENT
         "´": "'",  # ACUTE ACCENT
         "‛": "'",  # SINGLE HIGH-REVERSED-9 QUOTATION MARK
+        "′": "'",  # PRIME
+        "ʻ": "'",  # MODIFIER LETTER TURNED COMMA (alternative)
+        "ʼ": "'",  # MODIFIER LETTER APOSTROPHE (alternative)
+        "'": "'",  # FULLWIDTH APOSTROPHE
+        "ˈ": "'",  # MODIFIER LETTER VERTICAL LINE (IPA)
+        "ʹ": "'",  # MODIFIER LETTER PRIME
+        "\u0027": "'",  # APOSTROPHE (standard, for completeness)
+        "\u055a": "'",  # ARMENIAN APOSTROPHE
+        "\ua78c": "'",  # LATIN SMALL LETTER SALTILLO
     }
 )
 _ALLOWED_TEXT_RE = re.compile(r"[^a-zA-ZА-Яа-яЎўҚқҒғҲҳ0-9\s,.'-]+")

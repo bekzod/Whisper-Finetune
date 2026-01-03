@@ -12,7 +12,7 @@ model:
   compute_eval_loss: false # eval samples can be very long and exhaust memory.
   # Disable computation of transducer loss during validation/testing with this flag.
   log_prediction: true
-  skip_nan_grad: false
+  skip_nan_grad: true
 
   model_defaults:
     enc_hidden: ${model.encoder.d_model}
@@ -238,7 +238,7 @@ model:
 
   optim:
     name: adamw
-    lr: 5.0
+    lr: 2.0
     betas: [0.9, 0.98]
     weight_decay: 1e-3
     sched:
@@ -257,9 +257,9 @@ trainer:
   accelerator: gpu
   strategy: auto # Let PyTorch Lightning choose the best strategy
   accumulate_grad_batches: 1
-  gradient_clip_val: 1.0
+  gradient_clip_val: 0.5
   precision: 32
-  log_every_n_steps: 10
+  log_every_n_steps: 200
   enable_progress_bar: True
   num_sanity_val_steps: 2 # Run sanity check to catch data issues early
   check_val_every_n_epoch: 1
