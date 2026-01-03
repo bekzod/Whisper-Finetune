@@ -267,7 +267,7 @@ trainer:
   benchmark: false
 
 exp_manager:
-  exp_dir: null
+  exp_dir: /workspace/nemo-training
   name: ${name}
   create_tensorboard_logger: false
   create_checkpoint_callback: true
