@@ -1,6 +1,6 @@
 import lightning.pytorch as pl
 import torch
-from nemo.collections.asr.models import EncDecRNNTBPEModel
+from nemo.collections.asr.models import EncDecHybridRNNTCTCBPEModel
 from nemo.core.config import hydra_runner
 from nemo.utils.exp_manager import exp_manager
 from nemo.utils.trainer_utils import resolve_trainer_cfg
@@ -27,7 +27,7 @@ def main(cfg):
     exp_manager(trainer, cfg.get("exp_manager", None))
 
     logging.info("Creating ASR model...")
-    asr_model = EncDecRNNTBPEModel(cfg=cfg.model, trainer=trainer)
+    asr_model = EncDecHybridRNNTCTCBPEModel(cfg=cfg.model, trainer=trainer)
 
     # Initialize the weights of the model from another model, if provided via config
     logging.info("Checking for pretrained checkpoint...")
