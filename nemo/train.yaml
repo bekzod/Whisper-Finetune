@@ -24,11 +24,11 @@ model:
   train_ds:
     manifest_filepath: ./output/train_manifest.jsonl
     sample_rate: ${model.sample_rate}
-    batch_size: 32 # you may increase batch_size if your memory allows
+    batch_size: 24 # reduced from 32 to prevent OOM on longer sequences
     shuffle: true
     num_workers: 16
     pin_memory: true
-    max_duration: 30 # aligned with nemo/prepare_nemo_dataset.py defaults
+    max_duration: 20 # reduced from 30 to prevent OOM on longer sequences
     min_duration: 0.5
 
     # tarred datasets
@@ -255,7 +255,9 @@ trainer:
   max_steps: -1
   val_check_interval: 1.0
   accelerator: gpu
-  strategy: auto # Let PyTorch Lightning choose the best strategy
+  strategy:
+    _target_: lightning.pytorch.strategies.DDPStrategy
+    gradient_as_bucket_view: true
   accumulate_grad_batches: 1
   gradient_clip_val: 0.5
   precision: bf16-mixed
