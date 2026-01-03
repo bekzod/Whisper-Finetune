@@ -93,14 +93,15 @@ model:
     num_workers: 8
     pin_memory: true
 
-  test_ds:
-    manifest_filepath: null
-    sample_rate: ${model.sample_rate}
-    batch_size: 16
-    shuffle: false
-    use_start_end_token: false
-    num_workers: 8
-    pin_memory: true
+  # test_ds: Uncomment and set manifest_filepath to run evaluation after training
+  # test_ds:
+  #   manifest_filepath: ./output/test_manifest.jsonl
+  #   sample_rate: ${model.sample_rate}
+  #   batch_size: 16
+  #   shuffle: false
+  #   use_start_end_token: false
+  #   num_workers: 8
+  #   pin_memory: true
 
   # You may find more detail on how to train a tokenizer at:
   # /scripts/tokenizers/process_asr_text_tokenizer.py
