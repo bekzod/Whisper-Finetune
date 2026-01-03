@@ -267,7 +267,7 @@ trainer:
   benchmark: false
 
 exp_manager:
-  exp_dir: null
+  exp_dir: /workspace/Whisper-Finetune/nemo/output
   name: ${name}
   create_tensorboard_logger: true
   create_checkpoint_callback: true
