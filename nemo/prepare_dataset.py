@@ -978,8 +978,10 @@ def resolve_audio_blob(
         # Fall back to path reference
         for key in ("path", "audio_path", "audio_filepath", "filename", "file"):
             ref = blob.get(key)
-            if isinstance(ref, str) and ref and _looks_like_audio_path(ref):
-                return None, None, ref
+            if isinstance(ref, str) and ref:
+                # Accept existing paths even if they lack extensions.
+                if _looks_like_audio_path(ref) or os.path.isfile(ref):
+                    return None, None, ref
         return None, None, None
 
     if isinstance(blob, (list, tuple, np.ndarray)):
@@ -999,8 +1001,8 @@ def resolve_audio_blob(
         return None, None, None
 
     if isinstance(blob, str):
-        # Only treat as audio path if it looks like a file path, not arbitrary text
-        if _looks_like_audio_path(blob):
+        # Only treat as audio path if it looks like a file path or exists on disk.
+        if _looks_like_audio_path(blob) or os.path.isfile(blob):
             return None, None, blob
         return None, None, None
 
