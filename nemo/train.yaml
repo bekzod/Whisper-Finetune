@@ -34,10 +34,10 @@ model:
     # tarred datasets
     is_tarred: false
     tarred_audio_filepaths: null
-    shuffle_n: 2048
+    shuffle_n: 64
 
     # bucketing params
-    bucketing_strategy: "synced_randomized"
+    bucketing_strategy: null
     bucketing_batch_size: null
 
     # -------------------------------
