@@ -281,7 +281,10 @@ exp_manager:
   resume_from_checkpoint: null
   resume_if_exists: false
   resume_ignore_no_checkpoint: false
-  create_wandb_logger: false
+  create_wandb_logger: true
   wandb_logger_kwargs:
-    name: null
-    project: null
+    name: ${name}
+    project: "nemo-asr"
+    entity: null # set your wandb team/username if needed
+    tags: ["fastconformer", "hybrid", "tdt-ctc"]
+    log_model: false # set to true to log model checkpoints to wandb
