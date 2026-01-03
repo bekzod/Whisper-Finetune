@@ -247,23 +247,21 @@ model:
       min_lr: 1e-6
 
 trainer:
-  devices: -1
+  devices: 1 # Use single GPU to avoid DDP initialization issues; set to -1 for multi-GPU
   num_nodes: 1
   max_epochs: 500
   max_steps: -1
   val_check_interval: 1.0
-  accelerator: auto
-  strategy:
-    _target_: lightning.pytorch.strategies.DDPStrategy
-    gradient_as_bucket_view: true
+  accelerator: gpu
+  strategy: auto # Let PyTorch Lightning choose the best strategy
   accumulate_grad_batches: 1
   gradient_clip_val: 1.0
   precision: 32
   log_every_n_steps: 10
   enable_progress_bar: True
-  num_sanity_val_steps: 0
+  num_sanity_val_steps: 2 # Run sanity check to catch data issues early
   check_val_every_n_epoch: 1
-  sync_batchnorm: true
+  sync_batchnorm: false # Disable when using single GPU
   enable_checkpointing: False
   logger: false
   benchmark: false

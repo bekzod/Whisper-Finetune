@@ -1,4 +1,5 @@
 import lightning.pytorch as pl
+import torch
 from nemo.collections.asr.models import EncDecHybridRNNTCTCBPEModel
 from nemo.core.config import hydra_runner
 from nemo.utils.exp_manager import exp_manager
@@ -12,14 +13,35 @@ from nemo.utils import logging
 def main(cfg):
     logging.info(f"Hydra config: {OmegaConf.to_yaml(cfg)}")
 
+    # Debug: Print GPU info
+    logging.info(f"CUDA available: {torch.cuda.is_available()}")
+    if torch.cuda.is_available():
+        logging.info(f"CUDA device count: {torch.cuda.device_count()}")
+        logging.info(f"Current CUDA device: {torch.cuda.current_device()}")
+        logging.info(f"CUDA device name: {torch.cuda.get_device_name(0)}")
+
+    logging.info("Creating trainer...")
     trainer = pl.Trainer(**resolve_trainer_cfg(cfg.trainer))
+
+    logging.info("Setting up exp_manager...")
     exp_manager(trainer, cfg.get("exp_manager", None))
+
+    logging.info("Creating ASR model...")
     asr_model = EncDecHybridRNNTCTCBPEModel(cfg=cfg.model, trainer=trainer)
 
     # Initialize the weights of the model from another model, if provided via config
+    logging.info("Checking for pretrained checkpoint...")
     asr_model.maybe_init_from_pretrained_checkpoint(cfg)
 
-    trainer.fit(asr_model)
+    logging.info("Starting trainer.fit()...")
+    try:
+        trainer.fit(asr_model)
+    except Exception as e:
+        logging.error(f"Training failed with exception: {e}")
+        import traceback
+
+        traceback.print_exc()
+        raise
 
     if (
         hasattr(cfg.model, "test_ds")
