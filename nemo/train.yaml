@@ -256,9 +256,7 @@ trainer:
   max_steps: -1
   val_check_interval: 1.0
   accelerator: auto
-  strategy:
-    _target_: lightning.pytorch.strategies.DDPStrategy
-    gradient_as_bucket_view: true
+  strategy: auto
   accumulate_grad_batches: 1
   gradient_clip_val: 1.0
   precision: 32
