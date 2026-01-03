@@ -2,7 +2,8 @@
 set -euo pipefail
 
 python prepare_tokenizer.py \
-  --manifest "../../uzbek.cleaned.txt,output/train_manifest.jsonl,output/eval_manifest.jsonl" \
+  --data_file "../../uzbek.cleaned.txt" \
+  --manifest "output/train_manifest.jsonl,output/eval_manifest.jsonl" \
   --vocab_size 2048 \
   --tokenizer "spe" \
   --spe_type "bpe" \
