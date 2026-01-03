@@ -32,6 +32,7 @@ import json
 import os
 import re
 import shutil
+import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -114,6 +115,55 @@ def iter_splits(ds) -> List[str]:
     return list(ds.keys()) if hasattr(ds, "keys") else [""]
 
 
+def load_dataset_with_retry(
+    ds_name: str,
+    max_retries: int = 5,
+    initial_delay: float = 5.0,
+    backoff_factor: float = 2.0,
+):
+    """
+    Load a HuggingFace dataset with retry logic and exponential backoff.
+
+    Handles transient errors like 504 Gateway Timeout.
+    """
+    delay = initial_delay
+    last_exception = None
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            return load_dataset(ds_name)
+        except Exception as e:
+            last_exception = e
+            error_str = str(e)
+            # Check for transient/retryable errors
+            is_retryable = any(
+                x in error_str
+                for x in [
+                    "504",
+                    "502",
+                    "503",
+                    "timeout",
+                    "Timeout",
+                    "Connection",
+                    "SSLError",
+                ]
+            )
+
+            if not is_retryable or attempt == max_retries:
+                print(f"  Failed to load {ds_name} after {attempt} attempt(s): {e}")
+                raise
+
+            print(
+                f"  Attempt {attempt}/{max_retries} failed for {ds_name} "
+                f"(retryable error). Retrying in {delay:.1f}s..."
+            )
+            time.sleep(delay)
+            delay *= backoff_factor
+
+    # Should not reach here, but just in case
+    raise last_exception
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument(
@@ -148,6 +198,12 @@ def main():
         default=None,
         help="Optional: specify the name of the dataset column containing audio.",
     )
+    ap.add_argument(
+        "--max_retries",
+        type=int,
+        default=5,
+        help="Max retries for transient download failures (default: 5).",
+    )
     args = ap.parse_args()
 
     out_dir = Path(args.out_dir).expanduser().resolve()
@@ -162,7 +218,11 @@ def main():
     with open(manifest_path, "w", encoding="utf-8") as mf:
         for ds_name in args.datasets:
             print(f"\nLoading dataset: {ds_name}")
-            ds = load_dataset(ds_name)
+            try:
+                ds = load_dataset_with_retry(ds_name, max_retries=args.max_retries)
+            except Exception as e:
+                print(f"  ERROR: Skipping dataset {ds_name} due to: {e}")
+                continue
 
             # Determine splits
             available_splits = list(ds.keys()) if hasattr(ds, "keys") else ["train"]
