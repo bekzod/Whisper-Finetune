@@ -55,10 +55,6 @@ model:
         max_speed_rate: 1.10
         num_rates: 5
 
-      # Codec/telephone-style distortion (requires sox available in environment)
-      transcode_aug:
-        prob: 0.1
-
       # Random gain (loudness)
       gain:
         prob: 0.20
@@ -76,13 +72,6 @@ model:
         prob: 0.20
         min_level: -50
         max_level: -10
-
-      # Real-world noise samples (prepared via nemo/prepare_noise.py)
-      noise:
-        prob: 0.25
-        manifest_path: output/noise_hf/noise_manifest.json
-        min_snr_db: 5
-        max_snr_db: 30
 
   validation_ds:
     manifest_filepath: output/eval_manifest.jsonl
