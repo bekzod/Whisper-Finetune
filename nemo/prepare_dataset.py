@@ -100,6 +100,7 @@ _HF_AUDIO_CANDIDATE_KEYS = (
     "filepath",
     "file",
     "filename",
+    "file_name",
     "path",
     "audio_file",
     "wav",
@@ -1012,7 +1013,14 @@ def resolve_audio_blob(
                 return arr, sr, None
 
         # Fall back to path reference
-        for key in ("path", "audio_path", "audio_filepath", "filename", "file"):
+        for key in (
+            "path",
+            "audio_path",
+            "audio_filepath",
+            "filename",
+            "file",
+            "file_name",
+        ):
             ref = blob.get(key)
             if isinstance(ref, str) and ref:
                 # Accept existing paths even if they lack extensions.

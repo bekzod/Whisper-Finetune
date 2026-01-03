@@ -49,6 +49,7 @@ _HF_AUDIO_CANDIDATE_KEYS = (
     "filepath",
     "file",
     "filename",
+    "file_name",
     "path",
     "audio_file",
     "wav",
@@ -748,6 +749,7 @@ class CustomDataset(Dataset):
                 blob.get("filepath"),
                 blob.get("filename"),
                 blob.get("file"),
+                blob.get("file_name"),
                 blob.get("path_or_url"),
             )
             for candidate in path_candidates:
