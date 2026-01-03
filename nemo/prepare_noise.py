@@ -28,13 +28,14 @@ Optional:
 """
 
 import argparse
+import gc
 import json
 import os
 import re
 import shutil
 import time
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 import soundfile as sf
 from datasets import load_dataset
@@ -83,7 +84,12 @@ def export_audio_to_wav(audio_obj: Dict, dst: Path) -> float:
     arr = audio_obj["array"]
     sr = int(audio_obj["sampling_rate"])
     sf.write(str(dst), arr, sr)
-    return float(len(arr)) / float(sr)
+    duration = float(len(arr)) / float(sr)
+
+    # Explicitly delete array to free memory
+    del arr
+
+    return duration
 
 
 def pick_audio_column(sample_item: Dict, preferred: Optional[str] = None) -> str:
@@ -110,13 +116,10 @@ def pick_audio_column(sample_item: Dict, preferred: Optional[str] = None) -> str
     )
 
 
-def iter_splits(ds) -> List[str]:
-    # ds is a DatasetDict or a Dataset
-    return list(ds.keys()) if hasattr(ds, "keys") else [""]
-
-
 def load_dataset_with_retry(
     ds_name: str,
+    streaming: bool = True,
+    split: Optional[str] = None,
     max_retries: int = 5,
     initial_delay: float = 5.0,
     backoff_factor: float = 2.0,
@@ -125,13 +128,14 @@ def load_dataset_with_retry(
     Load a HuggingFace dataset with retry logic and exponential backoff.
 
     Handles transient errors like 504 Gateway Timeout.
+    Uses streaming mode by default to avoid loading entire dataset into memory.
     """
     delay = initial_delay
     last_exception = None
 
     for attempt in range(1, max_retries + 1):
         try:
-            return load_dataset(ds_name)
+            return load_dataset(ds_name, streaming=streaming, split=split)
         except Exception as e:
             last_exception = e
             error_str = str(e)
@@ -162,6 +166,128 @@ def load_dataset_with_retry(
 
     # Should not reach here, but just in case
     raise last_exception
+
+
+def get_available_splits(ds_name: str, max_retries: int = 5) -> list:
+    """
+    Get available splits for a dataset without loading data.
+    """
+    from datasets import get_dataset_config_names, get_dataset_split_names
+
+    delay = 5.0
+    for attempt in range(1, max_retries + 1):
+        try:
+            # Try to get split names directly
+            try:
+                splits = get_dataset_split_names(ds_name)
+                return splits
+            except Exception:
+                # Fallback: load with streaming to check keys
+                ds = load_dataset(ds_name, streaming=True)
+                if hasattr(ds, "keys"):
+                    return list(ds.keys())
+                return ["train"]
+        except Exception as e:
+            error_str = str(e)
+            is_retryable = any(
+                x in error_str
+                for x in [
+                    "504",
+                    "502",
+                    "503",
+                    "timeout",
+                    "Timeout",
+                    "Connection",
+                    "SSLError",
+                ]
+            )
+            if not is_retryable or attempt == max_retries:
+                raise
+            print(f"  Retry {attempt}/{max_retries} getting splits for {ds_name}...")
+            time.sleep(delay)
+            delay *= 2.0
+
+    return ["train"]
+
+
+def process_dataset_streaming(
+    ds_name: str,
+    split: str,
+    wav_dir: Path,
+    manifest_file,
+    audio_column: Optional[str],
+    max_items: int,
+    max_retries: int,
+    gc_interval: int = 100,
+) -> int:
+    """
+    Process a dataset split using streaming mode to minimize memory usage.
+    Returns number of items written.
+    """
+    print(f"  Loading split '{split}' in streaming mode...")
+
+    try:
+        ds_stream = load_dataset_with_retry(
+            ds_name,
+            streaming=True,
+            split=split,
+            max_retries=max_retries,
+        )
+    except Exception as e:
+        print(f"  ERROR: Could not load {ds_name}:{split} - {e}")
+        return 0
+
+    written = 0
+    audio_col = None
+
+    for idx, item in enumerate(ds_stream):
+        if max_items and written >= max_items:
+            break
+
+        # Detect audio column from first item
+        if audio_col is None:
+            try:
+                audio_col = pick_audio_column(item, audio_column)
+                print(f"  Detected audio column: '{audio_col}'")
+            except KeyError as e:
+                print(f"  ERROR: {e}")
+                return 0
+
+        audio_obj = item.get(audio_col)
+        if audio_obj is None:
+            continue
+
+        # Filename embeds dataset + split + index
+        fname = f"{sanitize(ds_name)}_{sanitize(split)}_{idx:08d}.wav"
+        wav_path = (wav_dir / fname).resolve()
+
+        try:
+            duration = export_audio_to_wav(audio_obj, wav_path)
+        except Exception as e:
+            print(f"    WARNING: failed item {idx} ({e}); skipped")
+            continue
+
+        manifest_file.write(
+            json.dumps(
+                {"audio_filepath": str(wav_path), "duration": duration},
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
+        manifest_file.flush()  # Flush after each write for safety
+
+        written += 1
+
+        # Periodic garbage collection to free memory
+        if written % gc_interval == 0:
+            gc.collect()
+            print(f"    Processed {written} items...")
+
+        # Clear references to free memory
+        del audio_obj
+        del item
+
+    return written
 
 
 def main():
@@ -204,6 +330,12 @@ def main():
         default=5,
         help="Max retries for transient download failures (default: 5).",
     )
+    ap.add_argument(
+        "--gc_interval",
+        type=int,
+        default=100,
+        help="Run garbage collection every N items (default: 100).",
+    )
     args = ap.parse_args()
 
     out_dir = Path(args.out_dir).expanduser().resolve()
@@ -217,70 +349,48 @@ def main():
 
     with open(manifest_path, "w", encoding="utf-8") as mf:
         for ds_name in args.datasets:
-            print(f"\nLoading dataset: {ds_name}")
+            print(f"\n{'=' * 60}")
+            print(f"Processing dataset: {ds_name}")
+            print(f"{'=' * 60}")
+
+            # Get available splits
             try:
-                ds = load_dataset_with_retry(ds_name, max_retries=args.max_retries)
+                available_splits = get_available_splits(ds_name, args.max_retries)
+                print(f"  Available splits: {available_splits}")
             except Exception as e:
-                print(f"  ERROR: Skipping dataset {ds_name} due to: {e}")
+                print(f"  ERROR: Could not get splits for {ds_name}: {e}")
+                print(f"  Skipping this dataset.")
                 continue
 
-            # Determine splits
-            available_splits = list(ds.keys()) if hasattr(ds, "keys") else ["train"]
             splits = [args.split] if args.split else available_splits
 
             for split in splits:
-                if hasattr(ds, "keys") and split not in ds:
-                    raise ValueError(
-                        f"Split '{split}' not found in {ds_name}. Available splits: {available_splits}"
+                if split not in available_splits:
+                    print(
+                        f"  WARNING: Split '{split}' not found. Available: {available_splits}"
                     )
-
-                dsplit = ds[split] if hasattr(ds, "keys") else ds
-
-                if len(dsplit) == 0:
-                    print(f"  Split '{split}': 0 items (skipped)")
                     continue
 
-                # Detect audio column using first item (already decoded by HF Audio feature)
-                first_item = dsplit[0]
-                audio_col = pick_audio_column(first_item, args.audio_column)
-
-                written_split = 0
-                limit = args.max_items_per_split
-
-                for idx, item in enumerate(dsplit):
-                    if limit and written_split >= limit:
-                        break
-
-                    audio_obj = item[audio_col]
-                    # Filename embeds dataset + split + index
-                    fname = f"{sanitize(ds_name)}_{sanitize(split)}_{idx:08d}.wav"
-                    wav_path = (wav_dir / fname).resolve()
-
-                    try:
-                        duration = export_audio_to_wav(audio_obj, wav_path)
-                    except Exception as e:
-                        # Skip broken items but continue; log enough for troubleshooting
-                        print(
-                            f"    WARNING: failed item {idx} in {ds_name}:{split} ({e}); skipped"
-                        )
-                        continue
-
-                    mf.write(
-                        json.dumps(
-                            {"audio_filepath": str(wav_path), "duration": duration},
-                            ensure_ascii=False,
-                        )
-                        + "\n"
-                    )
-
-                    written_split += 1
-                    total_written += 1
-
-                print(
-                    f"  Split '{split}': exported {written_split} WAVs (audio column: '{audio_col}')"
+                written_split = process_dataset_streaming(
+                    ds_name=ds_name,
+                    split=split,
+                    wav_dir=wav_dir,
+                    manifest_file=mf,
+                    audio_column=args.audio_column,
+                    max_items=args.max_items_per_split,
+                    max_retries=args.max_retries,
+                    gc_interval=args.gc_interval,
                 )
 
-    print("\nCompleted.")
+                print(f"  Split '{split}': exported {written_split} WAVs")
+                total_written += written_split
+
+                # Force garbage collection between splits
+                gc.collect()
+
+    print(f"\n{'=' * 60}")
+    print("Completed.")
+    print(f"{'=' * 60}")
     print(f"Datasets:       {args.datasets}")
     print(f"WAV directory:  {wav_dir}")
     print(f"Manifest file:  {manifest_path}")
