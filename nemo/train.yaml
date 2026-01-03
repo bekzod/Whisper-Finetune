@@ -242,3 +242,9 @@ exp_manager:
     entity: null # set your wandb team/username if needed
     tags: ["fastconformer", "hybrid", "tdt-ctc"]
     log_model: false # set to true to log model checkpoints to wandb
+
+# Keep the current working directory stable (Hydra otherwise runs inside a generated output dir,
+# which breaks relative paths like `./output/train_manifest.jsonl`).
+hydra:
+  job:
+    chdir: false
