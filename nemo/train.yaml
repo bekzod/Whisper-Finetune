@@ -204,6 +204,7 @@ model:
     durations: ${model.model_defaults.tdt_durations}
     greedy:
       max_symbols: 10
+      use_cuda_graph_decoder: false # Disable CUDA graphs for Blackwell GPU compatibility
     beam:
       beam_size: 2
       return_best_hypothesis: False
