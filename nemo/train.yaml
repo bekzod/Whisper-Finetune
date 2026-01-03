@@ -195,7 +195,7 @@ model:
       joint_hidden: ${model.model_defaults.joint_hidden}
       activation: "relu"
       dropout: 0.2
-      num_extra_outputs: ${model.model_defaults.num_tdt_durations}
+    num_extra_outputs: ${model.model_defaults.num_tdt_durations}
 
   decoding:
     strategy: "greedy_batch"
@@ -221,9 +221,12 @@ model:
       vocabulary: []
     decoding:
       strategy: "greedy"
-    interctc:
-      loss_weights: []
-      apply_at_layers: []
+
+  # config for InterCTC loss: https://arxiv.org/abs/2102.03216
+  # specify loss weights and which layers to use for InterCTC
+  interctc:
+    loss_weights: []
+    apply_at_layers: []
 
   loss:
     loss_name: "tdt"
