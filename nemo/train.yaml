@@ -264,7 +264,7 @@ trainer:
   num_sanity_val_steps: 2 # Run sanity check to catch data issues early
   check_val_every_n_epoch: 1
   sync_batchnorm: false # Disable when using single GPU
-  enable_checkpointing: True
+  enable_checkpointing: False
   logger: false
   benchmark: false
 

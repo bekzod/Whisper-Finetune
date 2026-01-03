@@ -1,5 +1,15 @@
 import os
 
+# CUDA/Numba compatibility fixes for newer GPUs (Blackwell/RTX 50-series)
+# os.environ["NUMBA_CUDA_USE_NVIDIA_BINDING"] = "1"
+# os.environ["CUDA_MODULE_LOADING"] = "LAZY"
+# os.environ["NEMO_DISABLE_CUDA_GRAPHS"] = "1"
+
+# Set cache directories to avoid permission issues
+os.environ["HF_HOME"] = "/workspace/.cache/huggingface"
+os.environ["TORCH_HOME"] = "/workspace/.cache/torch"
+os.environ["NUMBA_CACHE_DIR"] = "/workspace/.cache/numba"
+
 # Set WandB API key
 os.environ["WANDB_API_KEY"] = "2dfc22d8af7805df156e7f31ea3bc090ec99d52e"
 
