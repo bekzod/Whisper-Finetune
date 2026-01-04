@@ -28,8 +28,8 @@ model:
     shuffle: true
     num_workers: 16
     pin_memory: true
-    max_duration: 30 # reduced from 30 to prevent OOM on longer sequences
-    min_duration: 0.5
+    max_duration: 40 # reduced from 30 to prevent OOM on longer sequences
+    min_duration: 0.1
 
     # tarred datasets
     is_tarred: false
@@ -98,53 +98,60 @@ model:
   encoder:
     _target_: nemo.collections.asr.modules.ConformerEncoder
     feat_in: ${model.preprocessor.features}
-    feat_out: -1
+    feat_out: -1 # you may set it if you need different output size other than the default d_model
     n_layers: 17
     d_model: 512
 
     # Sub-sampling parameters
-    subsampling: dw_striding
-    subsampling_factor: 8
-    subsampling_conv_channels: 256
+    subsampling: dw_striding # vggnet, striding, stacking or stacking_norm, dw_striding
+    subsampling_factor: 8 # must be power of 2 for striding and vggnet
+    subsampling_conv_channels: 256 # set to -1 to make it equal to the d_model
     causal_downsampling: false
 
-    # Reduction parameters
-    reduction: null
-    reduction_position: null
+    # Reduction parameters: Can be used to add another subsampling layer at a given position.
+    # Having a 2x reduction will speedup the training and inference speech while keeping similar WER.
+    # Adding it at the end will give the best WER while adding it at the beginning will give the best speedup.
+    reduction: null # pooling, striding, or null
+    reduction_position: null # Encoder block index or -1 for subsampling at the end of encoder
     reduction_factor: 1
 
-    # Feed forward module
+    # Feed forward module's params
     ff_expansion_factor: 4
 
-    # Multi-headed attention module
-    self_attention_model: rel_pos
-    n_heads: 8
-    att_context_size: [-1, -1]
-    att_context_style: regular
-    xscaling: true
-    untie_biases: true
+    # Multi-headed Attention Module's params
+    self_attention_model: rel_pos # rel_pos or abs_pos
+    n_heads: 8 # may need to be lower for smaller d_models
+    # [left, right] specifies the number of steps to be seen from left and right of each step in self-attention
+    att_context_size: [-1, -1] # -1 means unlimited context
+    att_context_style: regular # regular or chunked_limited
+    xscaling: true # scales up the input embeddings by sqrt(d_model)
+    untie_biases: true # unties the biases of the TransformerXL layers
     pos_emb_max_len: 5000
 
-    # Convolution module
+    # Convolution module's params
     conv_kernel_size: 9
-    conv_norm_type: "batch_norm"
+    conv_norm_type: "batch_norm" # batch_norm or layer_norm or groupnormN (N specifies the number of groups)
+    # conv_context_size can be"causal" or a list of two integers while conv_context_size[0]+conv_context_size[1]+1==conv_kernel_size
+    # null means [(kernel_size-1)//2, (kernel_size-1)//2], and 'causal' means [(kernel_size-1), 0]
     conv_context_size: null
 
-    # regularization
-    dropout: 0.1
-    dropout_pre_encoder: 0.1
-    dropout_emb: 0.0
-    dropout_att: 0.1
+    ### regularization
+    dropout: 0.1 # The dropout used in most of the Conformer Modules
+    dropout_pre_encoder: 0.1 # The dropout used before the encoder
+    dropout_emb: 0.0 # The dropout used for embeddings
+    dropout_att: 0.1 # The dropout for multi-headed attention modules
 
+    # set to non-zero to enable stochastic depth
     stochastic_depth_drop_prob: 0.0
-    stochastic_depth_mode: linear
+    stochastic_depth_mode: linear # linear or uniform
     stochastic_depth_start_layer: 1
 
   decoder:
     _target_: nemo.collections.asr.modules.RNNTDecoder
-    normalization_mode: null
-    random_state_sampling: false
-    blank_as_pad: true
+    normalization_mode: null # Currently only null is supported for export.
+    random_state_sampling: false # Random state sampling: https://arxiv.org/pdf/1910.11455.pdf
+    blank_as_pad: true # This flag must be set in order to support exporting of RNNT models + efficient inference.
+
     prednet:
       pred_hidden: ${model.model_defaults.pred_hidden}
       pred_rnn_layers: 1
@@ -153,29 +160,46 @@ model:
 
   joint:
     _target_: nemo.collections.asr.modules.RNNTJoint
-    log_softmax: null
-    preserve_memory: false
+    log_softmax: null # 'null' would set it automatically according to CPU/GPU device
+    preserve_memory: false # dramatically slows down training, but might preserve some memory
+
+    # Fuses the computation of prediction net + joint net + loss + WER calculation
+    # to be run on sub-batches of size `fused_batch_size`.
+    # When this flag is set to true, consider the `batch_size` of *_ds to be just `encoder` batch size.
+    # `fused_batch_size` is the actual batch size of the prediction net, joint net and transducer loss.
+    # Using small values here will preserve a lot of memory during training, but will make training slower as well.
+    # An optimal ratio of fused_batch_size : *_ds.batch_size is 1:1.
+    # However, to preserve memory, this ratio can be 1:8 or even 1:16.
+    # Extreme case of 1:B (i.e. fused_batch_size=1) should be avoided as training speed would be very slow.
     fuse_loss_wer: true
-    fused_batch_size: 16
+    fused_batch_size: 4
+
     jointnet:
       joint_hidden: ${model.model_defaults.joint_hidden}
       activation: "relu"
       dropout: 0.2
-      num_extra_outputs: ${model.model_defaults.num_tdt_durations}
+
+    num_extra_outputs: ${model.model_defaults.num_tdt_durations}
 
   decoding:
-    strategy: "greedy_batch"
+    strategy: "greedy_batch" # can be greedy, greedy_batch, beam, tsd, alsd.
+
     model_type: "tdt"
+
+    # this must not be None in order to use the TDT specific decoding method.
     durations: ${model.model_defaults.tdt_durations}
+
+    # greedy strategy config
     greedy:
       max_symbols: 10
-      use_cuda_graph_decoder: false # Disable CUDA graphs for Blackwell GPU compatibility
+
+    # beam strategy config
     beam:
       beam_size: 2
       return_best_hypothesis: False
       score_norm: true
-    tsd_max_sym_exp: 50
-    alsd_max_target_len: 2.0
+      tsd_max_sym_exp: 50 # for Time Synchronous Decoding
+      alsd_max_target_len: 2.0 # for Alignment-Length Synchronous Decoding
 
   aux_ctc:
     ctc_loss_weight: 0.3
@@ -188,27 +212,38 @@ model:
       vocabulary: []
     decoding:
       strategy: "greedy"
-    interctc:
-      loss_weights: []
-      apply_at_layers: []
+
+  interctc:
+    loss_weights: []
+    apply_at_layers: []
 
   loss:
+    # This is the main different between a TDT model and a conventional RNNT model -- the loss function.
     loss_name: "tdt"
+
     tdt_kwargs:
-      fastemit_lambda: 0.0
-      clamp: -1.0
+      # FastEmit regularization: https://arxiv.org/abs/2010.11148
+      # You may enable FastEmit to reduce the latency of the model for streaming
+      fastemit_lambda: 0.0 # Recommended values to be in range [1e-4, 1e-2], 0.001 is a good start.
+      clamp: -1.0 # if > 0, applies gradient clamping in range [-clamp, clamp] for the joint tensor only.
+
+      # refer to https://arxiv.org/abs/2304.06795 for the meaning of the following three configs.
       durations: ${model.model_defaults.tdt_durations}
-      sigma: 0.02
-      omega: 0.1
+      sigma: 0.02 # hyper-param for under-normalization.
+      omega: 0.1 # weight for regular RNN-T loss.
 
   optim:
     name: adamw
-    lr: 2.0
+    lr: 5.0
+    # optimizer arguments
     betas: [0.9, 0.98]
     weight_decay: 1e-3
+
+    # scheduler setup
     sched:
       name: NoamAnnealing
       d_model: ${model.encoder.d_model}
+      # scheduler config override
       warmup_steps: 10000
       warmup_ratio: null
       min_lr: 1e-6
