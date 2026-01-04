@@ -219,7 +219,7 @@ model:
     num_extra_outputs: ${model.model_defaults.num_tdt_durations}
 
   decoding:
-    strategy: "greedy" # can be greedy, greedy_batch, beam, tsd, alsd.
+    strategy: "greedy_batch" # can be greedy, greedy_batch, beam, tsd, alsd.
 
     model_type: "tdt"
 
