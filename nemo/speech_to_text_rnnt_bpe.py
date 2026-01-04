@@ -20,7 +20,7 @@ import lightning.pytorch as pl
 import torch
 
 # Optimize for Tensor Cores on supported GPUs (trades precision for performance)
-torch.set_float32_matmul_precision("high")
+# torch.set_float32_matmul_precision("high")
 from nemo.collections.asr.models import EncDecHybridRNNTCTCBPEModel
 from nemo.core.config import hydra_runner
 from nemo.utils.exp_manager import exp_manager
