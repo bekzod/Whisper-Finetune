@@ -6,7 +6,7 @@ import os
 # os.environ["NEMO_DISABLE_CUDA_GRAPHS"] = "1"
 
 # Fix CUDA memory fragmentation (helps avoid OOM on variable-length sequences)
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+# os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 # Set cache directories to avoid permission issues
 os.environ["HF_HOME"] = "/workspace/.cache/huggingface"
