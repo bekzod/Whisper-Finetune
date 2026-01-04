@@ -48,7 +48,7 @@
     },
     {
       "name": "bekzod123/uzbek_voice_3",
-      "splits": ["train", "val"]
+      "splits": ["train", "validation"]
     },
     {
       "name": "bekzod123/uzbek_voice_4",
