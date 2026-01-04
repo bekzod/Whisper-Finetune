@@ -24,7 +24,7 @@ model:
   train_ds:
     manifest_filepath: ./output/train_manifest.jsonl
     sample_rate: ${model.sample_rate}
-    batch_size: 32 # reduced from 32 to prevent OOM on longer sequences
+    batch_size: 32
     shuffle: true
     num_workers: 16
     pin_memory: true
@@ -209,7 +209,7 @@ model:
     # However, to preserve memory, this ratio can be 1:8 or even 1:16.
     # Extreme case of 1:B (i.e. fused_batch_size=1) should be avoided as training speed would be very slow.
     fuse_loss_wer: true
-    fused_batch_size: 4
+    fused_batch_size: 8
 
     jointnet:
       joint_hidden: ${model.model_defaults.joint_hidden}
@@ -219,7 +219,7 @@ model:
     num_extra_outputs: ${model.model_defaults.num_tdt_durations}
 
   decoding:
-    strategy: "greedy_batch" # can be greedy, greedy_batch, beam, tsd, alsd.
+    strategy: "greedy" # can be greedy, greedy_batch, beam, tsd, alsd.
 
     model_type: "tdt"
 
@@ -295,17 +295,17 @@ trainer:
   strategy:
     _target_: lightning.pytorch.strategies.DDPStrategy
     gradient_as_bucket_view: true
-  accumulate_grad_batches: 2
+  accumulate_grad_batches: 1
   gradient_clip_val: 0.5
   precision: bf16-mixed
   log_every_n_steps: 200
   enable_progress_bar: True
-  num_sanity_val_steps: 2 # Run sanity check to catch data issues early
-  check_val_every_n_epoch: 1
+  num_sanity_val_steps: 0 # Disabled for faster startup
+  check_val_every_n_epoch: 2 # Validate every 2 epochs to reduce overhead
   sync_batchnorm: false # Disable when using single GPU
   enable_checkpointing: False
   logger: false
-  benchmark: false
+  benchmark: true # Enable cudnn.benchmark for faster convolutions
 
 exp_manager:
   exp_dir: /workspace/nemo-training
