@@ -4,25 +4,12 @@
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
-
-def _load_cleanup_utils() -> Any:
-    utils_path = Path(__file__).with_name("utils.py")
-    spec = importlib.util.spec_from_file_location("nemo_cleanup_utils", utils_path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Unable to load cleanup utils from {utils_path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-_cleanup_utils = _load_cleanup_utils()
-normalize_text = _cleanup_utils.normalize_text
+from utils import normalize_text
 
 
 def _expand_input_paths(raw_inputs: Sequence[str]) -> List[Path]:
