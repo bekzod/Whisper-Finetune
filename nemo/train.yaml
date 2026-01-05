@@ -54,44 +54,44 @@ model:
     # Each augmentation is applied with prob p, independently per sample load.
     # Disable waveform-level augmentation to debug NaNs/instability.
     # Re-enable gradually once training is stable.
-    augmentor:
-      # Pitch/rate change (resampling; changes pitch)
-      speed:
-        prob: 0.25
-        sr: ${model.sample_rate}
-        resample_type: kaiser_fast
-        min_speed_rate: 0.90
-        max_speed_rate: 1.10
-        num_rates: 5
+    # augmentor:
+    #   # Pitch/rate change (resampling; changes pitch)
+    #   speed:
+    #     prob: 0.25
+    #     sr: ${model.sample_rate}
+    #     resample_type: kaiser_fast
+    #     min_speed_rate: 0.90
+    #     max_speed_rate: 1.10
+    #     num_rates: 5
 
-      # Codec/telephone-style distortion (requires sox available in environment)
-      transcode_aug:
-        prob: 0.1
+    #   # Codec/telephone-style distortion (requires sox available in environment)
+    #   transcode_aug:
+    #     prob: 0.1
 
-      # Random gain (loudness)
-      gain:
-        prob: 0.2
-        min_gain_dbfs: -10
-        max_gain_dbfs: 10
+    #   # Random gain (loudness)
+    #   gain:
+    #     prob: 0.2
+    #     min_gain_dbfs: -10
+    #     max_gain_dbfs: 10
 
-      # Small time shift
-      shift:
-        prob: 0.15
-        min_shift_ms: -5.0
-        max_shift_ms: 5.0
+    #   # Small time shift
+    #   shift:
+    #     prob: 0.15
+    #     min_shift_ms: -5.0
+    #     max_shift_ms: 5.0
 
-      # Simple additive noise
-      white_noise:
-        prob: 0.2
-        min_level: -50
-        max_level: -10
+    #   # Simple additive noise
+    #   white_noise:
+    #     prob: 0.2
+    #     min_level: -50
+    #     max_level: -10
 
-      # Real-world noise samples (prepared via nemo/prepare_noise.py)
-      noise:
-        prob: 0.2
-        manifest_path: ./output/noise_hf/noise_manifest.json
-        min_snr_db: 5
-        max_snr_db: 30
+    #   # Real-world noise samples (prepared via nemo/prepare_noise.py)
+    #   noise:
+    #     prob: 0.2
+    #     manifest_path: ./output/noise_hf/noise_manifest.json
+    #     min_snr_db: 5
+    #     max_snr_db: 30
 
   validation_ds:
     manifest_filepath: ./output/eval_manifest.jsonl
