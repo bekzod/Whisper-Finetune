@@ -28,7 +28,7 @@ model:
     shuffle: true
     num_workers: 24
     pin_memory: true
-    max_duration: 40 # reduced from 30 to prevent OOM on longer sequences
+    max_duration: 36 # reduced from 30 to prevent OOM on longer sequences
     min_duration: 0.1
 
     # tarred datasets
@@ -50,7 +50,7 @@ model:
     augmentor:
       # Pitch/rate change (resampling; changes pitch)
       speed:
-        prob: 0.30
+        prob: 0.25
         sr: ${model.sample_rate}
         resample_type: kaiser_fast
         min_speed_rate: 0.90
@@ -63,7 +63,7 @@ model:
 
       # Random gain (loudness)
       gain:
-        prob: 0.20
+        prob: 0.2
         min_gain_dbfs: -10
         max_gain_dbfs: 10
 
@@ -75,13 +75,13 @@ model:
 
       # Simple additive noise
       white_noise:
-        prob: 0.20
+        prob: 0.2
         min_level: -50
         max_level: -10
 
       # Real-world noise samples (prepared via nemo/prepare_noise.py)
       noise:
-        prob: 0.25
+        prob: 0.2
         manifest_path: ./output/noise_hf/noise_manifest.json
         min_snr_db: 5
         max_snr_db: 30
