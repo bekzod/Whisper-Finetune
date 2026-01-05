@@ -11,7 +11,7 @@ name: "FastConformer-Hybrid-TDT-CTC-BPE"
 init_from_pretrained_model:
   model0:
     name: "nvidia/parakeet-tdt-0.6b-v2"
-    include: ["encoder", "preprocessor"]
+    include: ["encoder"]
 
 model:
   sample_rate: 16000
@@ -23,15 +23,15 @@ model:
 
   model_defaults:
     enc_hidden: ${model.encoder.d_model}
-    pred_hidden: 640
-    joint_hidden: 640
+    pred_hidden: 1024
+    joint_hidden: 1024
     tdt_durations: [0, 1, 2, 3, 4]
     num_tdt_durations: 5
 
   train_ds:
     manifest_filepath: ./output/train_manifest.jsonl
     sample_rate: ${model.sample_rate}
-    batch_size: 40
+    batch_size: 16
     shuffle: true
     num_workers: 24
     pin_memory: true
@@ -143,13 +143,13 @@ model:
     _target_: nemo.collections.asr.modules.ConformerEncoder
     feat_in: ${model.preprocessor.features}
     feat_out: -1 # you may set it if you need different output size other than the default d_model
-    n_layers: 17
-    d_model: 512
+    n_layers: 24
+    d_model: 1024
 
     # Sub-sampling parameters
     subsampling: dw_striding # vggnet, striding, stacking or stacking_norm, dw_striding
     subsampling_factor: 8 # must be power of 2 for striding and vggnet
-    subsampling_conv_channels: 256 # set to -1 to make it equal to the d_model
+    subsampling_conv_channels: 512 # set to -1 to make it equal to the d_model
     causal_downsampling: false
 
     # Reduction parameters: Can be used to add another subsampling layer at a given position.
