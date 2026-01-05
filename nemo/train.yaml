@@ -248,7 +248,7 @@ model:
       num_classes: -1
       vocabulary: []
     decoding:
-      strategy: "greedy"
+      strategy: "greedy_batch"
 
   interctc:
     loss_weights: []
