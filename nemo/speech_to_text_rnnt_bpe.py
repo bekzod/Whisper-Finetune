@@ -6,12 +6,12 @@ import os
 # os.environ["NEMO_DISABLE_CUDA_GRAPHS"] = "1"
 
 # Fix CUDA memory fragmentation (helps avoid OOM on variable-length sequences)
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 # Set cache directories to avoid permission issues
-os.environ["HF_HOME"] = "/workspace/.cache/huggingface"
-os.environ["TORCH_HOME"] = "/workspace/.cache/torch"
-os.environ["NUMBA_CACHE_DIR"] = "/workspace/.cache/numba"
+os.environ.setdefault("HF_HOME", "/workspace/.cache/huggingface")
+os.environ.setdefault("TORCH_HOME", "/workspace/.cache/torch")
+os.environ.setdefault("NUMBA_CACHE_DIR", "/workspace/.cache/numba")
 
 # Set WandB API key
 os.environ["WANDB_API_KEY"] = "2dfc22d8af7805df156e7f31ea3bc090ec99d52e"
@@ -23,11 +23,10 @@ import torch
 torch.set_float32_matmul_precision("medium")
 from nemo.collections.asr.models import EncDecHybridRNNTCTCBPEModel
 from nemo.core.config import hydra_runner
+from nemo.utils import logging
 from nemo.utils.exp_manager import exp_manager
 from nemo.utils.trainer_utils import resolve_trainer_cfg
 from omegaconf import OmegaConf
-
-from nemo.utils import logging
 
 
 @hydra_runner(config_path="experimental/contextnet_rnnt", config_name="config_rnnt_bpe")

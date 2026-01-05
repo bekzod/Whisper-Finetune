@@ -295,6 +295,7 @@ trainer:
   strategy:
     _target_: lightning.pytorch.strategies.DDPStrategy
     gradient_as_bucket_view: true
+    find_unused_parameters: false
   accumulate_grad_batches: 1
   gradient_clip_val: 0.5
   precision: bf16-mixed
@@ -302,7 +303,7 @@ trainer:
   enable_progress_bar: True
   num_sanity_val_steps: 0 # Disabled for faster startup
   check_val_every_n_epoch: 2 # Validate every 2 epochs to reduce overhead
-  sync_batchnorm: false # Disable when using single GPU
+  sync_batchnorm: true # Recommended for multi-GPU with BatchNorm layers
   enable_checkpointing: False
   logger: false
   benchmark: true # Enable cudnn.benchmark for faster convolutions
