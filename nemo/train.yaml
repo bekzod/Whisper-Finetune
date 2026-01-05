@@ -6,6 +6,13 @@
 #
 name: "FastConformer-Hybrid-TDT-CTC-BPE"
 
+# Initialize encoder from pretrained model for fine-tuning
+# This loads only the encoder weights, allowing use of custom Uzbek tokenizer for decoder
+init_from_pretrained_model:
+  model0:
+    name: "nvidia/stt_en_fastconformer_hybrid_large_pc"
+    include: ["encoder", "preprocessor"]
+
 model:
   sample_rate: 16000
 
@@ -281,7 +288,7 @@ model:
       name: NoamAnnealing
       d_model: ${model.encoder.d_model}
       # scheduler config override
-      warmup_steps: 10000
+      warmup_steps: 2000
       warmup_ratio: null
       min_lr: 1e-6
 
