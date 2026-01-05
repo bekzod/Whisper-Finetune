@@ -10,7 +10,7 @@ name: "FastConformer-Hybrid-TDT-CTC-BPE"
 # This loads only the encoder weights, allowing use of custom Uzbek tokenizer for decoder
 init_from_pretrained_model:
   model0:
-    name: "nvidia/parakeet-tdt-0.6b-v3"
+    name: "nvidia/parakeet-tdt-0.6b-v2"
     include: ["encoder", "preprocessor"]
 
 model:
@@ -278,7 +278,7 @@ model:
 
   optim:
     name: adamw
-    lr: 5.0
+    lr: 3.0
     # optimizer arguments
     betas: [0.9, 0.98]
     weight_decay: 1e-3
