@@ -28,7 +28,7 @@ model:
     shuffle: true
     num_workers: 24
     pin_memory: true
-    max_duration: 36 # reduced from 30 to prevent OOM on longer sequences
+    max_duration: 34 # reduced from 30 to prevent OOM on longer sequences
     min_duration: 0.1
 
     # tarred datasets
@@ -209,7 +209,7 @@ model:
     # However, to preserve memory, this ratio can be 1:8 or even 1:16.
     # Extreme case of 1:B (i.e. fused_batch_size=1) should be avoided as training speed would be very slow.
     fuse_loss_wer: true
-    fused_batch_size: 20
+    fused_batch_size: 16
 
     jointnet:
       joint_hidden: ${model.model_defaults.joint_hidden}
