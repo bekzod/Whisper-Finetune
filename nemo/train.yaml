@@ -26,7 +26,7 @@ model:
     sample_rate: ${model.sample_rate}
     batch_size: 32
     shuffle: true
-    num_workers: 8
+    num_workers: 24
     pin_memory: true
     max_duration: 40 # reduced from 30 to prevent OOM on longer sequences
     min_duration: 0.1
@@ -92,7 +92,7 @@ model:
     batch_size: 64
     shuffle: false
     use_start_end_token: false
-    num_workers: 8
+    num_workers: 24
     pin_memory: true
 
   # test_ds: Uncomment and set manifest_filepath to run evaluation after training
@@ -102,7 +102,7 @@ model:
   #   batch_size: 16
   #   shuffle: false
   #   use_start_end_token: false
-  #   num_workers: 8
+  #   num_workers: 24
   #   pin_memory: true
 
   # You may find more detail on how to train a tokenizer at:
@@ -303,7 +303,6 @@ trainer:
   enable_progress_bar: True
   num_sanity_val_steps: 0 # Disabled for faster startup
   check_val_every_n_epoch: 2 # Validate every 2 epochs to reduce overhead
-  sync_batchnorm: true # Recommended for multi-GPU with BatchNorm layers
   enable_checkpointing: False
   logger: false
   benchmark: true # Enable cudnn.benchmark for faster convolutions
