@@ -24,7 +24,7 @@ model:
   train_ds:
     manifest_filepath: ./output/train_manifest.jsonl
     sample_rate: ${model.sample_rate}
-    batch_size: 16
+    batch_size: 32
     shuffle: true
     num_workers: 8
     pin_memory: true
@@ -209,7 +209,7 @@ model:
     # However, to preserve memory, this ratio can be 1:8 or even 1:16.
     # Extreme case of 1:B (i.e. fused_batch_size=1) should be avoided as training speed would be very slow.
     fuse_loss_wer: true
-    fused_batch_size: 16
+    fused_batch_size: 32
 
     jointnet:
       joint_hidden: ${model.model_defaults.joint_hidden}
@@ -296,7 +296,7 @@ trainer:
     _target_: lightning.pytorch.strategies.DDPStrategy
     gradient_as_bucket_view: true
     find_unused_parameters: false
-  accumulate_grad_batches: 2
+  accumulate_grad_batches: 1
   gradient_clip_val: 0.5
   precision: bf16-mixed
   log_every_n_steps: 200
