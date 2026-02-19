@@ -248,7 +248,7 @@ model:
       alsd_max_target_len: 2.0 # for Alignment-Length Synchronous Decoding
 
   aux_ctc:
-    ctc_loss_weight: 0.3
+    ctc_loss_weight: 0.4
     use_cer: false
     ctc_reduction: "mean_batch"
     decoder:
@@ -280,7 +280,7 @@ model:
 
   optim:
     name: adamw
-    lr: 3.0
+    lr: 0.6
     # optimizer arguments
     betas: [0.9, 0.98]
     weight_decay: 1e-3
@@ -295,7 +295,7 @@ model:
       min_lr: 1e-6
 
 trainer:
-  devices: -1 # Use single GPU to avoid DDP initialization issues; set to -1 for multi-GPU
+  devices: 1 # Single GPU. Set to -1 to use all available GPUs.
   num_nodes: 1
   max_epochs: 500
   max_steps: -1
