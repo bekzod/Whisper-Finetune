@@ -78,6 +78,10 @@
     {
       "name": "IbratDO/first_dataset",
       "splits": ["train"]
+    },
+    {
+      "name": "azamjonalijonov/uzbekvoice",
+      "splits": ["train"]
     }
   ],
   "eval": [
