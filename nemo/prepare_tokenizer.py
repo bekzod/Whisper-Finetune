@@ -99,117 +99,318 @@ import argparse
 import json
 import logging
 import os
-from typing import List, Optional
+import re
+from collections import Counter
+from typing import Dict, List, Optional
 
 import tokenizers
-
 from nemo.collections.common.tokenizers.sentencepiece_tokenizer import create_spt_model
 from nemo.utils.data_utils import DataStoreObject
 
-parser = argparse.ArgumentParser(description='Create tokenizer')
+from utils import normalize_text
+
+parser = argparse.ArgumentParser(description="Create tokenizer")
 group = parser.add_mutually_exclusive_group(required=True)
-group.add_argument("--manifest", default=None, type=str, help='Comma separated list of manifest files')
-group.add_argument("--data_file", default=None, help='data file from which to create tokenizer model')
-parser.add_argument("--data_root", required=True, default=None, type=str, help='Output directory')
-parser.add_argument("--vocab_size", default=1024, type=int, help='Vocabulary size')
-parser.add_argument("--tokenizer", default="wpe", choices=["spe", "wpe"], help='Type of tokenization to perform')
+group.add_argument(
+    "--manifest", default=None, type=str, help="Comma separated list of manifest files"
+)
+group.add_argument(
+    "--data_file", default=None, help="data file from which to create tokenizer model"
+)
+parser.add_argument(
+    "--data_root", required=True, default=None, type=str, help="Output directory"
+)
+parser.add_argument("--vocab_size", default=1024, type=int, help="Vocabulary size")
+parser.add_argument(
+    "--tokenizer",
+    default="wpe",
+    choices=["spe", "wpe"],
+    help="Type of tokenization to perform",
+)
 parser.add_argument(
     "--spe_type",
     default="bpe",
-    choices=['bpe', 'unigram', 'char', 'word'],
-    help='Type of the SentencePiece model. Can be `bpe`, `unigram`, `char` or `word`.'
-    'Used only if --tokenizer == `spe`',
+    choices=["bpe", "unigram", "char", "word"],
+    help="Type of the SentencePiece model. Can be `bpe`, `unigram`, `char` or `word`."
+    "Used only if --tokenizer == `spe`",
 )
 parser.add_argument(
-    '--spe_character_coverage',
+    "--spe_character_coverage",
     type=float,
     default=1.0,
     help="Character coverage percentage for SentencePiece tokenization. For languages "
     "with large vocabulary, should be close to 0.9995, otherwise kept as 1.0",
 )
-parser.add_argument('--spe_bos', action='store_true', help='Add <s> token to SentencePiece Tokenizer.')
-parser.add_argument('--spe_eos', action='store_true', help='Add </s> token to SentencePiece Tokenizer.')
-parser.add_argument('--spe_pad', action='store_true', help='Add <pad> token to SentencePiece Tokenizer.')
 parser.add_argument(
-    '--spe_user_defined_symbols', default=None, type=str, nargs='+', help='User defined symbols for SentencePiece'
+    "--spe_bos", action="store_true", help="Add <s> token to SentencePiece Tokenizer."
 )
 parser.add_argument(
-    '--spe_control_symbols', default=None, type=str, nargs='+', help='Control symbols for SentencePiece'
+    "--spe_eos", action="store_true", help="Add </s> token to SentencePiece Tokenizer."
 )
-parser.add_argument('--spe_split_digits', action='store_true', help='Split digits into separate tokens.')
 parser.add_argument(
-    '--spe_remove_extra_whitespaces',
-    action='store_true',
-    help='Remove leading, trailing, and duplicate internal whitespace.',
+    "--spe_pad", action="store_true", help="Add <pad> token to SentencePiece Tokenizer."
+)
+parser.add_argument(
+    "--spe_user_defined_symbols",
+    default=None,
+    type=str,
+    nargs="+",
+    help="User defined symbols for SentencePiece",
+)
+parser.add_argument(
+    "--spe_control_symbols",
+    default=None,
+    type=str,
+    nargs="+",
+    help="Control symbols for SentencePiece",
+)
+parser.add_argument(
+    "--spe_split_digits", action="store_true", help="Split digits into separate tokens."
+)
+parser.add_argument(
+    "--spe_remove_extra_whitespaces",
+    action="store_true",
+    help="Remove leading, trailing, and duplicate internal whitespace.",
 )
 
 parser.add_argument(
-    '--spe_sample_size',
+    "--spe_sample_size",
     type=int,
     default=-1,
     help="Samples the dataset by `sample_size` if positive integer, otherwise uses whole dataset",
 )
-parser.add_argument('--spe_train_extremely_large_corpus', action='store_true', help='')
+parser.add_argument("--spe_train_extremely_large_corpus", action="store_true", help="")
 parser.add_argument(
-    '--spe_max_sentencepiece_length',
+    "--spe_max_sentencepiece_length",
     type=int,
     default=-1,
-    help='Limit the maximum number of tokens in each SentencePiece subword. '
-    'Must be a positive integer > 0. By default places no limit on subword length.',
+    help="Limit the maximum number of tokens in each SentencePiece subword. "
+    "Must be a positive integer > 0. By default places no limit on subword length.",
 )
 parser.add_argument(
-    '--spe_no_split_by_unicode_script',
-    dest='spe_split_by_unicode_script',
-    action='store_false',
+    "--spe_no_split_by_unicode_script",
+    dest="spe_split_by_unicode_script",
+    action="store_false",
     help="Don't use Unicode script to split sentence pieces.",
 )
 parser.add_argument(
-    '--spe_byte_fallback',
-    dest='spe_byte_fallback',
-    action='store_true',
+    "--spe_byte_fallback",
+    dest="spe_byte_fallback",
+    action="store_true",
     help="If <unk>, fallback to a byte sequence of the characters.",
 )
-parser.add_argument('--no_lower_case', dest='lower_case', action='store_false')
-parser.add_argument("--log", action='store_true')
+parser.add_argument("--no_lower_case", dest="lower_case", action="store_false")
+parser.add_argument(
+    "--normalize_text_corpus",
+    action="store_true",
+    help="Normalize manifest text before tokenizer training to reduce noisy variants.",
+)
+parser.add_argument(
+    "--max_line_occurrence",
+    type=int,
+    default=3,
+    help="Maximum times the same cleaned line can appear in corpus (0 = no limit).",
+)
+parser.add_argument(
+    "--min_chars",
+    type=int,
+    default=1,
+    help="Drop cleaned lines shorter than this length when building text corpus.",
+)
+parser.add_argument(
+    "--max_chars",
+    type=int,
+    default=0,
+    help="Drop cleaned lines longer than this length when building text corpus (0 = no limit).",
+)
+parser.add_argument(
+    "--force_rebuild_text_corpus",
+    action="store_true",
+    help="Rebuild <data_root>/text_corpus/document.txt even if it already exists.",
+)
+parser.add_argument("--log", action="store_true")
 parser.set_defaults(log=False, lower_case=True, spe_train_extremely_large_corpus=False)
 args = parser.parse_args()
+
+
+def __clean_line(text: str, normalize: bool) -> str:
+    cleaned = normalize_text(text) if normalize else str(text).strip()
+    cleaned = re.sub(r"\s+([,.])", r"\1", cleaned)
+    cleaned = re.sub(r"[,.]{2,}", lambda match: match.group(0)[-1], cleaned)
+    return cleaned.strip()
 
 
 def __build_document_from_manifests(
     data_root: str,
     manifests: str,
+    normalize_text_corpus: bool,
+    max_line_occurrence: int,
+    min_chars: int,
+    max_chars: int,
+    force_rebuild_text_corpus: bool,
 ):
-    if ',' in manifests:
-        manifests = manifests.split(',')
+    if "," in manifests:
+        manifests = manifests.split(",")
     else:
         manifests = [manifests]
 
-    document_dir = os.path.join(data_root, 'text_corpus')
+    document_dir = os.path.join(data_root, "text_corpus")
     if not os.path.exists(document_dir):
         os.makedirs(document_dir)
 
-    document_path = os.path.join(document_dir, 'document.txt')
+    document_path = os.path.join(document_dir, "document.txt")
 
     if os.path.exists(document_path):
-        logging.info('Corpus already exists at path : %s', document_path)
-        return document_path
+        if not force_rebuild_text_corpus:
+            logging.info("Corpus already exists at path : %s", document_path)
+            return document_path
+        logging.info("Rebuilding corpus at path : %s", document_path)
 
-    num_lines = 0
-    with open(document_path, 'w') as out_writer:
+    min_len = max(min_chars, 0)
+    max_len = max_chars if max_chars > 0 else 0
+    line_counts: Counter = Counter()
+    stats: Dict[str, int] = {
+        "total": 0,
+        "written": 0,
+        "empty": 0,
+        "too_short": 0,
+        "too_long": 0,
+        "overrepresented": 0,
+    }
+
+    with open(document_path, "w", encoding="utf-8") as out_writer:
         for manifest in manifests:
-            with open(DataStoreObject(manifest).get(), 'r') as in_reader:
+            with open(
+                DataStoreObject(manifest).get(), "r", encoding="utf-8"
+            ) as in_reader:
                 for line in in_reader:
+                    stats["total"] += 1
                     item = json.loads(line)
-                    text = item['text']
+                    text = item.get("text", item.get("normalized_text", ""))
+                    cleaned = __clean_line(text, normalize_text_corpus)
 
-                    out_writer.write(text + '\n')
-                    out_writer.flush()
+                    if not cleaned:
+                        stats["empty"] += 1
+                        continue
 
-                    num_lines += 1
+                    if min_len and len(cleaned) < min_len:
+                        stats["too_short"] += 1
+                        continue
+
+                    if max_len and len(cleaned) > max_len:
+                        stats["too_long"] += 1
+                        continue
+
+                    if (
+                        max_line_occurrence > 0
+                        and line_counts[cleaned] >= max_line_occurrence
+                    ):
+                        stats["overrepresented"] += 1
+                        continue
+
+                    line_counts[cleaned] += 1
+                    out_writer.write(cleaned + "\n")
+                    stats["written"] += 1
 
             logging.info(f"Finished extracting manifest : {manifest}")
 
-        logging.info("Finished extracting all manifests ! Number of sentences : {}".format(num_lines))
+        logging.info(
+            "Finished extracting manifests. Total lines: %d, written: %d, dropped empty: %d, "
+            "dropped too short: %d, dropped too long: %d, dropped duplicate cap: %d, unique kept: %d",
+            stats["total"],
+            stats["written"],
+            stats["empty"],
+            stats["too_short"],
+            stats["too_long"],
+            stats["overrepresented"],
+            len(line_counts),
+        )
+    return document_path
+
+
+def __build_document_from_data_files(
+    data_root: str,
+    data_files: str,
+    normalize_text_corpus: bool,
+    max_line_occurrence: int,
+    min_chars: int,
+    max_chars: int,
+    force_rebuild_text_corpus: bool,
+):
+    if "," in data_files:
+        data_files = data_files.split(",")
+    else:
+        data_files = [data_files]
+
+    document_dir = os.path.join(data_root, "text_corpus")
+    if not os.path.exists(document_dir):
+        os.makedirs(document_dir)
+
+    document_path = os.path.join(document_dir, "document.txt")
+
+    if os.path.exists(document_path):
+        if not force_rebuild_text_corpus:
+            logging.info("Corpus already exists at path : %s", document_path)
+            return document_path
+        logging.info("Rebuilding corpus at path : %s", document_path)
+
+    min_len = max(min_chars, 0)
+    max_len = max_chars if max_chars > 0 else 0
+    line_counts: Counter = Counter()
+    stats: Dict[str, int] = {
+        "total": 0,
+        "written": 0,
+        "empty": 0,
+        "too_short": 0,
+        "too_long": 0,
+        "overrepresented": 0,
+    }
+
+    with open(document_path, "w", encoding="utf-8") as out_writer:
+        for data_file in data_files:
+            with open(
+                DataStoreObject(data_file).get(), "r", encoding="utf-8"
+            ) as in_reader:
+                for line in in_reader:
+                    stats["total"] += 1
+                    cleaned = __clean_line(line.rstrip("\n"), normalize_text_corpus)
+
+                    if not cleaned:
+                        stats["empty"] += 1
+                        continue
+
+                    if min_len and len(cleaned) < min_len:
+                        stats["too_short"] += 1
+                        continue
+
+                    if max_len and len(cleaned) > max_len:
+                        stats["too_long"] += 1
+                        continue
+
+                    if (
+                        max_line_occurrence > 0
+                        and line_counts[cleaned] >= max_line_occurrence
+                    ):
+                        stats["overrepresented"] += 1
+                        continue
+
+                    line_counts[cleaned] += 1
+                    out_writer.write(cleaned + "\n")
+                    stats["written"] += 1
+
+            logging.info(f"Finished extracting data file : {data_file}")
+
+        logging.info(
+            "Finished extracting text files. Total lines: %d, written: %d, dropped empty: %d, "
+            "dropped too short: %d, dropped too long: %d, dropped duplicate cap: %d, unique kept: %d",
+            stats["total"],
+            stats["written"],
+            stats["empty"],
+            stats["too_short"],
+            stats["too_long"],
+            stats["overrepresented"],
+            len(line_counts),
+        )
     return document_path
 
 
@@ -264,31 +465,30 @@ def __process_data(
 
     Returns:
     """
-    if tokenizer_type == 'spe':
-
+    if tokenizer_type == "spe":
         # Prepare directory of tokenizer
         if spe_max_sentencepiece_length > 0:
-            tokenizer_dir = os.path.join(dst_folder, 'tokenizer_{}_{}_v{}_max_{}').format(
-                tokenizer_type, spe_type, vocab_size, spe_max_sentencepiece_length
-            )
+            tokenizer_dir = os.path.join(
+                dst_folder, "tokenizer_{}_{}_v{}_max_{}"
+            ).format(tokenizer_type, spe_type, vocab_size, spe_max_sentencepiece_length)
         else:
-            tokenizer_dir = os.path.join(dst_folder, 'tokenizer_{}_{}_v{}').format(
+            tokenizer_dir = os.path.join(dst_folder, "tokenizer_{}_{}_v{}").format(
                 tokenizer_type, spe_type, vocab_size
             )
 
         if spe_pad:
-            tokenizer_dir = f'{tokenizer_dir}_pad'
+            tokenizer_dir = f"{tokenizer_dir}_pad"
         if spe_bos:
-            tokenizer_dir = f'{tokenizer_dir}_bos'
+            tokenizer_dir = f"{tokenizer_dir}_bos"
         if spe_eos:
-            tokenizer_dir = f'{tokenizer_dir}_eos'
+            tokenizer_dir = f"{tokenizer_dir}_eos"
 
         if not os.path.exists(tokenizer_dir):
             os.makedirs(tokenizer_dir)
 
-        if os.path.exists(os.path.join(tokenizer_dir, 'tokenizer.model')):
+        if os.path.exists(os.path.join(tokenizer_dir, "tokenizer.model")):
             logging.warning("Model file already exists, overriding old model file !")
-            os.remove(os.path.join(tokenizer_dir, 'tokenizer.model'))
+            os.remove(os.path.join(tokenizer_dir, "tokenizer.model"))
 
         # Build tokenizer
         tokenizer_path, vocab_path = create_spt_model(
@@ -313,7 +513,9 @@ def __process_data(
         )
 
     else:
-        tokenizer_dir = os.path.join(dst_folder, 'tokenizer_{}_v{}').format(tokenizer_type, vocab_size)
+        tokenizer_dir = os.path.join(dst_folder, "tokenizer_{}_v{}").format(
+            tokenizer_type, vocab_size
+        )
 
         if not os.path.exists(tokenizer_dir):
             os.makedirs(tokenizer_dir)
@@ -345,6 +547,11 @@ def main():
     spe_split_digits = args.spe_split_digits
     spe_remove_extra_whitespaces = args.spe_remove_extra_whitespaces
     lower_case = args.lower_case
+    normalize_text_corpus = args.normalize_text_corpus
+    max_line_occurrence = args.max_line_occurrence
+    min_chars = args.min_chars
+    max_chars = args.max_chars
+    force_rebuild_text_corpus = args.force_rebuild_text_corpus
 
     if not os.path.exists(data_root):
         os.makedirs(data_root)
@@ -353,9 +560,25 @@ def main():
         logging.basicConfig(level=logging.INFO)
 
     if manifests:
-        text_corpus_path = __build_document_from_manifests(data_root, manifests)
+        text_corpus_path = __build_document_from_manifests(
+            data_root=data_root,
+            manifests=manifests,
+            normalize_text_corpus=normalize_text_corpus,
+            max_line_occurrence=max_line_occurrence,
+            min_chars=min_chars,
+            max_chars=max_chars,
+            force_rebuild_text_corpus=force_rebuild_text_corpus,
+        )
     else:
-        text_corpus_path = data_file
+        text_corpus_path = __build_document_from_data_files(
+            data_root=data_root,
+            data_files=data_file,
+            normalize_text_corpus=normalize_text_corpus,
+            max_line_occurrence=max_line_occurrence,
+            min_chars=min_chars,
+            max_chars=max_chars,
+            force_rebuild_text_corpus=force_rebuild_text_corpus,
+        )
     tokenizer_path = __process_data(
         text_corpus_path,
         data_root,
@@ -379,7 +602,7 @@ def main():
     )
 
     print("Serialized tokenizer at location :", tokenizer_path)
-    logging.info('Done!')
+    logging.info("Done!")
 
 
 if __name__ == "__main__":

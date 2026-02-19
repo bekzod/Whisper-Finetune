@@ -17,16 +17,28 @@ os.environ.setdefault("NUMBA_CACHE_DIR", "/workspace/.cache/numba")
 os.environ["WANDB_API_KEY"] = "2dfc22d8af7805df156e7f31ea3bc090ec99d52e"
 
 import lightning.pytorch as pl
+import numpy as np
 import torch
+
+# NeMo uses np.sctypes, which was removed in NumPy 2.x.
+if not hasattr(np, "sctypes"):
+    np.sctypes = {
+        "int": [np.int8, np.int16, np.int32, np.int64, np.intp],
+        "uint": [np.uint8, np.uint16, np.uint32, np.uint64, np.uintp],
+        "float": [np.float16, np.float32, np.float64],
+        "complex": [np.complex64, np.complex128],
+        "others": [np.bool_, np.object_, np.bytes_, np.str_, np.void],
+    }
 
 # Optimize for Tensor Cores on supported GPUs (trades precision for performance)
 torch.set_float32_matmul_precision("medium")
 from nemo.collections.asr.models import EncDecHybridRNNTCTCBPEModel
 from nemo.core.config import hydra_runner
-from nemo.utils import logging
 from nemo.utils.exp_manager import exp_manager
 from nemo.utils.trainer_utils import resolve_trainer_cfg
 from omegaconf import OmegaConf
+
+from nemo.utils import logging
 
 
 @hydra_runner(config_path="experimental/contextnet_rnnt", config_name="config_rnnt_bpe")

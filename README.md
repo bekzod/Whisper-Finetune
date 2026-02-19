@@ -2,6 +2,8 @@
 
 简体中文 | [English](./README_en.md)
 
+NeMo 训练步骤文档：[`nemo/README.md`](./nemo/README.md)
+
 ![python version](https://img.shields.io/badge/python-3.8+-orange.svg)
 ![GitHub forks](https://img.shields.io/github/forks/yeyupiaoling/Whisper-Finetune)
 ![GitHub Repo stars](https://img.shields.io/github/stars/yeyupiaoling/Whisper-Finetune)
