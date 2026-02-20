@@ -115,9 +115,6 @@ Example with common runtime overrides:
 python3 speech_to_text_rnnt_bpe.py \
   --config-path=. \
   --config-name=train \
-  trainer.devices=1 \
-  model.train_ds.batch_size=12 \
-  model.validation_ds.batch_size=16 \
   exp_manager.exp_dir=./output/nemo-training
 ```
 
