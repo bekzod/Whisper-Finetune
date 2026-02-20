@@ -1,0 +1,20 @@
+{
+  "train": [
+    {
+      "name": "fsicoli/common_voice_17_0",
+      "subset": "uz",
+      "splits": ["train", "test"]
+    },
+    {
+      "name": "islomov/it_youtube_uzbek_speech_dataset",
+      "splits": ["train"]
+    }
+  ],
+  "eval": [
+    {
+      "name": "fsicoli/common_voice_17_0",
+      "subset": "uz",
+      "splits": ["dev"]
+    }
+  ]
+}
