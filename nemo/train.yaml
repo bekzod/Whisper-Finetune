@@ -98,7 +98,7 @@ model:
     manifest_filepath: ./output/eval_manifest.jsonl
     sample_rate: ${model.sample_rate}
     # Keep validation batch conservative since utterance lengths are often long/variable.
-    batch_size: 32
+    batch_size: 30
     shuffle: false
     use_start_end_token: false
     num_workers: 24
