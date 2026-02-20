@@ -280,7 +280,7 @@ model:
 
   optim:
     name: adamw
-    lr: 0.8
+    lr: 0.6
     # optimizer arguments
     betas: [0.9, 0.98]
     weight_decay: 1e-3
@@ -295,7 +295,7 @@ model:
       min_lr: 1e-6
 
 trainer:
-  devices: 1 # Single GPU. Set to -1 to use all available GPUs.
+  devices: -1
   num_nodes: 1
   max_epochs: 500
   max_steps: -1
@@ -309,7 +309,7 @@ trainer:
   log_every_n_steps: 400
   enable_progress_bar: True
   num_sanity_val_steps: 0 # Disabled for faster startup
-  check_val_every_n_epoch: 2 # Validate every 2 epochs to reduce overhead
+  check_val_every_n_epoch: 1
   enable_checkpointing: False
   logger: false
   # NeMo ASR configs recommend disabling this for variable-length speech batches.
