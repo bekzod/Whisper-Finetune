@@ -11,6 +11,16 @@ from omegaconf import OmegaConf
 
 from nemo.utils import logging
 
+os.environ.setdefault("HF_HOME", "/workspace/.cache/huggingface")
+os.environ.setdefault("TORCH_HOME", "/workspace/.cache/torch")
+os.environ.setdefault("NUMBA_CACHE_DIR", "/workspace/.cache/numba")
+# Suppress Numba's low-occupancy warning spam (informational, not fatal).
+os.environ.setdefault("NUMBA_CUDA_LOW_OCCUPANCY_WARNINGS", "0")
+
+# Set WandB API key
+os.environ["WANDB_API_KEY"] = "2dfc22d8af7805df156e7f31ea3bc090ec99d52e"
+
+
 # NeMo uses np.sctypes, which was removed in NumPy 2.x.
 if not hasattr(np, "sctypes"):
     np.sctypes = {
