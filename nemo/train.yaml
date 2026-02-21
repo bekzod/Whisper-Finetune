@@ -310,7 +310,7 @@ trainer:
   enable_progress_bar: True
   num_sanity_val_steps: 0 # Disabled for faster startup
   check_val_every_n_epoch: 1
-  enable_checkpointing: True
+  enable_checkpointing: false
   logger: false
   # NeMo ASR configs recommend disabling this for variable-length speech batches.
   benchmark: false
