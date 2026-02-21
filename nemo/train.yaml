@@ -295,7 +295,7 @@ model:
       name: NoamAnnealing
       d_model: ${model.encoder.d_model}
       # scheduler config override
-      warmup_steps: 6000
+      warmup_steps: 3000
       warmup_ratio: null
       min_lr: 1e-6
 
