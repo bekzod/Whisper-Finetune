@@ -271,7 +271,7 @@ model:
       # FastEmit regularization: https://arxiv.org/abs/2010.11148
       # You may enable FastEmit to reduce the latency of the model for streaming
       fastemit_lambda: 0.001 # Recommended values to be in range [1e-4, 1e-2], 0.001 is a good start.
-      clamp: 1.0 # if > 0, applies gradient clamping in range [-clamp, clamp] for the joint tensor only.
+      clamp: -1.0 # if > 0, applies gradient clamping in range [-clamp, clamp] for the joint tensor only.
 
       # refer to https://arxiv.org/abs/2304.06795 for the meaning of the following three configs.
       durations: ${model.model_defaults.tdt_durations}
@@ -280,7 +280,7 @@ model:
 
   optim:
     name: adamw
-    lr: 0.3
+    lr: 0.6
     # optimizer arguments
     betas: [0.9, 0.98]
     weight_decay: 1e-3
