@@ -6,8 +6,8 @@
 #
 name: "FastConformer-Hybrid-TDT-CTC-BPE"
 
-# Initialize encoder from pretrained model for fine-tuning
-# This loads only the encoder weights, allowing use of custom Uzbek tokenizer for decoder
+# Initialize encoder from pretrained model for fine-tuning.
+# Keep decoder/joint randomly initialized to match your custom tokenizer/vocabulary.
 init_from_pretrained_model:
   model0:
     name: "nvidia/parakeet-tdt-0.6b-v3"
@@ -241,14 +241,15 @@ model:
 
     # beam strategy config
     beam:
-      beam_size: 2
+      beam_size: 4
       return_best_hypothesis: False
       score_norm: true
       tsd_max_sym_exp: 50 # for Time Synchronous Decoding
       alsd_max_target_len: 2.0 # for Alignment-Length Synchronous Decoding
 
   aux_ctc:
-    ctc_loss_weight: 0.1
+    # Slightly higher auxiliary CTC weight helps stabilize alignment from scratch.
+    ctc_loss_weight: 0.3
     use_cer: false
     ctc_reduction: "mean_batch"
     decoder:
