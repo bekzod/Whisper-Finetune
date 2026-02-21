@@ -64,8 +64,8 @@ def main(cfg):
     asr_model = EncDecHybridRNNTCTCBPEModel(cfg=cfg.model, trainer=trainer)
 
     # Initialize the weights of the model from another model, if provided via config
-    logging.info("Checking for pretrained checkpoint...")
-    asr_model.maybe_init_from_pretrained_checkpoint(cfg)
+    # logging.info("Checking for pretrained checkpoint...")
+    # asr_model.maybe_init_from_pretrained_checkpoint(cfg)
 
     logging.info("Starting trainer.fit()...")
     try:
