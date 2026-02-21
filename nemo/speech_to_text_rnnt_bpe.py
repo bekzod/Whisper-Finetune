@@ -21,19 +21,6 @@ os.environ.setdefault("NUMBA_CUDA_LOW_OCCUPANCY_WARNINGS", "0")
 os.environ["WANDB_API_KEY"] = "2dfc22d8af7805df156e7f31ea3bc090ec99d52e"
 
 
-# NeMo uses np.sctypes, which was removed in NumPy 2.x.
-if not hasattr(np, "sctypes"):
-    np.sctypes = {
-        "int": [np.int8, np.int16, np.int32, np.int64, np.intp],
-        "uint": [np.uint8, np.uint16, np.uint32, np.uint64, np.uintp],
-        "float": [np.float16, np.float32, np.float64],
-        "complex": [np.complex64, np.complex128],
-        "others": [np.bool_, np.object_, np.bytes_, np.str_, np.void],
-    }
-
-torch.set_float32_matmul_precision("medium")
-
-
 def _get_spm_vocab_size(asr_model):
     try:
         return int(asr_model.tokenizer.tokenizer.get_piece_size())
