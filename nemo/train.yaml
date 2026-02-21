@@ -137,7 +137,7 @@ model:
   spec_augment:
     _target_: nemo.collections.asr.modules.SpectrogramAugmentation
     freq_masks: 2 # set to zero to disable it
-    time_masks: 10 # set to zero to disable it
+    time_masks: 5 # set to zero to disable it
     freq_width: 27
     time_width: 0.05
 
@@ -248,7 +248,7 @@ model:
       alsd_max_target_len: 2.0 # for Alignment-Length Synchronous Decoding
 
   aux_ctc:
-    ctc_loss_weight: 0.4
+    ctc_loss_weight: 0.3
     use_cer: false
     ctc_reduction: "mean_batch"
     decoder:
@@ -276,11 +276,11 @@ model:
       # refer to https://arxiv.org/abs/2304.06795 for the meaning of the following three configs.
       durations: ${model.model_defaults.tdt_durations}
       sigma: 0.02 # hyper-param for under-normalization.
-      omega: 0.1 # weight for regular RNN-T loss.
+      omega: 0.2 # weight for regular RNN-T loss.
 
   optim:
     name: adamw
-    lr: 0.6
+    lr: 0.3
     # optimizer arguments
     betas: [0.9, 0.98]
     weight_decay: 1e-3
@@ -290,7 +290,7 @@ model:
       name: NoamAnnealing
       d_model: ${model.encoder.d_model}
       # scheduler config override
-      warmup_steps: 2000
+      warmup_steps: 6000
       warmup_ratio: null
       min_lr: 1e-6
 
@@ -304,9 +304,9 @@ trainer:
   # Let Lightning pick the right strategy (`single_device` or `ddp`) from devices/nodes.
   strategy: auto
   accumulate_grad_batches: 1
-  gradient_clip_val: 0.3
+  gradient_clip_val: 1.0
   precision: bf16-mixed
-  log_every_n_steps: 400
+  log_every_n_steps: 100
   enable_progress_bar: True
   num_sanity_val_steps: 0 # Disabled for faster startup
   check_val_every_n_epoch: 1
@@ -321,7 +321,7 @@ exp_manager:
   create_tensorboard_logger: false
   create_checkpoint_callback: true
   checkpoint_callback_params:
-    monitor: "val_wer"
+    monitor: "val_wer_ctc"
     mode: "min"
     save_top_k: 8
     save_last: true
