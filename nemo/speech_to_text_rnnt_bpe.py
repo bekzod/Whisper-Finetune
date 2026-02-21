@@ -1,139 +1,106 @@
 import os
 
-# CUDA/Numba compatibility fixes for newer GPUs (Blackwell/RTX 50-series)
-# os.environ["NUMBA_CUDA_USE_NVIDIA_BINDING"] = "1"
-# os.environ["CUDA_MODULE_LOADING"] = "LAZY"
-# os.environ["NEMO_DISABLE_CUDA_GRAPHS"] = "1"
+import hydra
+import lightning.pytorch as pl
+import numpy as np
+import torch
+from nemo.collections.asr.models import EncDecHybridRNNTCTCBPEModel
+from nemo.utils.exp_manager import exp_manager
+from nemo.utils.trainer_utils import resolve_trainer_cfg
+from omegaconf import OmegaConf
 
-# Fix CUDA memory fragmentation (helps avoid OOM on variable-length sequences)
-# os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+from nemo.utils import logging
 
-# Set cache directories to avoid permission issues
-os.environ.setdefault("HF_HOME", "/workspace/.cache/huggingface")
-os.environ.setdefault("TORCH_HOME", "/workspace/.cache/torch")
-os.environ.setdefault("NUMBA_CACHE_DIR", "/workspace/.cache/numba")
-# Suppress Numba's low-occupancy warning spam (informational, not fatal).
-os.environ.setdefault("NUMBA_CUDA_LOW_OCCUPANCY_WARNINGS", "0")
+# NeMo uses np.sctypes, which was removed in NumPy 2.x.
+if not hasattr(np, "sctypes"):
+    np.sctypes = {
+        "int": [np.int8, np.int16, np.int32, np.int64, np.intp],
+        "uint": [np.uint8, np.uint16, np.uint32, np.uint64, np.uintp],
+        "float": [np.float16, np.float32, np.float64],
+        "complex": [np.complex64, np.complex128],
+        "others": [np.bool_, np.object_, np.bytes_, np.str_, np.void],
+    }
 
-# Set WandB API key
-os.environ["WANDB_API_KEY"] = "2dfc22d8af7805df156e7f31ea3bc090ec99d52e"
-
-# torch.set_float32_matmul_precision("medium")
+torch.set_float32_matmul_precision("medium")
 
 
-def _get_spm_vocab_size(asr_model) -> int | None:
-    """Best-effort tokenizer vocab size extraction (SentencePiece)."""
+def _get_spm_vocab_size(asr_model):
     try:
-        tok = asr_model.tokenizer
-        return int(tok.tokenizer.get_piece_size())
+        return int(asr_model.tokenizer.tokenizer.get_piece_size())
     except Exception:
         return None
 
 
-def _reapply_tdt_kwargs(asr_model, cfg) -> None:
-    """
-    Re-apply TDT kwargs AFTER pretrained init.
-    Some init flows can mutate cfg/loss objects.
-    """
-    # Desired values from Hydra cfg
+def _reapply_tdt_kwargs(asr_model, cfg):
+    # Desired values from config
     desired_fastemit = float(cfg.model.loss.tdt_kwargs.fastemit_lambda)
     desired_clamp = float(cfg.model.loss.tdt_kwargs.clamp)
 
-    # Update model cfg
+    # Update model cfg (authoritative for NeMo modules)
     try:
         asr_model._cfg.loss.tdt_kwargs.fastemit_lambda = desired_fastemit
         asr_model._cfg.loss.tdt_kwargs.clamp = desired_clamp
     except Exception as e:
         logging.warning(f"Could not set asr_model._cfg.loss.tdt_kwargs: {e}")
 
-    # Update instantiated loss module if it exposes these fields
+    # Try to update instantiated loss too
     try:
         if hasattr(asr_model, "loss") and hasattr(asr_model.loss, "tdt_kwargs"):
-            # Some implementations store kwargs dict-like
             if isinstance(asr_model.loss.tdt_kwargs, dict):
                 asr_model.loss.tdt_kwargs["fastemit_lambda"] = desired_fastemit
                 asr_model.loss.tdt_kwargs["clamp"] = desired_clamp
-            else:
-                # Or attribute-style
-                asr_model.loss.tdt_kwargs.fastemit_lambda = desired_fastemit
-                asr_model.loss.tdt_kwargs.clamp = desired_clamp
     except Exception as e:
-        logging.warning(f"Could not update instantiated loss tdt_kwargs: {e}")
+        logging.warning(f"Could not update instantiated loss kwargs: {e}")
 
-    # Rebuild loss if NeMo exposes helpers (version-dependent)
-    # This is the most reliable way to ensure the running graph uses the new kwargs.
-    rebuilt = False
+    # Best-effort rebuild loss module (version dependent)
     for fn_name in ("_init_loss", "_setup_loss", "setup_loss"):
         if hasattr(asr_model, fn_name):
             try:
-                fn = getattr(asr_model, fn_name)
-                out = fn()
-                # Some versions return loss, some set it internally
+                out = getattr(asr_model, fn_name)()
                 if out is not None and fn_name == "_init_loss":
                     asr_model.loss = out
-                rebuilt = True
                 break
             except Exception as e:
-                logging.warning(f"Loss rebuild via {fn_name}() failed: {e}")
-    if not rebuilt:
-        logging.info(
-            "No loss rebuild helper found; relying on in-place loss kwargs update."
-        )
+                logging.warning(f"Loss rebuild via {fn_name} failed: {e}")
 
 
-def _ensure_target_tokenizer(asr_model, cfg) -> None:
-    """
-    Ensure the training model keeps the target tokenizer (e.g., 1024) after pretrained init.
-    If mismatch is detected, attempt to reset vocabulary if the model supports it.
-    """
+def _ensure_target_tokenizer(asr_model, cfg, target_size=1024):
     expected_dir = str(cfg.model.tokenizer.dir)
     expected_type = str(cfg.model.tokenizer.type)
 
-    vocab_size = _get_spm_vocab_size(asr_model)
+    vs = _get_spm_vocab_size(asr_model)
     logging.info(
-        f"AFTER pretrained init: tokenizer vocab_size={vocab_size} (target dir={expected_dir})"
+        f"AFTER pretrained init: tokenizer vocab_size={vs}, target_dir={expected_dir}"
     )
 
-    # If we can’t read vocab size, we still proceed (some tokenizer wrappers differ)
-    if vocab_size is None:
+    if vs is None:
         logging.warning(
-            "Could not read tokenizer vocab size; ensure tokenizer is not being overwritten."
+            "Could not read tokenizer vocab size; cannot assert tokenizer consistency."
         )
         return
 
-    # If you *know* it should be 1024, enforce it here:
-    target_size = 1024
-    if vocab_size != target_size:
+    if vs != target_size:
         logging.warning(
-            f"Tokenizer vocab_size={vocab_size} but expected {target_size}. "
-            "Attempting to reset tokenizer/vocabulary to target."
+            f"Tokenizer vocab_size={vs} != {target_size}. Attempting to reset vocabulary."
         )
-
-        # NeMo ASR BPE models typically provide change_vocabulary()
         if hasattr(asr_model, "change_vocabulary"):
-            try:
-                asr_model.change_vocabulary(
-                    new_tokenizer_dir=expected_dir,
-                    new_tokenizer_type=expected_type,
-                )
-                vocab_size2 = _get_spm_vocab_size(asr_model)
-                logging.info(f"Tokenizer reset attempted. New vocab_size={vocab_size2}")
-            except Exception as e:
-                raise RuntimeError(
-                    f"Tokenizer mismatch and change_vocabulary() failed: {e}"
-                ) from e
+            asr_model.change_vocabulary(
+                new_tokenizer_dir=expected_dir,
+                new_tokenizer_type=expected_type,
+            )
+            vs2 = _get_spm_vocab_size(asr_model)
+            logging.info(f"Tokenizer reset attempted. New vocab_size={vs2}")
         else:
             raise RuntimeError(
-                "Tokenizer mismatch detected but model has no change_vocabulary() method. "
-                "You must prevent pretrained init from overwriting the training model."
+                "Tokenizer mismatch but model has no change_vocabulary()."
             )
 
 
-@hydra_runner(config_path=".", config_name="train")
+@hydra.main(version_base=None, config_path=".", config_name="train")
 def main(cfg):
     logging.info(f"Hydra config:\n{OmegaConf.to_yaml(cfg)}")
 
-    # Debug: GPU info
+    # Debug GPU info
     logging.info(f"CUDA available: {torch.cuda.is_available()}")
     if torch.cuda.is_available():
         logging.info(f"CUDA device count: {torch.cuda.device_count()}")
@@ -149,23 +116,22 @@ def main(cfg):
     logging.info("Creating ASR model...")
     asr_model = EncDecHybridRNNTCTCBPEModel(cfg=cfg.model, trainer=trainer)
 
-    # Sanity before init
-    pre_vocab = _get_spm_vocab_size(asr_model)
-    logging.info(f"BEFORE pretrained init: tokenizer vocab_size={pre_vocab}")
+    logging.info(
+        f"BEFORE pretrained init: tokenizer vocab_size={_get_spm_vocab_size(asr_model)}"
+    )
 
-    # Initialize weights from pretrained model, if configured
     logging.info("Checking for pretrained checkpoint...")
-    # Prefer passing model subtree if your NeMo version supports it; if it errors, revert to cfg
+    # Call with cfg.model if supported, else fallback to cfg
     try:
         asr_model.maybe_init_from_pretrained_checkpoint(cfg.model)
     except Exception:
         asr_model.maybe_init_from_pretrained_checkpoint(cfg)
 
-    # Re-apply critical knobs AFTER init to prevent leakage from pretrained restore
+    # Re-apply critical settings AFTER pretrained restore
     _reapply_tdt_kwargs(asr_model, cfg)
-    _ensure_target_tokenizer(asr_model, cfg)
+    _ensure_target_tokenizer(asr_model, cfg, target_size=1024)
 
-    # Print final TDT kwargs sanity (best-effort)
+    # Final sanity
     try:
         tdt = asr_model._cfg.loss.tdt_kwargs
         logging.info(
@@ -177,16 +143,8 @@ def main(cfg):
         )
 
     logging.info("Starting trainer.fit()...")
-    try:
-        trainer.fit(asr_model)
-    except Exception as e:
-        logging.error(f"Training failed with exception: {e}")
-        import traceback
+    trainer.fit(asr_model)
 
-        traceback.print_exc()
-        raise
-
-    # Optional test
     if (
         hasattr(cfg.model, "test_ds")
         and cfg.model.test_ds.manifest_filepath is not None
@@ -196,4 +154,4 @@ def main(cfg):
 
 
 if __name__ == "__main__":
-    main()  # noqa
+    main()
