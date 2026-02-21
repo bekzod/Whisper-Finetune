@@ -1,105 +1,27 @@
 import os
 
-import hydra
 import lightning.pytorch as pl
-import numpy as np
 import torch
 from nemo.collections.asr.models import EncDecHybridRNNTCTCBPEModel
+from nemo.core.config import hydra_runner
 from nemo.utils.exp_manager import exp_manager
 from nemo.utils.trainer_utils import resolve_trainer_cfg
 from omegaconf import OmegaConf
 
 from nemo.utils import logging
 
-os.environ.setdefault("HF_HOME", "/workspace/.cache/huggingface")
-os.environ.setdefault("TORCH_HOME", "/workspace/.cache/torch")
-os.environ.setdefault("NUMBA_CACHE_DIR", "/workspace/.cache/numba")
-# Suppress Numba's low-occupancy warning spam (informational, not fatal).
-os.environ.setdefault("NUMBA_CUDA_LOW_OCCUPANCY_WARNINGS", "0")
-
 # Set WandB API key
+os.environ.setdefault("NUMBA_CUDA_LOW_OCCUPANCY_WARNINGS", "0")
 os.environ["WANDB_API_KEY"] = "2dfc22d8af7805df156e7f31ea3bc090ec99d52e"
 
 torch.set_float32_matmul_precision("medium")
 
 
-def _get_spm_vocab_size(asr_model):
-    try:
-        return int(asr_model.tokenizer.tokenizer.get_piece_size())
-    except Exception:
-        return None
-
-
-def _reapply_tdt_kwargs(asr_model, cfg):
-    # Desired values from config
-    desired_fastemit = float(cfg.model.loss.tdt_kwargs.fastemit_lambda)
-    desired_clamp = float(cfg.model.loss.tdt_kwargs.clamp)
-
-    # Update model cfg (authoritative for NeMo modules)
-    try:
-        asr_model._cfg.loss.tdt_kwargs.fastemit_lambda = desired_fastemit
-        asr_model._cfg.loss.tdt_kwargs.clamp = desired_clamp
-    except Exception as e:
-        logging.warning(f"Could not set asr_model._cfg.loss.tdt_kwargs: {e}")
-
-    # Try to update instantiated loss too
-    try:
-        if hasattr(asr_model, "loss") and hasattr(asr_model.loss, "tdt_kwargs"):
-            if isinstance(asr_model.loss.tdt_kwargs, dict):
-                asr_model.loss.tdt_kwargs["fastemit_lambda"] = desired_fastemit
-                asr_model.loss.tdt_kwargs["clamp"] = desired_clamp
-    except Exception as e:
-        logging.warning(f"Could not update instantiated loss kwargs: {e}")
-
-    # Best-effort rebuild loss module (version dependent)
-    for fn_name in ("_init_loss", "_setup_loss", "setup_loss"):
-        if hasattr(asr_model, fn_name):
-            try:
-                out = getattr(asr_model, fn_name)()
-                if out is not None and fn_name == "_init_loss":
-                    asr_model.loss = out
-                break
-            except Exception as e:
-                logging.warning(f"Loss rebuild via {fn_name} failed: {e}")
-
-
-def _ensure_target_tokenizer(asr_model, cfg, target_size=1024):
-    expected_dir = str(cfg.model.tokenizer.dir)
-    expected_type = str(cfg.model.tokenizer.type)
-
-    vs = _get_spm_vocab_size(asr_model)
-    logging.info(
-        f"AFTER pretrained init: tokenizer vocab_size={vs}, target_dir={expected_dir}"
-    )
-
-    if vs is None:
-        logging.warning(
-            "Could not read tokenizer vocab size; cannot assert tokenizer consistency."
-        )
-        return
-
-    if vs != target_size:
-        logging.warning(
-            f"Tokenizer vocab_size={vs} != {target_size}. Attempting to reset vocabulary."
-        )
-        if hasattr(asr_model, "change_vocabulary"):
-            asr_model.change_vocabulary(
-                new_tokenizer_dir=expected_dir,
-                new_tokenizer_type=expected_type,
-            )
-            vs2 = _get_spm_vocab_size(asr_model)
-            logging.info(f"Tokenizer reset attempted. New vocab_size={vs2}")
-        else:
-            raise RuntimeError(
-                "Tokenizer mismatch but model has no change_vocabulary()."
-            )
-
-
-@hydra.main(version_base=None, config_path=".", config_name="train")
+@hydra_runner(config_path=".", config_name="train")
 def main(cfg):
-    logging.info(f"Hydra config:\n{OmegaConf.to_yaml(cfg)}")
+    logging.info(f"Hydra config: {OmegaConf.to_yaml(cfg)}")
 
-    # Debug GPU info
+    # Debug: Print GPU info
     logging.info(f"CUDA available: {torch.cuda.is_available()}")
     if torch.cuda.is_available():
         logging.info(f"CUDA device count: {torch.cuda.device_count()}")
@@ -115,34 +37,19 @@ def main(cfg):
     logging.info("Creating ASR model...")
     asr_model = EncDecHybridRNNTCTCBPEModel(cfg=cfg.model, trainer=trainer)
 
-    logging.info(
-        f"BEFORE pretrained init: tokenizer vocab_size={_get_spm_vocab_size(asr_model)}"
-    )
-
+    # Initialize the weights of the model from another model, if provided via config
     logging.info("Checking for pretrained checkpoint...")
-    # Call with cfg.model if supported, else fallback to cfg
-    try:
-        asr_model.maybe_init_from_pretrained_checkpoint(cfg.model)
-    except Exception:
-        asr_model.maybe_init_from_pretrained_checkpoint(cfg)
-
-    # Re-apply critical settings AFTER pretrained restore
-    _reapply_tdt_kwargs(asr_model, cfg)
-    _ensure_target_tokenizer(asr_model, cfg, target_size=1024)
-
-    # Final sanity
-    try:
-        tdt = asr_model._cfg.loss.tdt_kwargs
-        logging.info(
-            f"AFTER pretrained init: fastemit_lambda={float(tdt.fastemit_lambda)}, clamp={float(tdt.clamp)}"
-        )
-    except Exception:
-        logging.info(
-            "AFTER pretrained init: could not read asr_model._cfg.loss.tdt_kwargs"
-        )
+    asr_model.maybe_init_from_pretrained_checkpoint(cfg)
 
     logging.info("Starting trainer.fit()...")
-    trainer.fit(asr_model)
+    try:
+        trainer.fit(asr_model)
+    except Exception as e:
+        logging.error(f"Training failed with exception: {e}")
+        import traceback
+
+        traceback.print_exc()
+        raise
 
     if (
         hasattr(cfg.model, "test_ds")
@@ -153,4 +60,4 @@ def main(cfg):
 
 
 if __name__ == "__main__":
-    main()
+    main()  # noqa pylint: disable=no-value-for-parameter
