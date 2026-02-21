@@ -11,7 +11,7 @@ name: "FastConformer-Hybrid-TDT-CTC-BPE"
 init_from_pretrained_model:
   model0:
     name: "nvidia/parakeet-tdt-0.6b-v3"
-    include: ["preprocessor", "encoder"]
+    include: ["encoder"]
 
 model:
   sample_rate: 16000
