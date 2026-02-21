@@ -304,7 +304,7 @@ trainer:
   # Let Lightning pick the right strategy (`single_device` or `ddp`) from devices/nodes.
   strategy: auto
   accumulate_grad_batches: 1
-  gradient_clip_val: 0.5
+  gradient_clip_val: 0.3
   precision: bf16-mixed
   log_every_n_steps: 400
   enable_progress_bar: True
