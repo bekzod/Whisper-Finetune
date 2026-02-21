@@ -237,7 +237,7 @@ model:
 
     # greedy strategy config
     greedy:
-      max_symbols: 10
+      max_symbols: 5
 
     # beam strategy config
     beam:
@@ -270,13 +270,13 @@ model:
     tdt_kwargs:
       # FastEmit regularization: https://arxiv.org/abs/2010.11148
       # You may enable FastEmit to reduce the latency of the model for streaming
-      fastemit_lambda: 0.001 # Recommended values to be in range [1e-4, 1e-2], 0.001 is a good start.
+      fastemit_lambda: 0.0001 # Recommended values to be in range [1e-4, 1e-2], 0.001 is a good start.
       clamp: -1.0 # if > 0, applies gradient clamping in range [-clamp, clamp] for the joint tensor only.
 
       # refer to https://arxiv.org/abs/2304.06795 for the meaning of the following three configs.
       durations: ${model.model_defaults.tdt_durations}
       sigma: 0.02 # hyper-param for under-normalization.
-      omega: 0.2 # weight for regular RNN-T loss.
+      omega: 0.35 # weight for regular RNN-T loss.
 
   optim:
     name: adamw
