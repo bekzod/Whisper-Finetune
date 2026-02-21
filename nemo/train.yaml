@@ -13,6 +13,10 @@ init_from_pretrained_model:
     name: "nvidia/parakeet-tdt-0.6b-v3"
     include: ["encoder"]
 
+# Freeze encoder for first N optimizer steps, then unfreeze automatically.
+# Set to 0 to disable.
+freeze_encoder_steps: 6000
+
 model:
   sample_rate: 16000
 
@@ -281,7 +285,7 @@ model:
 
   optim:
     name: adamw
-    lr: 0.3
+    lr: 0.1
     # optimizer arguments
     betas: [0.9, 0.98]
     weight_decay: 1e-3
