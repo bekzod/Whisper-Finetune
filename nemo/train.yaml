@@ -237,7 +237,7 @@ model:
 
     # greedy strategy config
     greedy:
-      max_symbols: 5
+      max_symbols: 2
 
     # beam strategy config
     beam:
@@ -248,7 +248,7 @@ model:
       alsd_max_target_len: 2.0 # for Alignment-Length Synchronous Decoding
 
   aux_ctc:
-    ctc_loss_weight: 0.3
+    ctc_loss_weight: 0.1
     use_cer: false
     ctc_reduction: "mean_batch"
     decoder:
@@ -257,7 +257,7 @@ model:
       num_classes: -1
       vocabulary: []
     decoding:
-      strategy: "greedy_batch"
+      strategy: "greedy"
 
   interctc:
     loss_weights: []
@@ -270,7 +270,7 @@ model:
     tdt_kwargs:
       # FastEmit regularization: https://arxiv.org/abs/2010.11148
       # You may enable FastEmit to reduce the latency of the model for streaming
-      fastemit_lambda: 0.0001 # Recommended values to be in range [1e-4, 1e-2], 0.001 is a good start.
+      fastemit_lambda: 0.0 # Recommended values to be in range [1e-4, 1e-2], 0.001 is a good start.
       clamp: -1.0 # if > 0, applies gradient clamping in range [-clamp, clamp] for the joint tensor only.
 
       # refer to https://arxiv.org/abs/2304.06795 for the meaning of the following three configs.
@@ -310,6 +310,7 @@ trainer:
   enable_progress_bar: True
   num_sanity_val_steps: 0 # Disabled for faster startup
   check_val_every_n_epoch: 1
+  sync_batchnorm: true
   enable_checkpointing: false
   logger: false
   # NeMo ASR configs recommend disabling this for variable-length speech batches.
@@ -321,15 +322,15 @@ exp_manager:
   create_tensorboard_logger: false
   create_checkpoint_callback: true
   checkpoint_callback_params:
-    monitor: "val_wer_ctc"
+    monitor: "val_wer"
     mode: "min"
     save_top_k: 8
     save_last: true
     always_save_nemo: True
   resume_from_checkpoint: null
   # Auto-resume if a checkpoint exists in the experiment directory.
-  resume_if_exists: true
-  resume_ignore_no_checkpoint: true
+  resume_if_exists: false
+  resume_ignore_no_checkpoint: false
   create_wandb_logger: true
   wandb_logger_kwargs:
     name: ${name}
