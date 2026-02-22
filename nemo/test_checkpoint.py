@@ -106,6 +106,67 @@ def resolve_device(device_flag: str) -> str:
     return "cuda" if torch.cuda.is_available() else "cpu"
 
 
+def _checkpoint_search_roots(ckpt_path: Path) -> List[Path]:
+    roots = [
+        ckpt_path.parent,
+        Path.cwd(),
+        Path(__file__).resolve().parent,
+    ]
+    if ckpt_path.parent.name == "checkpoints":
+        roots.append(ckpt_path.parent.parent)
+
+    unique: List[Path] = []
+    seen = set()
+    for root in roots:
+        key = str(root.resolve())
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(root)
+    return unique
+
+
+def _resolve_artifact_path(path_value: str, roots: Sequence[Path]) -> str:
+    candidate = Path(path_value).expanduser()
+    if candidate.is_absolute() and candidate.exists():
+        return str(candidate)
+
+    normalized = Path(str(path_value).lstrip("./"))
+    for root in roots:
+        probe = (root / normalized).resolve()
+        if probe.exists():
+            return str(probe)
+
+        # Common training layout stores tokenizer assets directly under repo/nemo.
+        probe_name = (root / normalized.name).resolve()
+        if probe_name.exists():
+            return str(probe_name)
+
+    return path_value
+
+
+def _load_ckpt_cfg_with_resolved_tokenizer_paths(ckpt_path: Path):
+    import torch
+    from omegaconf import OmegaConf
+
+    raw = torch.load(str(ckpt_path), map_location="cpu")
+    cfg = raw.get("hyper_parameters", {}).get("cfg")
+    if cfg is None:
+        return None
+
+    cfg = OmegaConf.create(cfg)
+    tokenizer = cfg.get("tokenizer")
+    if tokenizer is None:
+        return cfg
+
+    roots = _checkpoint_search_roots(ckpt_path)
+    for key in ("dir", "model_path", "vocab_path"):
+        value = tokenizer.get(key)
+        if isinstance(value, str) and value.strip():
+            tokenizer[key] = _resolve_artifact_path(value, roots)
+    return cfg
+
+
 def load_model(ckpt_path: Path, device: str):
     import torch
     from nemo.collections.asr.models import EncDecHybridRNNTCTCBPEModel
@@ -118,9 +179,22 @@ def load_model(ckpt_path: Path, device: str):
             restore_path=str(ckpt_path), map_location=map_location
         )
     elif suffix == ".ckpt":
-        model = EncDecHybridRNNTCTCBPEModel.load_from_checkpoint(
-            checkpoint_path=str(ckpt_path), map_location=map_location
-        )
+        try:
+            model = EncDecHybridRNNTCTCBPEModel.load_from_checkpoint(
+                checkpoint_path=str(ckpt_path), map_location=map_location
+            )
+        except FileNotFoundError as exc:
+            fixed_cfg = _load_ckpt_cfg_with_resolved_tokenizer_paths(ckpt_path)
+            if fixed_cfg is None:
+                raise
+            print(
+                f"Warning: retrying checkpoint load with resolved tokenizer paths: {exc}"
+            )
+            model = EncDecHybridRNNTCTCBPEModel.load_from_checkpoint(
+                checkpoint_path=str(ckpt_path),
+                map_location=map_location,
+                cfg=fixed_cfg,
+            )
     else:
         raise ValueError(f"Unsupported checkpoint extension: {ckpt_path.suffix}")
 
