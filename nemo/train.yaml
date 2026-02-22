@@ -23,7 +23,7 @@ model:
   compute_eval_loss: false # eval samples can be very long and exhaust memory.
   # Disable computation of transducer loss during validation/testing with this flag.
   # Logging full predictions during validation is expensive; keep off by default.
-  log_prediction: false
+  log_prediction: true
   skip_nan_grad: true
 
   model_defaults:
@@ -241,7 +241,7 @@ model:
 
     # greedy strategy config
     greedy:
-      use_cuda_graph_decoder: true
+      use_cuda_graph_decoder: false
       max_symbols: 2
 
     # beam strategy config
