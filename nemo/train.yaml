@@ -38,7 +38,7 @@ model:
     shuffle: true
     num_workers: 24
     pin_memory: true
-    max_duration: 30 # reduced from 30 to prevent OOM on longer sequences
+    max_duration: 28 # reduced from 30 to prevent OOM on longer sequences
     min_duration: 0.1
 
     # tarred datasets
