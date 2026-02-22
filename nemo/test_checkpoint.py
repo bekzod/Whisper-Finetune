@@ -258,6 +258,25 @@ def transcribe_paths(model, paths: Sequence[str], batch_size: int) -> List[str]:
     return [to_text(item) for item in outputs]
 
 
+def _resolve_manifest_audio_path(audio_path: str, manifest_path: Path) -> str:
+    candidate = Path(audio_path).expanduser()
+    if candidate.is_absolute():
+        return str(candidate)
+
+    # Most manifests store relative paths anchored to the manifest directory.
+    anchored = (manifest_path.parent / candidate).resolve()
+    if anchored.exists():
+        return str(anchored)
+
+    # Fall back to the current working directory for compatibility.
+    cwd_path = (Path.cwd() / candidate).resolve()
+    if cwd_path.exists():
+        return str(cwd_path)
+
+    # Preserve a stable absolute path in downstream errors.
+    return str(anchored)
+
+
 def iter_manifest(manifest_path: Path, limit: int = 0) -> Iterable[Tuple[str, str]]:
     count = 0
     with manifest_path.open("r", encoding="utf-8") as handle:
@@ -269,7 +288,7 @@ def iter_manifest(manifest_path: Path, limit: int = 0) -> Iterable[Tuple[str, st
             text = obj.get("text")
             if not audio or text is None:
                 continue
-            yield str(audio), str(text)
+            yield _resolve_manifest_audio_path(str(audio), manifest_path), str(text)
             count += 1
             if limit and count >= limit:
                 break
