@@ -149,7 +149,12 @@ def _load_ckpt_cfg_with_resolved_tokenizer_paths(ckpt_path: Path):
     import torch
     from omegaconf import OmegaConf
 
-    raw = torch.load(str(ckpt_path), map_location="cpu")
+    try:
+        # PyTorch 2.6+ defaults to weights_only=True, which cannot deserialize
+        # NeMo/OmegaConf metadata stored in Lightning checkpoints.
+        raw = torch.load(str(ckpt_path), map_location="cpu", weights_only=False)
+    except TypeError:
+        raw = torch.load(str(ckpt_path), map_location="cpu")
     cfg = raw.get("hyper_parameters", {}).get("cfg")
     if cfg is None:
         return None
