@@ -6,15 +6,13 @@
 #
 name: "FastConformer-Hybrid-TDT-CTC-BPE"
 
-# Initialize encoder from pretrained model for fine-tuning.
-# Keep decoder/joint randomly initialized to match your custom tokenizer/vocabulary.
+# Initialize encoder from pretrained model for fine-tuning
+# This loads only the encoder weights, allowing use of custom Uzbek tokenizer for decoder
 init_from_pretrained_model:
   model0:
     name: "nvidia/parakeet-tdt-0.6b-v3"
     include: ["encoder"]
 
-# Freeze encoder for first N optimizer steps, then unfreeze automatically.
-# Set to 0 to disable.
 freeze_encoder_steps: 2000
 
 model:
@@ -23,7 +21,7 @@ model:
   compute_eval_loss: false # eval samples can be very long and exhaust memory.
   # Disable computation of transducer loss during validation/testing with this flag.
   # Logging full predictions during validation is expensive; keep off by default.
-  log_prediction: true
+  log_prediction: false
   skip_nan_grad: true
 
   model_defaults:
@@ -40,7 +38,7 @@ model:
     shuffle: true
     num_workers: 24
     pin_memory: true
-    max_duration: 32
+    max_duration: 30 # reduced from 30 to prevent OOM on longer sequences
     min_duration: 0.1
 
     # tarred datasets
@@ -102,7 +100,7 @@ model:
     manifest_filepath: ./output/eval_manifest.jsonl
     sample_rate: ${model.sample_rate}
     # Keep validation batch conservative since utterance lengths are often long/variable.
-    batch_size: 30
+    batch_size: 32
     shuffle: false
     use_start_end_token: false
     num_workers: 24
@@ -141,7 +139,7 @@ model:
   spec_augment:
     _target_: nemo.collections.asr.modules.SpectrogramAugmentation
     freq_masks: 2 # set to zero to disable it
-    time_masks: 5 # set to zero to disable it
+    time_masks: 10 # set to zero to disable it
     freq_width: 27
     time_width: 0.05
 
@@ -242,19 +240,18 @@ model:
     # greedy strategy config
     greedy:
       use_cuda_graph_decoder: false
-      max_symbols: 2
+      max_symbols: 10
 
     # beam strategy config
     beam:
-      beam_size: 4
-      return_best_hypothesis: false
+      beam_size: 2
+      return_best_hypothesis: False
       score_norm: true
       tsd_max_sym_exp: 50 # for Time Synchronous Decoding
       alsd_max_target_len: 2.0 # for Alignment-Length Synchronous Decoding
 
   aux_ctc:
-    # Slightly higher auxiliary CTC weight helps stabilize alignment from scratch.
-    ctc_loss_weight: 0.3
+    ctc_loss_weight: 0.4
     use_cer: false
     ctc_reduction: "mean_batch"
     decoder:
@@ -263,7 +260,7 @@ model:
       num_classes: -1
       vocabulary: []
     decoding:
-      strategy: "greedy"
+      strategy: "greedy_batch"
 
   interctc:
     loss_weights: []
@@ -282,11 +279,11 @@ model:
       # refer to https://arxiv.org/abs/2304.06795 for the meaning of the following three configs.
       durations: ${model.model_defaults.tdt_durations}
       sigma: 0.02 # hyper-param for under-normalization.
-      omega: 0.35 # weight for regular RNN-T loss.
+      omega: 0.1 # weight for regular RNN-T loss.
 
   optim:
     name: adamw
-    lr: 0.1
+    lr: 0.6
     # optimizer arguments
     betas: [0.9, 0.98]
     weight_decay: 1e-3
@@ -296,12 +293,12 @@ model:
       name: NoamAnnealing
       d_model: ${model.encoder.d_model}
       # scheduler config override
-      warmup_steps: 3000
+      warmup_steps: 2000
       warmup_ratio: null
       min_lr: 1e-6
 
 trainer:
-  devices: -1
+  devices: 1 # Single GPU. Set to -1 to use all available GPUs.
   num_nodes: 1
   max_epochs: 500
   max_steps: -1
@@ -310,14 +307,13 @@ trainer:
   # Let Lightning pick the right strategy (`single_device` or `ddp`) from devices/nodes.
   strategy: auto
   accumulate_grad_batches: 1
-  gradient_clip_val: 1.0
+  gradient_clip_val: 0.5
   precision: bf16-mixed
-  log_every_n_steps: 100
+  log_every_n_steps: 400
   enable_progress_bar: true
   num_sanity_val_steps: 0 # Disabled for faster startup
-  check_val_every_n_epoch: 1
-  sync_batchnorm: true
-  enable_checkpointing: false
+  check_val_every_n_epoch: 2 # Validate every 2 epochs to reduce overhead
+  enable_checkpointing: False
   logger: false
   # NeMo ASR configs recommend disabling this for variable-length speech batches.
   benchmark: false
