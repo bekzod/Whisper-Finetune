@@ -1033,7 +1033,12 @@ def _normalize_number_suffixes_to_spoken_uzbek(
             ordinal = _number_to_ordinal_uzbek(numeric_value)
             replacement = f"{ordinal} {suffix}"
         elif separator:
-            replacement = f"{spoken_number}{separator}{suffix}"
+            if suffix_lower in _ATTACHED_NUMERIC_SUFFIXES:
+                replacement = f"{spoken_number}{separator}{suffix}"
+            else:
+                # Preserve unknown hyphenated/apostrophe compounds like
+                # "7-elevenda" instead of forcing number expansion.
+                return raw_token
         elif suffix_lower in _ATTACHED_NUMERIC_SUFFIXES:
             replacement = f"{spoken_number}{suffix}"
         elif _is_ordinal_trigger(suffix_lower):
@@ -1420,6 +1425,17 @@ class HunspellUzbekCorrector:
 
         def replace_match(match: re.Match) -> str:
             word = match.group(0)
+            start, _ = match.span()
+            # Avoid correcting brand-like alphanumeric compounds such as
+            # "7-elevenda" or "3dmax".
+            if start > 0 and text[start - 1].isdigit():
+                return word
+            if (
+                start > 1
+                and text[start - 1] in {"-", "'"}
+                and text[start - 2].isdigit()
+            ):
+                return word
             suggestion = self._pick_single_edit_suggestion(word)
             if suggestion is None:
                 return word
