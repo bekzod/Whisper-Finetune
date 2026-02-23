@@ -34,6 +34,10 @@
       "splits": ["train"]
     },
     {
+      "name": "bekzod123/uzbek_voice_5",
+      "splits": ["train"]
+    },
+    {
       "name": "google/fleurs",
       "subset": "uz_uz",
       "splits": ["train", "test", "dev"]
