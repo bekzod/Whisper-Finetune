@@ -1,0 +1,196 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_NAME="$(basename "$0")"
+INSTALL_DIR="${HOME}/.hunspell"
+DICT_BASENAME="uz_UZ"
+BASE_URL="${UZBEK_DICT_BASE_URL:-https://raw.githubusercontent.com/u2b3k/uz-hunspell/master}"
+PERSIST_SHELL=0
+FORCE=0
+SKIP_SYSTEM_INSTALL=0
+
+usage() {
+  cat <<EOF
+Usage: ${SCRIPT_NAME} [options]
+
+Downloads Uzbek Hunspell dictionary files (${DICT_BASENAME}.aff/.dic) and installs them locally.
+
+Options:
+  --dir <path>         Install directory (default: ${HOME}/.hunspell)
+  --skip-system-install
+                       Skip package-manager install step (apt/brew)
+  --persist-shell      Append UZBEK_HUNSPELL_AFF/DIC exports to your shell rc file
+  --force              Overwrite existing dictionary files
+  -h, --help           Show this help
+
+Environment:
+  UZBEK_DICT_BASE_URL  Override dictionary base URL
+EOF
+}
+
+download_file() {
+  local url="$1"
+  local out="$2"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$url" -o "$out"
+    return
+  fi
+  if command -v wget >/dev/null 2>&1; then
+    wget -qO "$out" "$url"
+    return
+  fi
+  echo "Error: neither curl nor wget is available." >&2
+  exit 1
+}
+
+choose_shell_rc() {
+  local shell_name
+  shell_name="$(basename "${SHELL:-}")"
+  case "$shell_name" in
+    zsh) echo "${HOME}/.zshrc" ;;
+    bash) echo "${HOME}/.bashrc" ;;
+    *) echo "${HOME}/.zshrc" ;;
+  esac
+}
+
+run_with_sudo() {
+  if [[ "${EUID}" -eq 0 ]]; then
+    "$@"
+    return
+  fi
+  if command -v sudo >/dev/null 2>&1; then
+    sudo "$@"
+    return
+  fi
+  echo "Warning: sudo is unavailable, cannot run: $*" >&2
+  return 1
+}
+
+install_system_dependencies() {
+  if [[ "$SKIP_SYSTEM_INSTALL" -eq 1 ]]; then
+    return
+  fi
+
+  if command -v apt-get >/dev/null 2>&1; then
+    echo "Detected apt-get. Installing hunspell via apt..."
+    run_with_sudo apt-get update || true
+    run_with_sudo apt-get install -y hunspell || true
+    # Use Uzbek dictionary package if available on this distro.
+    if command -v apt-cache >/dev/null 2>&1; then
+      if apt-cache show hunspell-uz >/dev/null 2>&1; then
+        run_with_sudo apt-get install -y hunspell-uz || true
+      elif apt-cache show hunspell-uz-latn >/dev/null 2>&1; then
+        run_with_sudo apt-get install -y hunspell-uz-latn || true
+      fi
+    fi
+    return
+  fi
+
+  if command -v brew >/dev/null 2>&1; then
+    echo "Detected brew. Installing hunspell via brew..."
+    brew install hunspell || true
+  fi
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dir)
+      if [[ $# -lt 2 ]]; then
+        echo "Error: --dir requires a value." >&2
+        exit 1
+      fi
+      INSTALL_DIR="$2"
+      shift 2
+      ;;
+    --persist-shell)
+      PERSIST_SHELL=1
+      shift
+      ;;
+    --skip-system-install)
+      SKIP_SYSTEM_INSTALL=1
+      shift
+      ;;
+    --force)
+      FORCE=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Error: unknown option '$1'" >&2
+      usage
+      exit 1
+      ;;
+  esac
+done
+
+install_system_dependencies
+
+mkdir -p "$INSTALL_DIR"
+
+aff_path="${INSTALL_DIR}/${DICT_BASENAME}.aff"
+dic_path="${INSTALL_DIR}/${DICT_BASENAME}.dic"
+
+if [[ "$FORCE" -eq 0 && -f "$aff_path" && -f "$dic_path" ]]; then
+  echo "Dictionary already exists at:"
+  echo "  $aff_path"
+  echo "  $dic_path"
+else
+  tmp_aff="$(mktemp "${TMPDIR:-/tmp}/uzbek-aff.XXXXXX")"
+  tmp_dic="$(mktemp "${TMPDIR:-/tmp}/uzbek-dic.XXXXXX")"
+  trap 'rm -f "${tmp_aff:-}" "${tmp_dic:-}"' EXIT
+
+  aff_url="${BASE_URL}/${DICT_BASENAME}.aff"
+  dic_url="${BASE_URL}/${DICT_BASENAME}.dic"
+
+  echo "Downloading:"
+  echo "  $aff_url"
+  echo "  $dic_url"
+
+  download_file "$aff_url" "$tmp_aff"
+  download_file "$dic_url" "$tmp_dic"
+
+  if [[ ! -s "$tmp_aff" || ! -s "$tmp_dic" ]]; then
+    echo "Error: downloaded files are empty." >&2
+    exit 1
+  fi
+
+  mv "$tmp_aff" "$aff_path"
+  mv "$tmp_dic" "$dic_path"
+  chmod 0644 "$aff_path" "$dic_path"
+
+  echo "Installed dictionary files:"
+  echo "  $aff_path"
+  echo "  $dic_path"
+fi
+
+if [[ "$PERSIST_SHELL" -eq 1 ]]; then
+  shell_rc="$(choose_shell_rc)"
+  touch "$shell_rc"
+  if grep -q "BEGIN UZBEK HUNSPELL" "$shell_rc"; then
+    echo "Shell profile already has Uzbek Hunspell block: $shell_rc"
+  else
+    cat >> "$shell_rc" <<EOF
+# >>> BEGIN UZBEK HUNSPELL <<<
+export UZBEK_HUNSPELL_AFF="${aff_path}"
+export UZBEK_HUNSPELL_DIC="${dic_path}"
+# <<< END UZBEK HUNSPELL <<<
+EOF
+    echo "Added export block to: $shell_rc"
+  fi
+  echo "Run: source $shell_rc"
+else
+  echo "For current shell session, run:"
+  echo "  export UZBEK_HUNSPELL_AFF=\"${aff_path}\""
+  echo "  export UZBEK_HUNSPELL_DIC=\"${dic_path}\""
+fi
+
+echo "Verify with:"
+echo "  python3 - <<'PY'"
+echo "  from nemo.utils import get_hunspell_uzbek_corrector"
+echo "  c = get_hunspell_uzbek_corrector()"
+echo "  print('hunspell_loaded:', c.is_available)"
+echo "  print(c.correct_text('hursand'))"
+echo "  PY"

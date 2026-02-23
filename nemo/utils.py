@@ -3,11 +3,17 @@
 
 from __future__ import annotations
 
+import logging
+import os
 import re
 import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
+
+from hunspell import HunSpell
+
+_LOGGER = logging.getLogger(__name__)
 
 # Regex to match C or c NOT followed by h or H
 _STANDALONE_C_RE = re.compile(r"[Cc](?![Hh])")
@@ -631,6 +637,63 @@ _UZBEK_CYRILLIC_CHARS = set(_UZBEK_CYRILLIC_TO_LATIN.keys())
 
 # Word tokenization pattern for frequency analysis
 _WORD_TOKENIZE_RE = re.compile(r"[a-zA-Z']+")
+_COMMON_HUNSPELL_DICT_DIRS = (
+    "/usr/share/hunspell",
+    "/usr/share/myspell",
+    "/usr/share/myspell/dicts",
+    "/opt/homebrew/share/hunspell",
+    "/Library/Spelling",
+)
+_UZBEK_HUNSPELL_BASENAMES = ("uz_UZ", "uz_Latn_UZ", "uz")
+
+
+def _preserve_word_case(original: str, replacement: str) -> str:
+    """Return replacement with casing aligned to original."""
+    if original.isupper():
+        return replacement.upper()
+    if original and original[0].isupper():
+        return replacement.capitalize()
+    return replacement
+
+
+@dataclass
+class NormalizedWordStats:
+    """Track all normalized words for post-run inspection."""
+
+    total_texts: int = 0
+    total_words: int = 0
+    words: Counter = field(default_factory=Counter)
+    texts_by_dataset: Counter = field(default_factory=Counter)
+
+    def record_text(self, normalized_text: str, dataset_label: Optional[str]) -> None:
+        """Record every normalized word from a text."""
+        self.total_texts += 1
+        words = _WORD_TOKENIZE_RE.findall(normalized_text.lower())
+        self.total_words += len(words)
+        self.words.update(words)
+        if dataset_label:
+            self.texts_by_dataset[dataset_label] += 1
+
+    def report(self, top_k: int = 100) -> str:
+        """Generate a readable summary of normalized-word statistics."""
+        if self.total_texts == 0:
+            return "No normalized texts recorded."
+        lines = [
+            f"Total normalized texts: {self.total_texts}",
+            f"Total normalized words: {self.total_words}",
+            f"Unique normalized words: {len(self.words)}",
+            f"Top normalized words:",
+        ]
+        for word, count in self.words.most_common(top_k):
+            lines.append(f"  {word}: {count}")
+        return "\n".join(lines)
+
+    def reset(self) -> None:
+        """Reset tracked normalized-word statistics."""
+        self.total_texts = 0
+        self.total_words = 0
+        self.words.clear()
+        self.texts_by_dataset.clear()
 
 
 @dataclass
@@ -677,8 +740,19 @@ class MisspellingStats:
         self.fixes_by_text.clear()
 
 
-# Global stats tracker
+# Global stats trackers
+_normalized_word_stats = NormalizedWordStats()
 _misspelling_stats = MisspellingStats()
+
+
+def get_normalized_word_stats() -> NormalizedWordStats:
+    """Get the global normalized-word statistics."""
+    return _normalized_word_stats
+
+
+def reset_normalized_word_stats() -> None:
+    """Reset the global normalized-word statistics."""
+    _normalized_word_stats.reset()
 
 
 def get_misspelling_stats() -> MisspellingStats:
@@ -702,14 +776,145 @@ def _fix_uzbek_misspellings(text: str, stats: Optional[MisspellingStats] = None)
         replacement: str = _UZBEK_MISSPELLINGS.get(lower_word, lower_word)
         if replacement != lower_word:
             stats.record_fix(word, replacement)
-        # Preserve original case
-        if word.isupper():
-            return replacement.upper()
-        elif word[0].isupper():
-            return replacement.capitalize()
-        return replacement
+        return _preserve_word_case(word, replacement)
 
     return _UZBEK_MISSPELLING_PATTERN.sub(replace_match, text)
+
+
+def _candidate_hunspell_paths() -> List[Tuple[str, str]]:
+    """Build candidate dictionary (dic, aff) path pairs for Uzbek Hunspell."""
+    env_dic = os.environ.get("UZBEK_HUNSPELL_DIC")
+    env_aff = os.environ.get("UZBEK_HUNSPELL_AFF")
+    if env_dic and env_aff:
+        return [(env_dic, env_aff)]
+
+    dict_dirs: List[str] = []
+    env_dict_dir = os.environ.get("HUNSPELL_DICT_DIR")
+    if env_dict_dir:
+        dict_dirs.append(env_dict_dir)
+    dict_dirs.extend(_COMMON_HUNSPELL_DICT_DIRS)
+
+    pairs: List[Tuple[str, str]] = []
+    for dict_dir in dict_dirs:
+        for basename in _UZBEK_HUNSPELL_BASENAMES:
+            dic_path = os.path.join(dict_dir, f"{basename}.dic")
+            aff_path = os.path.join(dict_dir, f"{basename}.aff")
+            if os.path.exists(dic_path) and os.path.exists(aff_path):
+                pairs.append((dic_path, aff_path))
+    return pairs
+
+
+class HunspellUzbekCorrector:
+    """Hunspell-based Uzbek spelling correction with strict edits."""
+
+    def __init__(self, max_edit_distance: int = 1) -> None:
+        self._max_edit_distance = max_edit_distance
+        self._hunspell: Optional[Any] = None
+        self._suggestion_cache: Dict[str, Optional[str]] = {}
+        self._initialize_hunspell()
+
+    @property
+    def is_available(self) -> bool:
+        return self._hunspell is not None
+
+    def _initialize_hunspell(self) -> None:
+        for dic_path, aff_path in _candidate_hunspell_paths():
+            try:
+                self._hunspell = HunSpell(dic_path, aff_path)
+                _LOGGER.info(
+                    "Loaded Uzbek Hunspell dictionary: dic=%s aff=%s",
+                    dic_path,
+                    aff_path,
+                )
+                return
+            except Exception as exc:
+                _LOGGER.warning(
+                    "Failed to initialize Hunspell with dic=%s aff=%s: %s",
+                    dic_path,
+                    aff_path,
+                    exc,
+                )
+
+        _LOGGER.warning(
+            "Hunspell is installed but no Uzbek dictionary was found. "
+            "Set UZBEK_HUNSPELL_DIC and UZBEK_HUNSPELL_AFF to enable correction."
+        )
+
+    def _pick_single_edit_suggestion(self, word: str) -> Optional[str]:
+        lower_word = word.lower()
+        if lower_word in self._suggestion_cache:
+            return self._suggestion_cache[lower_word]
+        if self._hunspell is None:
+            self._suggestion_cache[lower_word] = None
+            return None
+
+        try:
+            if self._hunspell.spell(lower_word):
+                self._suggestion_cache[lower_word] = None
+                return None
+            suggestions = self._hunspell.suggest(lower_word)
+        except Exception as exc:
+            _LOGGER.warning("Hunspell suggestion lookup failed for '%s': %s", word, exc)
+            self._suggestion_cache[lower_word] = None
+            return None
+
+        for suggestion in suggestions:
+            normalized_suggestion = suggestion.strip().lower()
+            if not normalized_suggestion or normalized_suggestion == lower_word:
+                continue
+            if not _WORD_TOKENIZE_RE.fullmatch(normalized_suggestion):
+                continue
+            if (
+                _edit_distance(lower_word, normalized_suggestion)
+                == self._max_edit_distance
+            ):
+                self._suggestion_cache[lower_word] = normalized_suggestion
+                return normalized_suggestion
+
+        self._suggestion_cache[lower_word] = None
+        return None
+
+    def correct_text(self, text: str, stats: Optional[MisspellingStats] = None) -> str:
+        """Correct words only when Hunspell suggests a 1-edit-distance replacement."""
+        if not text or self._hunspell is None:
+            return text
+
+        def replace_match(match: re.Match) -> str:
+            word = match.group(0)
+            suggestion = self._pick_single_edit_suggestion(word)
+            if suggestion is None:
+                return word
+            corrected = _preserve_word_case(word, suggestion)
+            if stats is not None:
+                stats.record_fix(word, suggestion)
+            return corrected
+
+        return _WORD_TOKENIZE_RE.sub(replace_match, text)
+
+    def reset(self) -> None:
+        """Reset cache while keeping loaded dictionary."""
+        self._suggestion_cache.clear()
+
+
+_global_hunspell_uzbek_corrector: Optional[HunspellUzbekCorrector] = None
+
+
+def get_hunspell_uzbek_corrector(max_edit_distance: int = 1) -> HunspellUzbekCorrector:
+    """Get or create the global Hunspell Uzbek corrector."""
+    global _global_hunspell_uzbek_corrector
+    if _global_hunspell_uzbek_corrector is None:
+        _global_hunspell_uzbek_corrector = HunspellUzbekCorrector(
+            max_edit_distance=max_edit_distance
+        )
+    return _global_hunspell_uzbek_corrector
+
+
+def reset_hunspell_uzbek_corrector() -> None:
+    """Reset the global Hunspell Uzbek corrector."""
+    global _global_hunspell_uzbek_corrector
+    if _global_hunspell_uzbek_corrector is not None:
+        _global_hunspell_uzbek_corrector.reset()
+    _global_hunspell_uzbek_corrector = None
 
 
 def normalize_text(
@@ -729,6 +934,8 @@ def normalize_text(
     normalized = normalized.translate(_APOSTROPHE_TRANSLATION)
     before_fix = normalized
     normalized = _fix_uzbek_misspellings(normalized, stats)
+    hunspell_corrector = get_hunspell_uzbek_corrector(max_edit_distance=1)
+    normalized = hunspell_corrector.correct_text(normalized, stats=stats)
     if stats is not None and dataset_label and normalized != before_fix:
         stats.record_text_fix(before_fix, dataset_label)
     normalized = _ALLOWED_TEXT_RE.sub("", normalized)
@@ -739,6 +946,14 @@ def normalize_text(
         normalized = normalized[1:].lstrip()
     if normalized.endswith("-"):
         normalized = normalized[:-1].rstrip()
+    _normalized_word_stats.record_text(normalized, dataset_label)
+    words = _WORD_TOKENIZE_RE.findall(normalized.lower())
+    if words:
+        _LOGGER.debug(
+            "Normalized words dataset=%s words=%s",
+            dataset_label or "unknown",
+            " ".join(words),
+        )
     return normalized
 
 
@@ -1326,9 +1541,15 @@ def reset_typo_detector() -> None:
 __all__ = [
     "normalize_text",
     "contains_standalone_c",
+    "NormalizedWordStats",
+    "get_normalized_word_stats",
+    "reset_normalized_word_stats",
     "MisspellingStats",
     "get_misspelling_stats",
     "reset_misspelling_stats",
+    "HunspellUzbekCorrector",
+    "get_hunspell_uzbek_corrector",
+    "reset_hunspell_uzbek_corrector",
     # Frequency-based typo detection
     "WordFrequencyCollector",
     "FrequencyBasedTypoDetector",

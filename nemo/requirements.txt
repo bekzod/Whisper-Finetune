@@ -6,5 +6,6 @@ tqdm>=4.62.1
 nemo_toolkit[asr]
 hf_transfer
 torchcodec
+hunspell
 torchaudio
 torch
