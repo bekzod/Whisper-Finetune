@@ -623,6 +623,12 @@ _UZBEK_DAY_MONTH_RE = re.compile(
     + r")\b",
     re.IGNORECASE,
 )
+# Pattern to split fused year ranges with year suffixes
+# (e.g. "19501960-yillardagi" -> "1950-1960-yillardagi").
+_FUSED_YEAR_RANGE_WITH_SUFFIX_RE = re.compile(
+    r"\b(1\d{3}|20\d{2})(1\d{3}|20\d{2})([-'])(yil[a-zA-ZА-Яа-яЎўҚқҒғҲҳ']*)\b",
+    re.IGNORECASE,
+)
 _UZBEK_CYRILLIC_TO_LATIN = {
     "А": "A",
     "а": "a",
@@ -779,6 +785,7 @@ _ORDINAL_TRIGGER_SUFFIXES = {
     "bosqich",
     "chorak",
     "guruh",
+    "maktab",
     "raund",
     "kurs",
     "sinf",
@@ -1025,8 +1032,11 @@ def _normalize_number_suffixes_to_spoken_uzbek(
             replacement = f"{spoken_number}{separator}{suffix}"
         elif suffix_lower in _ATTACHED_NUMERIC_SUFFIXES:
             replacement = f"{spoken_number}{suffix}"
-        else:
+        elif _is_ordinal_trigger(suffix_lower):
             replacement = f"{spoken_number} {suffix}"
+        else:
+            # Preserve unknown alphanumeric tokens like "3dmax" as-is.
+            return raw_token
 
         if replacement != raw_token:
             stats.record_fix(raw_token, replacement)
@@ -1097,6 +1107,29 @@ def _normalize_uzbek_dates_to_spoken(
         return spoken_date
 
     return _UZBEK_DAY_MONTH_RE.sub(replace_match, text)
+
+
+def _normalize_fused_year_ranges(
+    text: str, stats: Optional[MisspellingStats] = None
+) -> str:
+    """Split fused year ranges before normalization (e.g. 19501960-yillar)."""
+    if not text:
+        return text
+    if stats is None:
+        stats = _misspelling_stats
+
+    def replace_match(match: re.Match) -> str:
+        raw = match.group(0)
+        first_year = match.group(1)
+        second_year = match.group(2)
+        separator = match.group(3)
+        suffix = match.group(4)
+        replacement = f"{first_year}-{second_year}{separator}{suffix}"
+        if replacement != raw:
+            stats.record_fix(raw, replacement)
+        return replacement
+
+    return _FUSED_YEAR_RANGE_WITH_SUFFIX_RE.sub(replace_match, text)
 
 
 def _normalize_uzbek_abbreviations(
@@ -1450,6 +1483,7 @@ def normalize_text(
     normalized = _COMMA_THOUSANDS_RE.sub(
         lambda m: m.group(1) + m.group(2).replace(",", ""), normalized
     )
+    normalized = _normalize_fused_year_ranges(normalized, stats=stats)
     normalized = _normalize_uzbek_dates_to_spoken(normalized, stats=stats)
     normalized = _normalize_decimals_to_spoken_uzbek(
         normalized, stats=stats, decimal_mode=resolved_decimal_mode
