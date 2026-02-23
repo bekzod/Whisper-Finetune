@@ -1,6 +1,14 @@
 {
   "train": [
     {
+      "name": "bekzod123/uzbek_voice",
+      "splits": ["train"]
+    },
+    {
+      "name": "bekzod123/uzbek_voice_5",
+      "splits": ["train"]
+    },
+    {
       "name": "fsicoli/common_voice_17_0",
       "subset": "uz",
       "splits": ["train", "test"]
@@ -34,17 +42,9 @@
       "splits": ["train"]
     },
     {
-      "name": "bekzod123/uzbek_voice_5",
-      "splits": ["train"]
-    },
-    {
       "name": "google/fleurs",
       "subset": "uz_uz",
       "splits": ["train", "test", "dev"]
-    },
-    {
-      "name": "bekzod123/uzbek_voice",
-      "splits": ["train"]
     },
     {
       "name": "DavronSherbaev/uzbekvoice-filtered",
