@@ -557,6 +557,8 @@ _MULTISPACE_RE = re.compile(r"\s+")
 _SPACE_BEFORE_PUNCT_RE = re.compile(r"\s+([.,])")
 # Pattern to match spaces between digits (e.g., "600 000" => "600000")
 _SPACED_NUMBER_RE = re.compile(r"(\d)\s+(?=\d)")
+# Pattern to collapse comma-separated thousands (e.g., "43,000" => "43000").
+_COMMA_THOUSANDS_RE = re.compile(r"\b(\d{1,3})((?:,\d{3})+)\b")
 # Pattern to match standalone integer tokens for number normalization.
 _NUMBER_TOKEN_RE = re.compile(r"\b\d+\b")
 # Pattern to match decimal numbers (e.g., 3.14 or 3,14).
@@ -738,6 +740,43 @@ _ATTACHED_NUMERIC_SUFFIXES = {
     "larda",
     "lardan",
 }
+# Suffixes that, when hyphenated with a number (e.g. "109-bet"),
+# indicate ordinal form: "bir yuz to'qqizinchi bet".
+# Compound forms like "yilgacha", "yilda" are matched via prefix check.
+_ORDINAL_TRIGGER_SUFFIXES = {
+    "bet",
+    "mayda",
+    "bob",
+    "band",
+    "bosqich",
+    "guruh",
+    "kurs",
+    "sinf",
+    "qism",
+    "qator",
+    "sahifa",
+    "son",
+    "joy",
+    "o'rin",
+    "daraja",
+    "pog'ona",
+    "tur",
+    "davr",
+    "qadam",
+    "xona",
+    "etaj",
+    "yil",
+}
+
+
+def _is_ordinal_trigger(suffix_lower: str) -> bool:
+    """Check if a suffix (or compound suffix) triggers ordinal conversion."""
+    if suffix_lower in _ORDINAL_TRIGGER_SUFFIXES:
+        return True
+    return any(
+        suffix_lower.startswith(stem) and len(suffix_lower) > len(stem)
+        for stem in _ORDINAL_TRIGGER_SUFFIXES
+    )
 _UZBEK_DAY_ORDINALS = {
     1: "birinchi",
     2: "ikkinchi",
@@ -836,6 +875,18 @@ def _number_to_spoken_uzbek(value: int) -> str:
     return result
 
 
+_UZBEK_VOWELS = set("aeiouaoʻ'")
+
+
+def _number_to_ordinal_uzbek(value: int) -> str:
+    """Convert an integer to its spoken Uzbek ordinal form (e.g. 5 -> 'beshinchi')."""
+    spoken = _number_to_spoken_uzbek(value)
+    last_char = spoken[-1].lower()
+    if last_char in _UZBEK_VOWELS:
+        return spoken + "nchi"
+    return spoken + "inchi"
+
+
 def _digits_to_spoken_uzbek(digits: str) -> str:
     """Convert a digit sequence to spoken Uzbek digit-by-digit."""
     return " ".join(_UZBEK_NUMBER_UNITS[int(digit)] for digit in digits)
@@ -909,7 +960,10 @@ def _normalize_number_suffixes_to_spoken_uzbek(
         spoken_number = _number_to_spoken_uzbek(numeric_value)
         suffix_lower = suffix.lower()
 
-        if separator:
+        if separator and _is_ordinal_trigger(suffix_lower):
+            ordinal = _number_to_ordinal_uzbek(numeric_value)
+            replacement = f"{ordinal} {suffix}"
+        elif separator:
             replacement = f"{spoken_number}{separator}{suffix}"
         elif suffix_lower in _ATTACHED_NUMERIC_SUFFIXES:
             replacement = f"{spoken_number}{suffix}"
@@ -1317,6 +1371,9 @@ def normalize_text(
     normalized = _ALLOWED_TEXT_RE.sub("", normalized)
     normalized = _SPACE_BEFORE_PUNCT_RE.sub(r"\1", normalized)
     normalized = _SPACED_NUMBER_RE.sub(r"\1", normalized)
+    normalized = _COMMA_THOUSANDS_RE.sub(
+        lambda m: m.group(1) + m.group(2).replace(",", ""), normalized
+    )
     normalized = _normalize_uzbek_dates_to_spoken(normalized, stats=stats)
     normalized = _normalize_decimals_to_spoken_uzbek(
         normalized, stats=stats, decimal_mode=resolved_decimal_mode
