@@ -74,7 +74,7 @@ install_system_dependencies() {
   if command -v apt-get >/dev/null 2>&1; then
     echo "Detected apt-get. Installing hunspell via apt..."
     run_with_sudo apt-get update || true
-    run_with_sudo apt-get install -y hunspell || true
+    run_with_sudo apt-get install -y libhunspell-dev hunspell pkg-config build-essential || true
     # Use Uzbek dictionary package if available on this distro.
     if command -v apt-cache >/dev/null 2>&1; then
       if apt-cache show hunspell-uz >/dev/null 2>&1; then
