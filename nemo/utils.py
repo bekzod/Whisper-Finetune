@@ -808,6 +808,7 @@ _ORDINAL_TRIGGER_SUFFIXES = {
     "daraja",
     "pog'ona",
     "sektor",
+    "toifa",
     "tur",
     "davr",
     "qadam",
