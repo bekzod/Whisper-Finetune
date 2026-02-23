@@ -298,7 +298,7 @@ model:
       min_lr: 1e-6
 
 trainer:
-  devices: 1 # Single GPU. Set to -1 to use all available GPUs.
+  devices: -1 # Single GPU. Set to -1 to use all available GPUs.
   num_nodes: 1
   max_epochs: 500
   max_steps: -1
@@ -309,7 +309,7 @@ trainer:
   accumulate_grad_batches: 1
   gradient_clip_val: 0.5
   precision: bf16-mixed
-  log_every_n_steps: 400
+  log_every_n_steps: 500
   enable_progress_bar: true
   num_sanity_val_steps: 0 # Disabled for faster startup
   check_val_every_n_epoch: 1
