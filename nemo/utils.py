@@ -40,7 +40,7 @@ _APOSTROPHE_TRANSLATION = str.maketrans(
         "\ua78c": "'",  # LATIN SMALL LETTER SALTILLO
     }
 )
-_ALLOWED_TEXT_RE = re.compile(r"[^a-zA-ZА-Яа-яЎўҚқҒғҲҳ0-9\s,.'-]+")
+_ALLOWED_TEXT_RE = re.compile(r"[^a-zA-ZА-Яа-яЎўҚқҒғҲҳ0-9\s,.'\-?]+")
 
 # Common Uzbek misspellings: missing apostrophes, variant spellings, etc.
 # Format: incorrect -> correct
@@ -777,6 +777,8 @@ def _is_ordinal_trigger(suffix_lower: str) -> bool:
         suffix_lower.startswith(stem) and len(suffix_lower) > len(stem)
         for stem in _ORDINAL_TRIGGER_SUFFIXES
     )
+
+
 _UZBEK_DAY_ORDINALS = {
     1: "birinchi",
     2: "ikkinchi",
