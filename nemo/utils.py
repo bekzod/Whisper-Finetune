@@ -563,6 +563,10 @@ _COMMA_THOUSANDS_RE = re.compile(r"\b(\d{1,3})((?:,\d{3})+)\b")
 _NUMBER_TOKEN_RE = re.compile(r"\b\d+\b")
 # Pattern to match decimal numbers (e.g., 3.14 or 3,14).
 _DECIMAL_NUMBER_RE = re.compile(r"\b(\d+)[.,](\d+)\b")
+# Pattern to match Uzbek-style phone chunks like "90 426 53 14".
+_UZBEK_PHONE_GROUP_RE = re.compile(
+    r"(?<!\d)(\d{2})[\s-]+(\d{3})[\s-]+(\d{2})[\s-]+(\d{2})(?!\d)"
+)
 # Pattern to match common Uzbek abbreviations and variants.
 _UZBEK_YEAR_ABBREV_RE = re.compile(r"\b(\d+)\s*(?:-\s*)?y\.", re.IGNORECASE)
 _UZBEK_NUMBER_KG_RE = re.compile(r"\b(\d+)\s*(?:-\s*)?(kg)\b", re.IGNORECASE)
@@ -979,6 +983,27 @@ def _normalize_number_suffixes_to_spoken_uzbek(
     return _NUMBER_WITH_SUFFIX_RE.sub(replace_match, text)
 
 
+def _normalize_phone_numbers_to_spoken_uzbek(
+    text: str, stats: Optional[MisspellingStats] = None
+) -> str:
+    """Normalize grouped phone-number chunks to spoken Uzbek with commas."""
+    if not text:
+        return text
+    if stats is None:
+        stats = _misspelling_stats
+
+    def replace_match(match: re.Match) -> str:
+        raw_phone = match.group(0)
+        groups = [match.group(1), match.group(2), match.group(3), match.group(4)]
+        spoken_groups = [_number_to_spoken_uzbek(int(group)) for group in groups]
+        replacement = ", ".join(spoken_groups)
+        if replacement != raw_phone:
+            stats.record_fix(raw_phone, replacement)
+        return replacement
+
+    return _UZBEK_PHONE_GROUP_RE.sub(replace_match, text)
+
+
 def _normalize_numbers_to_spoken_uzbek(
     text: str, stats: Optional[MisspellingStats] = None
 ) -> str:
@@ -1372,6 +1397,7 @@ def normalize_text(
         stats.record_text_fix(before_fix, dataset_label)
     normalized = _ALLOWED_TEXT_RE.sub("", normalized)
     normalized = _SPACE_BEFORE_PUNCT_RE.sub(r"\1", normalized)
+    normalized = _normalize_phone_numbers_to_spoken_uzbek(normalized, stats=stats)
     normalized = _SPACED_NUMBER_RE.sub(r"\1", normalized)
     normalized = _COMMA_THOUSANDS_RE.sub(
         lambda m: m.group(1) + m.group(2).replace(",", ""), normalized
