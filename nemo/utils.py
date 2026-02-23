@@ -614,6 +614,9 @@ _UZBEK_MONTH_PATTERN = r"(?:" + "|".join(_UZBEK_MONTHS) + r")"
 _UZBEK_MONTH_WITH_CASE_PATTERN = (
     _UZBEK_MONTH_PATTERN + r"(?:" + "|".join(_UZBEK_MONTH_CASE_SUFFIXES) + r")?"
 )
+_UZBEK_MONTH_WITH_CASE_RE = re.compile(
+    r"^" + _UZBEK_MONTH_WITH_CASE_PATTERN + r"$", re.IGNORECASE
+)
 _UZBEK_DAY_MONTH_RE = re.compile(
     r"\b(0?[1-9]|[12][0-9]|3[01])(?:\s*[-/.]\s*|\s+)("
     + _UZBEK_MONTH_WITH_CASE_PATTERN
@@ -776,6 +779,7 @@ _ORDINAL_TRIGGER_SUFFIXES = {
     "bosqich",
     "chorak",
     "guruh",
+    "raund",
     "kurs",
     "sinf",
     "qism",
@@ -790,6 +794,7 @@ _ORDINAL_TRIGGER_SUFFIXES = {
     "tur",
     "davr",
     "qadam",
+    "uy",
     "xona",
     "etaj",
     "yil",
@@ -798,6 +803,8 @@ _ORDINAL_TRIGGER_SUFFIXES = {
 
 def _is_ordinal_trigger(suffix_lower: str) -> bool:
     """Check if a suffix (or compound suffix) triggers ordinal conversion."""
+    if _UZBEK_MONTH_WITH_CASE_RE.fullmatch(suffix_lower):
+        return True
     if suffix_lower in _ORDINAL_TRIGGER_SUFFIXES:
         return True
     return any(
@@ -921,6 +928,28 @@ def _digits_to_spoken_uzbek(digits: str) -> str:
     return " ".join(_UZBEK_NUMBER_UNITS[int(digit)] for digit in digits)
 
 
+def _number_string_to_spoken_uzbek(number_str: str) -> str:
+    """Convert a digit string to spoken Uzbek while preserving leading zeros."""
+    if not number_str:
+        return ""
+    if len(number_str) == 1:
+        return _number_to_spoken_uzbek(int(number_str))
+
+    stripped = number_str.lstrip("0")
+    leading_zero_count = len(number_str) - len(stripped)
+    if leading_zero_count == 0:
+        return _number_to_spoken_uzbek(int(number_str))
+
+    leading_zeros_spoken = " ".join(
+        _UZBEK_NUMBER_UNITS[0] for _ in range(leading_zero_count)
+    )
+    if not stripped:
+        return leading_zeros_spoken
+
+    significant_spoken = _number_to_spoken_uzbek(int(stripped))
+    return f"{leading_zeros_spoken} {significant_spoken}"
+
+
 def _resolve_decimal_mode(decimal_mode: Optional[str]) -> str:
     """Resolve decimal normalization mode from arg/env with validation."""
     mode = decimal_mode or os.environ.get("UZBEK_DECIMAL_MODE", "fractional")
@@ -986,7 +1015,7 @@ def _normalize_number_suffixes_to_spoken_uzbek(
         except ValueError:
             return raw_token
 
-        spoken_number = _number_to_spoken_uzbek(numeric_value)
+        spoken_number = _number_string_to_spoken_uzbek(number_part)
         suffix_lower = suffix.lower()
 
         if separator and _is_ordinal_trigger(suffix_lower):
@@ -1038,11 +1067,7 @@ def _normalize_numbers_to_spoken_uzbek(
 
     def replace_match(match: re.Match) -> str:
         raw_number = match.group(0)
-        try:
-            numeric_value = int(raw_number)
-        except ValueError:
-            return raw_number
-        spoken = _number_to_spoken_uzbek(numeric_value)
+        spoken = _number_string_to_spoken_uzbek(raw_number)
         if spoken != raw_number:
             stats.record_fix(raw_number, spoken)
         return spoken
