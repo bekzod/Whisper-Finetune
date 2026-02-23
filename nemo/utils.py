@@ -594,9 +594,29 @@ _UZBEK_MONTHS = (
     "noyabr",
     "dekabr",
 )
+# Common Uzbek case endings that can attach to month names in dates
+# (e.g. "1-mayga", "1-noyabrida").
+_UZBEK_MONTH_CASE_SUFFIXES = (
+    "gacha",
+    "igacha",
+    "ning",
+    "idagi",
+    "dagi",
+    "idan",
+    "dan",
+    "ida",
+    "iga",
+    "ga",
+    "da",
+    "ni",
+)
+_UZBEK_MONTH_PATTERN = r"(?:" + "|".join(_UZBEK_MONTHS) + r")"
+_UZBEK_MONTH_WITH_CASE_PATTERN = (
+    _UZBEK_MONTH_PATTERN + r"(?:" + "|".join(_UZBEK_MONTH_CASE_SUFFIXES) + r")?"
+)
 _UZBEK_DAY_MONTH_RE = re.compile(
     r"\b(0?[1-9]|[12][0-9]|3[01])(?:\s*[-/.]\s*|\s+)("
-    + "|".join(_UZBEK_MONTHS)
+    + _UZBEK_MONTH_WITH_CASE_PATTERN
     + r")\b",
     re.IGNORECASE,
 )
@@ -754,6 +774,7 @@ _ORDINAL_TRIGGER_SUFFIXES = {
     "bob",
     "band",
     "bosqich",
+    "chorak",
     "guruh",
     "kurs",
     "sinf",
@@ -765,6 +786,7 @@ _ORDINAL_TRIGGER_SUFFIXES = {
     "o'rin",
     "daraja",
     "pog'ona",
+    "sektor",
     "tur",
     "davr",
     "qadam",
