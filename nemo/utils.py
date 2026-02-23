@@ -568,6 +568,12 @@ _DECIMAL_NUMBER_RE = re.compile(r"\b(\d+)[.,](\d+)\b")
 _UZBEK_PHONE_GROUP_RE = re.compile(
     r"(?<!\d)(?:(\d{3})[\s-]+)?(\d{2})[\s-]+(\d{3})[\s-]+(\d{2})[\s-]+(\d{2})(?!\d)"
 )
+# Pattern for 7-eleven brand forms, including inflected endings such as
+# "7-elevenda" or "7-elevenga".
+_SEVEN_ELEVEN_RE = re.compile(
+    r"\b7[-']?(?:eleven|ileven)([a-zA-ZА-Яа-яЎўҚқҒғҲҳ']*)\b",
+    re.IGNORECASE,
+)
 # Pattern to match common Uzbek abbreviations and variants.
 _UZBEK_YEAR_ABBREV_RE = re.compile(r"\b(\d+)\s*(?:-\s*)?y\.", re.IGNORECASE)
 _UZBEK_NUMBER_KG_RE = re.compile(r"\b(\d+)\s*(?:-\s*)?(kg)\b", re.IGNORECASE)
@@ -1075,6 +1081,26 @@ def _normalize_phone_numbers_to_spoken_uzbek(
     return _UZBEK_PHONE_GROUP_RE.sub(replace_match, text)
 
 
+def _normalize_seven_eleven_brand(
+    text: str, stats: Optional[MisspellingStats] = None
+) -> str:
+    """Normalize 7-eleven brand mentions to 'seven-ileven' forms."""
+    if not text:
+        return text
+    if stats is None:
+        stats = _misspelling_stats
+
+    def replace_match(match: re.Match) -> str:
+        raw = match.group(0)
+        suffix = match.group(1) or ""
+        replacement = f"seven-ileven{suffix}"
+        if replacement != raw:
+            stats.record_fix(raw, replacement)
+        return replacement
+
+    return _SEVEN_ELEVEN_RE.sub(replace_match, text)
+
+
 def _normalize_numbers_to_spoken_uzbek(
     text: str, stats: Optional[MisspellingStats] = None
 ) -> str:
@@ -1532,6 +1558,7 @@ def normalize_text(
     normalized = _fix_uzbek_misspellings(normalized, stats)
     hunspell_corrector = get_hunspell_uzbek_corrector(max_edit_distance=1)
     normalized = hunspell_corrector.correct_text(normalized, stats=stats)
+    normalized = _normalize_seven_eleven_brand(normalized, stats=stats)
     if stats is not None and dataset_label and normalized != before_fix:
         stats.record_text_fix(before_fix, dataset_label)
     normalized = _ALLOWED_TEXT_RE.sub("", normalized)
