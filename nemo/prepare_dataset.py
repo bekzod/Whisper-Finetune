@@ -786,7 +786,7 @@ def _looks_like_audio_path(s: str) -> bool:
 
     Returns True if the string:
     - Has a recognized audio file extension, OR
-    - Contains path separators (/ or \) suggesting it's a file path
+    - Contains path separators (/ or \\) suggesting it's a file path
     - AND does not contain multiple spaces (suggesting it's text/sentence)
     """
     if not s or len(s) > 1000:  # Too long to be a reasonable path
