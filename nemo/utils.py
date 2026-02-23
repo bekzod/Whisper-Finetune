@@ -563,9 +563,10 @@ _COMMA_THOUSANDS_RE = re.compile(r"\b(\d{1,3})((?:,\d{3})+)\b")
 _NUMBER_TOKEN_RE = re.compile(r"\b\d+\b")
 # Pattern to match decimal numbers (e.g., 3.14 or 3,14).
 _DECIMAL_NUMBER_RE = re.compile(r"\b(\d+)[.,](\d+)\b")
-# Pattern to match Uzbek-style phone chunks like "90 426 53 14".
+# Pattern to match Uzbek-style phone chunks like
+# "90 426 53 14" or "998 90 426 53 14".
 _UZBEK_PHONE_GROUP_RE = re.compile(
-    r"(?<!\d)(\d{2})[\s-]+(\d{3})[\s-]+(\d{2})[\s-]+(\d{2})(?!\d)"
+    r"(?<!\d)(?:(\d{3})[\s-]+)?(\d{2})[\s-]+(\d{3})[\s-]+(\d{2})[\s-]+(\d{2})(?!\d)"
 )
 # Pattern to match common Uzbek abbreviations and variants.
 _UZBEK_YEAR_ABBREV_RE = re.compile(r"\b(\d+)\s*(?:-\s*)?y\.", re.IGNORECASE)
@@ -994,7 +995,7 @@ def _normalize_phone_numbers_to_spoken_uzbek(
 
     def replace_match(match: re.Match) -> str:
         raw_phone = match.group(0)
-        groups = [match.group(1), match.group(2), match.group(3), match.group(4)]
+        groups = [group for group in match.groups() if group is not None]
         spoken_groups = [_number_to_spoken_uzbek(int(group)) for group in groups]
         replacement = ", ".join(spoken_groups)
         if replacement != raw_phone:
