@@ -1116,7 +1116,6 @@ def download_common_voice_subset(
             f"transcript/{subset}/*",
         ],
         local_dir=str(local_dir),
-        local_dir_use_symlinks=False,
     )
     return local_dir
 
@@ -1136,7 +1135,6 @@ def download_fleurs_subset(
             f"data/{subset}/*.tsv",
         ],
         local_dir=str(local_dir),
-        local_dir_use_symlinks=False,
         revision=revision,
     )
     return local_dir

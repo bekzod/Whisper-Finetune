@@ -151,7 +151,6 @@ def download_file_with_retry(
                 filename=filename,
                 repo_type="dataset",
                 local_dir=str(local_dir),
-                local_dir_use_symlinks=False,
             )
             return Path(local_path)
         except HfHubHTTPError as e:
