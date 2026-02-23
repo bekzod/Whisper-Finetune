@@ -559,6 +559,12 @@ _SPACE_BEFORE_PUNCT_RE = re.compile(r"\s+([.,])")
 _SPACED_NUMBER_RE = re.compile(r"(\d)\s+(?=\d)")
 # Pattern to match standalone integer tokens for number normalization.
 _NUMBER_TOKEN_RE = re.compile(r"\b\d+\b")
+# Pattern to match decimal numbers (e.g., 3.14 or 3,14).
+_DECIMAL_NUMBER_RE = re.compile(r"\b(\d+)[.,](\d+)\b")
+# Pattern to match number+suffix tokens (e.g., 5-ta, 10yil, 2-sinf).
+_NUMBER_WITH_SUFFIX_RE = re.compile(
+    r"\b(\d+)([-']?)([a-zA-ZА-Яа-яЎўҚқҒғҲҳ][a-zA-ZА-Яа-яЎўҚқҒғҲҳ']*)\b"
+)
 _UZBEK_MONTHS = (
     "yanvar",
     "fevral",
@@ -699,6 +705,31 @@ _UZBEK_NUMBER_SCALES = (
     "kvadrillion",
     "kvintillion",
 )
+_VALID_DECIMAL_MODES = {"fractional", "digit"}
+_ATTACHED_NUMERIC_SUFFIXES = {
+    "ta",
+    "tacha",
+    "tadan",
+    "tasi",
+    "talik",
+    "chi",
+    "nchi",
+    "inchi",
+    "ga",
+    "gacha",
+    "da",
+    "dan",
+    "ni",
+    "ning",
+    "na",
+    "lab",
+    "lik",
+    "lar",
+    "lari",
+    "larga",
+    "larda",
+    "lardan",
+}
 _UZBEK_DAY_ORDINALS = {
     1: "birinchi",
     2: "ikkinchi",
@@ -795,6 +826,93 @@ def _number_to_spoken_uzbek(value: int) -> str:
     if is_negative:
         return f"minus {result}"
     return result
+
+
+def _digits_to_spoken_uzbek(digits: str) -> str:
+    """Convert a digit sequence to spoken Uzbek digit-by-digit."""
+    return " ".join(_UZBEK_NUMBER_UNITS[int(digit)] for digit in digits)
+
+
+def _resolve_decimal_mode(decimal_mode: Optional[str]) -> str:
+    """Resolve decimal normalization mode from arg/env with validation."""
+    mode = decimal_mode or os.environ.get("UZBEK_DECIMAL_MODE", "fractional")
+    normalized_mode = mode.strip().lower()
+    if normalized_mode in _VALID_DECIMAL_MODES:
+        return normalized_mode
+    _LOGGER.warning(
+        "Invalid decimal mode '%s'. Falling back to 'fractional'.",
+        mode,
+    )
+    return "fractional"
+
+
+def _normalize_decimals_to_spoken_uzbek(
+    text: str,
+    stats: Optional[MisspellingStats] = None,
+    decimal_mode: str = "fractional",
+) -> str:
+    """Replace decimal numbers with spoken Uzbek text."""
+    if not text:
+        return text
+    if stats is None:
+        stats = _misspelling_stats
+
+    def replace_match(match: re.Match) -> str:
+        raw_decimal = match.group(0)
+        integer_part = int(match.group(1))
+        fractional_part_raw = match.group(2)
+
+        integer_spoken = _number_to_spoken_uzbek(integer_part)
+        if decimal_mode == "digit":
+            fractional_spoken = _digits_to_spoken_uzbek(fractional_part_raw)
+            spoken = f"{integer_spoken} nuqta {fractional_spoken}"
+        else:
+            fractional_part = int(fractional_part_raw)
+            fractional_spoken = _number_to_spoken_uzbek(fractional_part)
+            spoken = f"{integer_spoken} butun {fractional_spoken}"
+
+        if spoken != raw_decimal:
+            stats.record_fix(raw_decimal, spoken)
+        return spoken
+
+    return _DECIMAL_NUMBER_RE.sub(replace_match, text)
+
+
+def _normalize_number_suffixes_to_spoken_uzbek(
+    text: str, stats: Optional[MisspellingStats] = None
+) -> str:
+    """Expand numeric part in number+suffix tokens while keeping suffix form."""
+    if not text:
+        return text
+    if stats is None:
+        stats = _misspelling_stats
+
+    def replace_match(match: re.Match) -> str:
+        raw_token = match.group(0)
+        number_part = match.group(1)
+        separator = match.group(2)
+        suffix = match.group(3)
+
+        try:
+            numeric_value = int(number_part)
+        except ValueError:
+            return raw_token
+
+        spoken_number = _number_to_spoken_uzbek(numeric_value)
+        suffix_lower = suffix.lower()
+
+        if separator:
+            replacement = f"{spoken_number}{separator}{suffix}"
+        elif suffix_lower in _ATTACHED_NUMERIC_SUFFIXES:
+            replacement = f"{spoken_number}{suffix}"
+        else:
+            replacement = f"{spoken_number} {suffix}"
+
+        if replacement != raw_token:
+            stats.record_fix(raw_token, replacement)
+        return replacement
+
+    return _NUMBER_WITH_SUFFIX_RE.sub(replace_match, text)
 
 
 def _normalize_numbers_to_spoken_uzbek(
@@ -1109,6 +1227,7 @@ def normalize_text(
     text: Any,
     stats: Optional[MisspellingStats] = None,
     dataset_label: Optional[str] = None,
+    decimal_mode: Optional[str] = None,
 ) -> str:
     """Normalize text to match training cleanup in utils/reader.py."""
     if text is None:
@@ -1117,6 +1236,7 @@ def normalize_text(
         normalized = str(text)
     except Exception:
         return ""
+    resolved_decimal_mode = _resolve_decimal_mode(decimal_mode)
 
     normalized = _transliterate_uzbek_cyrillic(normalized)
     normalized = normalized.translate(_APOSTROPHE_TRANSLATION)
@@ -1130,6 +1250,10 @@ def normalize_text(
     normalized = _SPACE_BEFORE_PUNCT_RE.sub(r"\1", normalized)
     normalized = _SPACED_NUMBER_RE.sub(r"\1", normalized)
     normalized = _normalize_uzbek_dates_to_spoken(normalized, stats=stats)
+    normalized = _normalize_decimals_to_spoken_uzbek(
+        normalized, stats=stats, decimal_mode=resolved_decimal_mode
+    )
+    normalized = _normalize_number_suffixes_to_spoken_uzbek(normalized, stats=stats)
     normalized = _normalize_numbers_to_spoken_uzbek(normalized, stats=stats)
     normalized = _MULTISPACE_RE.sub(" ", normalized).strip()
     if normalized.startswith("-"):
