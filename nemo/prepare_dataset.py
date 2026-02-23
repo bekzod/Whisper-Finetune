@@ -457,6 +457,12 @@ def _is_rate_limit_error(exc: BaseException) -> bool:
     return "429" in message or "too many requests" in message or "rate limit" in message
 
 
+def _is_missing_audiofolder_filename_error(exc: BaseException) -> bool:
+    """Detect HF audiofolder metadata schema errors requiring file_name."""
+    message = str(exc)
+    return "`file_name` or `*_file_name` must be present as dictionary key" in message
+
+
 def _load_dataset_with_retries(
     repo: str,
     load_kwargs: Dict[str, Any],
@@ -2573,13 +2579,37 @@ def _process_single_spec(
             if hf_token:
                 load_kwargs["use_auth_token"] = hf_token
 
-            ds = _load_dataset_with_retries(
-                spec.repo,
-                load_kwargs,
-                hf_load_retries,
-                hf_retry_wait,
-                hf_rate_limit_wait,
-            )
+            try:
+                ds = _load_dataset_with_retries(
+                    spec.repo,
+                    load_kwargs,
+                    hf_load_retries,
+                    hf_retry_wait,
+                    hf_rate_limit_wait,
+                )
+            except Exception as exc:
+                can_try_parquet_fallback = (
+                    _is_missing_audiofolder_filename_error(exc)
+                    and not spec.revision
+                    and spec.data_dir is None
+                    and spec.data_files is None
+                )
+                if not can_try_parquet_fallback:
+                    raise
+
+                parquet_load_kwargs = dict(load_kwargs)
+                parquet_load_kwargs["revision"] = "refs/convert/parquet"
+                print(
+                    "  Encountered audiofolder metadata schema error; retrying "
+                    f"{spec.repo} from refs/convert/parquet."
+                )
+                ds = _load_dataset_with_retries(
+                    spec.repo,
+                    parquet_load_kwargs,
+                    hf_load_retries,
+                    hf_retry_wait,
+                    hf_rate_limit_wait,
+                )
             ds = _disable_audio_decoding(ds, label=f"{spec.repo}:{split}")
             filter_fn = get_filter_fn(spec.repo)
             if filter_fn is not None:
