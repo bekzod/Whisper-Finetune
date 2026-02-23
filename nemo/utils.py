@@ -561,6 +561,14 @@ _SPACED_NUMBER_RE = re.compile(r"(\d)\s+(?=\d)")
 _NUMBER_TOKEN_RE = re.compile(r"\b\d+\b")
 # Pattern to match decimal numbers (e.g., 3.14 or 3,14).
 _DECIMAL_NUMBER_RE = re.compile(r"\b(\d+)[.,](\d+)\b")
+# Pattern to match common Uzbek abbreviations and variants.
+_UZBEK_YEAR_ABBREV_RE = re.compile(r"\b(\d+)\s*(?:-\s*)?y\.", re.IGNORECASE)
+_UZBEK_NUMBER_KG_RE = re.compile(r"\b(\d+)\s*(?:-\s*)?(kg)\b", re.IGNORECASE)
+_UZBEK_NUMBER_SUM_RE = re.compile(r"\b(\d+)\s*(?:-\s*)?(sum|so'm)\b", re.IGNORECASE)
+_UZBEK_STANDALONE_KG_RE = re.compile(r"(?<![a-zA-Z])(kg)(?![a-zA-Z])", re.IGNORECASE)
+_UZBEK_STANDALONE_SUM_RE = re.compile(
+    r"(?<![a-zA-Z])(sum|so'm)(?![a-zA-Z])", re.IGNORECASE
+)
 # Pattern to match number+suffix tokens (e.g., 5-ta, 10yil, 2-sinf).
 _NUMBER_WITH_SUFFIX_RE = re.compile(
     r"\b(\d+)([-']?)([a-zA-ZА-Яа-яЎўҚқҒғҲҳ][a-zA-ZА-Яа-яЎўҚқҒғҲҳ']*)\b"
@@ -962,6 +970,65 @@ def _normalize_uzbek_dates_to_spoken(
     return _UZBEK_DAY_MONTH_RE.sub(replace_match, text)
 
 
+def _normalize_uzbek_abbreviations(
+    text: str, stats: Optional[MisspellingStats] = None
+) -> str:
+    """Expand selected Uzbek abbreviations and unify common variants."""
+    if not text:
+        return text
+    if stats is None:
+        stats = _misspelling_stats
+
+    def replace_year(match: re.Match) -> str:
+        raw = match.group(0)
+        replacement = f"{match.group(1)} yil"
+        if replacement != raw:
+            stats.record_fix(raw, replacement)
+        return replacement
+
+    normalized = _UZBEK_YEAR_ABBREV_RE.sub(replace_year, text)
+
+    def replace_number_kg(match: re.Match) -> str:
+        raw = match.group(0)
+        number = match.group(1)
+        unit = _preserve_word_case(match.group(2), "kilogram")
+        replacement = f"{number} {unit}"
+        if replacement != raw:
+            stats.record_fix(raw, replacement)
+        return replacement
+
+    normalized = _UZBEK_NUMBER_KG_RE.sub(replace_number_kg, normalized)
+
+    def replace_number_sum(match: re.Match) -> str:
+        raw = match.group(0)
+        number = match.group(1)
+        currency = _preserve_word_case(match.group(2), "so'm")
+        replacement = f"{number} {currency}"
+        if replacement != raw:
+            stats.record_fix(raw, replacement)
+        return replacement
+
+    normalized = _UZBEK_NUMBER_SUM_RE.sub(replace_number_sum, normalized)
+
+    def replace_standalone_kg(match: re.Match) -> str:
+        raw = match.group(0)
+        replacement = _preserve_word_case(raw, "kilogram")
+        if replacement != raw:
+            stats.record_fix(raw, replacement)
+        return replacement
+
+    normalized = _UZBEK_STANDALONE_KG_RE.sub(replace_standalone_kg, normalized)
+
+    def replace_standalone_sum(match: re.Match) -> str:
+        raw = match.group(0)
+        replacement = _preserve_word_case(raw, "so'm")
+        if replacement != raw:
+            stats.record_fix(raw, replacement)
+        return replacement
+
+    return _UZBEK_STANDALONE_SUM_RE.sub(replace_standalone_sum, normalized)
+
+
 @dataclass
 class NormalizedWordStats:
     """Track all normalized words for post-run inspection."""
@@ -1240,6 +1307,7 @@ def normalize_text(
 
     normalized = _transliterate_uzbek_cyrillic(normalized)
     normalized = normalized.translate(_APOSTROPHE_TRANSLATION)
+    normalized = _normalize_uzbek_abbreviations(normalized, stats=stats)
     before_fix = normalized
     normalized = _fix_uzbek_misspellings(normalized, stats)
     hunspell_corrector = get_hunspell_uzbek_corrector(max_edit_distance=1)
