@@ -1086,6 +1086,44 @@ def _normalize_numbers_to_spoken_uzbek(
 
     def replace_match(match: re.Match) -> str:
         raw_number = match.group(0)
+        start, end = match.span()
+        if end < len(text) and text[end] in {"-", "'"}:
+            next_index = end + 1
+            if next_index < len(text) and text[next_index].isalpha():
+                next_fragment = text[next_index : next_index + 16].lower()
+                spoken_number_starts = (
+                    "nol",
+                    "bir",
+                    "ikki",
+                    "uch",
+                    "to'rt",
+                    "besh",
+                    "olti",
+                    "yetti",
+                    "sakkiz",
+                    "to'qqiz",
+                    "o'n",
+                    "yigirma",
+                    "o'ttiz",
+                    "qirq",
+                    "ellik",
+                    "oltmish",
+                    "yetmish",
+                    "sakson",
+                    "to'qson",
+                    "yuz",
+                    "ming",
+                    "million",
+                    "milliard",
+                    "trillion",
+                    "kvadrillion",
+                    "kvintillion",
+                    "minus",
+                )
+                if not any(
+                    next_fragment.startswith(stem) for stem in spoken_number_starts
+                ):
+                    return raw_number
         spoken = _number_string_to_spoken_uzbek(raw_number)
         if spoken != raw_number:
             stats.record_fix(raw_number, spoken)
