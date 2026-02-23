@@ -557,6 +557,28 @@ _MULTISPACE_RE = re.compile(r"\s+")
 _SPACE_BEFORE_PUNCT_RE = re.compile(r"\s+([.,])")
 # Pattern to match spaces between digits (e.g., "600 000" => "600000")
 _SPACED_NUMBER_RE = re.compile(r"(\d)\s+(?=\d)")
+# Pattern to match standalone integer tokens for number normalization.
+_NUMBER_TOKEN_RE = re.compile(r"\b\d+\b")
+_UZBEK_MONTHS = (
+    "yanvar",
+    "fevral",
+    "mart",
+    "aprel",
+    "may",
+    "iyun",
+    "iyul",
+    "avgust",
+    "sentyabr",
+    "oktyabr",
+    "noyabr",
+    "dekabr",
+)
+_UZBEK_DAY_MONTH_RE = re.compile(
+    r"\b(0?[1-9]|[12][0-9]|3[01])(?:\s*[-/.]\s*|\s+)("
+    + "|".join(_UZBEK_MONTHS)
+    + r")\b",
+    re.IGNORECASE,
+)
 _UZBEK_CYRILLIC_TO_LATIN = {
     "А": "A",
     "а": "a",
@@ -645,6 +667,71 @@ _COMMON_HUNSPELL_DICT_DIRS = (
     "/Library/Spelling",
 )
 _UZBEK_HUNSPELL_BASENAMES = ("uz_UZ", "uz_Latn_UZ", "uz")
+_UZBEK_NUMBER_UNITS = (
+    "nol",
+    "bir",
+    "ikki",
+    "uch",
+    "to'rt",
+    "besh",
+    "olti",
+    "yetti",
+    "sakkiz",
+    "to'qqiz",
+)
+_UZBEK_NUMBER_TENS = {
+    10: "o'n",
+    20: "yigirma",
+    30: "o'ttiz",
+    40: "qirq",
+    50: "ellik",
+    60: "oltmish",
+    70: "yetmish",
+    80: "sakson",
+    90: "to'qson",
+}
+_UZBEK_NUMBER_SCALES = (
+    "",
+    "ming",
+    "million",
+    "milliard",
+    "trillion",
+    "kvadrillion",
+    "kvintillion",
+)
+_UZBEK_DAY_ORDINALS = {
+    1: "birinchi",
+    2: "ikkinchi",
+    3: "uchinchi",
+    4: "to'rtinchi",
+    5: "beshinchi",
+    6: "oltinchi",
+    7: "yettinchi",
+    8: "sakkizinchi",
+    9: "to'qqizinchi",
+    10: "o'ninchi",
+    11: "o'n birinchi",
+    12: "o'n ikkinchi",
+    13: "o'n uchinchi",
+    14: "o'n to'rtinchi",
+    15: "o'n beshinchi",
+    16: "o'n oltinchi",
+    17: "o'n yettinchi",
+    18: "o'n sakkizinchi",
+    19: "o'n to'qqizinchi",
+    20: "yigirmanchi",
+    21: "yigirma birinchi",
+    22: "yigirma ikkinchi",
+    23: "yigirma uchinchi",
+    24: "yigirma to'rtinchi",
+    25: "yigirma beshinchi",
+    26: "yigirma oltinchi",
+    27: "yigirma yettinchi",
+    28: "yigirma sakkizinchi",
+    29: "yigirma to'qqizinchi",
+    30: "o'ttizinchi",
+    31: "o'ttiz birinchi",
+}
 
 
 def _preserve_word_case(original: str, replacement: str) -> str:
@@ -654,6 +741,107 @@ def _preserve_word_case(original: str, replacement: str) -> str:
     if original and original[0].isupper():
         return replacement.capitalize()
     return replacement
+
+
+def _uzbek_under_thousand(value: int) -> str:
+    """Convert an integer from 0..999 to spoken Uzbek."""
+    if value == 0:
+        return _UZBEK_NUMBER_UNITS[0]
+
+    parts: List[str] = []
+    hundreds = value // 100
+    remainder = value % 100
+
+    if hundreds:
+        parts.append(_UZBEK_NUMBER_UNITS[hundreds])
+        parts.append("yuz")
+
+    if remainder >= 20:
+        tens = (remainder // 10) * 10
+        parts.append(_UZBEK_NUMBER_TENS[tens])
+        remainder %= 10
+        if remainder:
+            parts.append(_UZBEK_NUMBER_UNITS[remainder])
+    elif remainder >= 10:
+        parts.append(_UZBEK_NUMBER_TENS[10])
+        remainder -= 10
+        if remainder:
+            parts.append(_UZBEK_NUMBER_UNITS[remainder])
+    elif remainder > 0:
+        parts.append(_UZBEK_NUMBER_UNITS[remainder])
+
+    return " ".join(parts)
+
+
+def _number_to_spoken_uzbek(value: int) -> str:
+    """Convert an integer to spoken Uzbek words."""
+    if value == 0:
+        return _UZBEK_NUMBER_UNITS[0]
+
+    is_negative = value < 0
+    number = abs(value)
+    scale_idx = 0
+    parts: List[str] = []
+
+    while number > 0:
+        number, chunk = divmod(number, 1000)
+        if chunk:
+            chunk_words = _uzbek_under_thousand(chunk)
+            scale = _UZBEK_NUMBER_SCALES[scale_idx]
+            parts.append(f"{chunk_words} {scale}".strip())
+        scale_idx += 1
+
+    result = " ".join(reversed(parts))
+    if is_negative:
+        return f"minus {result}"
+    return result
+
+
+def _normalize_numbers_to_spoken_uzbek(
+    text: str, stats: Optional[MisspellingStats] = None
+) -> str:
+    """Replace integer tokens with spoken Uzbek and record normalization fixes."""
+    if not text:
+        return text
+    if stats is None:
+        stats = _misspelling_stats
+
+    def replace_match(match: re.Match) -> str:
+        raw_number = match.group(0)
+        try:
+            numeric_value = int(raw_number)
+        except ValueError:
+            return raw_number
+        spoken = _number_to_spoken_uzbek(numeric_value)
+        if spoken != raw_number:
+            stats.record_fix(raw_number, spoken)
+        return spoken
+
+    return _NUMBER_TOKEN_RE.sub(replace_match, text)
+
+
+def _normalize_uzbek_dates_to_spoken(
+    text: str, stats: Optional[MisspellingStats] = None
+) -> str:
+    """Convert day+month date expressions to spoken Uzbek ordinal forms."""
+    if not text:
+        return text
+    if stats is None:
+        stats = _misspelling_stats
+
+    def replace_match(match: re.Match) -> str:
+        raw_date = match.group(0)
+        day = int(match.group(1))
+        month = match.group(2).lower()
+        ordinal_day = _UZBEK_DAY_ORDINALS.get(
+            day, f"{_number_to_spoken_uzbek(day)}inchi"
+        )
+        spoken_date = f"{ordinal_day} {month}"
+        if spoken_date != raw_date:
+            stats.record_fix(raw_date, spoken_date)
+        return spoken_date
+
+    return _UZBEK_DAY_MONTH_RE.sub(replace_match, text)
 
 
 @dataclass
@@ -941,6 +1129,8 @@ def normalize_text(
     normalized = _ALLOWED_TEXT_RE.sub("", normalized)
     normalized = _SPACE_BEFORE_PUNCT_RE.sub(r"\1", normalized)
     normalized = _SPACED_NUMBER_RE.sub(r"\1", normalized)
+    normalized = _normalize_uzbek_dates_to_spoken(normalized, stats=stats)
+    normalized = _normalize_numbers_to_spoken_uzbek(normalized, stats=stats)
     normalized = _MULTISPACE_RE.sub(" ", normalized).strip()
     if normalized.startswith("-"):
         normalized = normalized[1:].lstrip()
