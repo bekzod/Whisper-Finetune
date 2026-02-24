@@ -121,7 +121,7 @@ _HF_TEXT_CANDIDATE_KEYS = (
     "target_text",
     "translation",
 )
-_DYNAMIC_REPAIR_REPOS = frozenset({"bekzod123/uzbek_voice_3"})
+_DYNAMIC_REPAIR_REPOS = frozenset({"k2speech/FeruzaSpeech", "bekzod123/uzbek_voice_3"})
 
 _FILTERED_CLIENT_IDS = {
     "56ac8e86-b8c9-4879-a342-0eeb94f686fc",
@@ -662,6 +662,74 @@ def _resolve_local_tabular_file(
     return None
 
 
+def _split_variants(split: str) -> List[str]:
+    base = str(split).strip().lower()
+    variants: List[str] = []
+    if base:
+        variants.append(base)
+        if base == "dev":
+            variants.append("validation")
+        elif base == "validation":
+            variants.append("dev")
+        elif base == "validated":
+            variants.append("validation")
+        if base == "validation":
+            variants.append("validated")
+    return variants
+
+
+def _find_split_tabular_file(local_dir: Path, split: str) -> Optional[Path]:
+    variants = _split_variants(split) or [str(split).strip().lower()]
+    direct_parents = [local_dir, local_dir / "data", local_dir / "transcript"]
+    for variant in variants:
+        for parent in direct_parents:
+            for ext in (".tsv", ".csv"):
+                candidate = parent / f"{variant}{ext}"
+                if candidate.is_file():
+                    return candidate
+
+    for variant in variants:
+        for ext in (".tsv", ".csv"):
+            matches = sorted(local_dir.rglob(f"{variant}{ext}"))
+            if matches:
+                return matches[0]
+    return None
+
+
+def download_tabular_repo_snapshot(
+    repo_id: str,
+    cache_root: Path,
+    revision: Optional[str] = None,
+) -> Path:
+    repo_name = sanitize_name(repo_id)
+    local_dir = cache_root / repo_name
+    local_dir.mkdir(parents=True, exist_ok=True)
+    print(f"  Downloading tabular files for {repo_id} to {local_dir}")
+    snapshot_download(
+        repo_id=repo_id,
+        repo_type="dataset",
+        revision=revision,
+        local_dir=str(local_dir),
+        allow_patterns=[
+            "*.tsv",
+            "*.csv",
+            "**/*.tsv",
+            "**/*.csv",
+            "*.wav",
+            "*.mp3",
+            "*.flac",
+            "*.ogg",
+            "*.m4a",
+            "**/*.wav",
+            "**/*.mp3",
+            "**/*.flac",
+            "**/*.ogg",
+            "**/*.m4a",
+        ],
+    )
+    return local_dir
+
+
 def _repair_delimited_row(
     row: Sequence[str],
     *,
@@ -700,6 +768,7 @@ def _repair_delimited_row(
 def iter_local_tabular_items(
     *,
     data_file: Path,
+    audio_search_root: Optional[Path],
     percentage: Optional[float],
     seed: int,
     limit: Optional[int],
@@ -801,12 +870,33 @@ def iter_local_tabular_items(
             if keep_prob < 1.0 and rng.random() > keep_prob:
                 continue
 
-            if not os.path.isabs(audio_ref):
-                local_audio = (data_file.parent / audio_ref).resolve()
-                if local_audio.is_file():
-                    audio_ref = str(local_audio)
+            if os.path.isabs(audio_ref) and os.path.isfile(audio_ref):
+                resolved_audio = audio_ref
+            else:
+                resolved_audio = audio_ref
+                candidate_roots: List[Path] = [data_file.parent]
+                if audio_search_root is not None:
+                    candidate_roots.append(audio_search_root)
+                    candidate_roots.append(audio_search_root / "audio")
+                normalized_ref = audio_ref.replace("\\", os.sep).lstrip("./")
+                for root in candidate_roots:
+                    candidate = (root / normalized_ref).resolve()
+                    if candidate.is_file():
+                        resolved_audio = str(candidate)
+                        break
 
-            yield {"file_name": audio_ref, "text": text}
+                if resolved_audio == audio_ref:
+                    base_name = os.path.basename(normalized_ref)
+                    for root in candidate_roots:
+                        try:
+                            match = next(root.rglob(base_name))
+                        except (StopIteration, OSError):
+                            continue
+                        if match.is_file():
+                            resolved_audio = str(match.resolve())
+                            break
+
+            yield {"file_name": resolved_audio, "text": text}
             kept += 1
             if limit and kept >= limit:
                 break
@@ -2954,11 +3044,30 @@ def _process_single_spec(
             f"[{group}] loading {spec.repo} split={split}"
             + (f" (subset={spec.subset})" if spec.subset else "")
         )
-        local_tabular_file = None
+        local_tabular_file: Optional[Path] = None
+        audio_search_root: Optional[Path] = None
         if spec.repo in _DYNAMIC_REPAIR_REPOS:
             local_tabular_file = _resolve_local_tabular_file(
                 spec.repo, spec.data_files, split
             )
+            if local_tabular_file is not None:
+                audio_search_root = local_tabular_file.parent
+            else:
+                try:
+                    with dataset_cache_context(cache_mode, cache_dir) as cache_path:
+                        snapshot_dir = download_tabular_repo_snapshot(
+                            spec.repo, cache_path, spec.revision
+                        )
+                        local_tabular_file = _find_split_tabular_file(
+                            snapshot_dir, split
+                        )
+                        if local_tabular_file is not None:
+                            audio_search_root = snapshot_dir
+                except Exception as exc:
+                    print(
+                        "  Warning: dynamic TSV/CSV snapshot parsing failed; "
+                        f"falling back to load_dataset. Error: {exc}"
+                    )
         if local_tabular_file is not None:
             print(
                 f"  Using local tabular parser for {local_tabular_file} "
@@ -2966,6 +3075,7 @@ def _process_single_spec(
             )
             items = iter_local_tabular_items(
                 data_file=local_tabular_file,
+                audio_search_root=audio_search_root,
                 percentage=spec.percentage,
                 seed=spec.seed if spec.seed is not None else DEFAULT_SAMPLING_SEED,
                 limit=limit,
