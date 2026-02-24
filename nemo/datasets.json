@@ -9,6 +9,10 @@
       "splits": ["train"]
     },
     {
+      "name": "murodbek/uzbek-speech-corpus",
+      "splits": ["train", "test", "validation"]
+    },
+    {
       "name": "bekzod123/uzbek_voice_5",
       "splits": ["train"]
     },

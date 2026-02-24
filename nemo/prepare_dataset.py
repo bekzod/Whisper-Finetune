@@ -78,8 +78,8 @@ DEFAULT_MIN_DURATION = 0.2
 DEFAULT_MAX_DURATION = 30.0
 DEFAULT_MIN_CHARS = 2
 DEFAULT_MAX_CHARS = 720
-DEFAULT_MIN_CHARS_PER_SEC = 0.42
-DEFAULT_MAX_CHARS_PER_SEC = 42
+DEFAULT_MIN_CHARS_PER_SEC = 2
+DEFAULT_MAX_CHARS_PER_SEC = 40
 DEFAULT_SAMPLING_SEED = 3407
 DEFAULT_CACHE_ROOT = Path("/workspace")
 MAX_TAR_PATH_COMPONENT = 960
@@ -1683,7 +1683,9 @@ def iter_fleurs_items(
             )
             text_column = _resolve_column(
                 [
+                    "text_latin",
                     "text",
+                    "text_cyrillic",
                     "transcription",
                     "sentence",
                     "transcript",
