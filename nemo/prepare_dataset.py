@@ -2031,6 +2031,7 @@ class AudioProcessResult:
     duration: Optional[float] = None
     audio_path: Optional[Path] = None
     audio_hash: Optional[bytes] = None
+    source_ref: Optional[str] = None
 
 
 def _validate_transcript(
@@ -2115,12 +2116,14 @@ def _process_audio_item(
             if min_chars_per_sec is not None and min_chars_per_sec > 0:
                 if chars_per_sec < min_chars_per_sec:
                     return AudioProcessResult(
-                        status="text_audio_mismatch", transcript=transcript
+                        status="text_audio_mismatch", transcript=transcript,
+                        duration=duration, source_ref=ref,
                     )
             if max_chars_per_sec is not None and max_chars_per_sec > 0:
                 if chars_per_sec > max_chars_per_sec:
                     return AudioProcessResult(
-                        status="text_audio_mismatch", transcript=transcript
+                        status="text_audio_mismatch", transcript=transcript,
+                        duration=duration, source_ref=ref,
                     )
 
     audio_hash = None
@@ -2236,6 +2239,10 @@ def process_items(
             manifest_file.write("\n")
             counts["kept"] += 1
             return
+        if result.status == "text_audio_mismatch":
+            dur_str = f"{result.duration:.2f}s" if result.duration is not None else "?"
+            src = result.source_ref or "unknown"
+            print(f"  text_audio_mismatch: duration={dur_str} file={src} text={result.transcript!r}")
         if result.status in counts:
             counts[result.status] += 1
         else:
