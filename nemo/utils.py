@@ -1547,7 +1547,7 @@ def reset_hunspell_uzbek_corrector() -> None:
 
 
 def _compact_audio_reference(audio_reference: Optional[Any]) -> str:
-    """Return a short audio identifier suitable for log messages."""
+    """Return audio reference for log messages without truncating to basename."""
     if audio_reference is None:
         return "unknown"
     try:
@@ -1556,13 +1556,7 @@ def _compact_audio_reference(audio_reference: Optional[Any]) -> str:
         return "unknown"
     if not raw_reference:
         return "unknown"
-    normalized_reference = raw_reference.replace("\\", "/")
-    normalized_reference = normalized_reference.split("?", 1)[0]
-    normalized_reference = normalized_reference.split("#", 1)[0]
-    normalized_reference = normalized_reference.rstrip("/")
-    if not normalized_reference:
-        return "unknown"
-    return normalized_reference.split("/")[-1] or normalized_reference
+    return raw_reference
 
 
 def normalize_text(

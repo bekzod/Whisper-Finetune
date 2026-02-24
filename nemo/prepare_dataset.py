@@ -75,7 +75,7 @@ reset_typo_detector = _cleanup_utils.reset_typo_detector
 MAX_TRANSCRIPT_CHAR_LIMIT = 680
 DEFAULT_SAMPLE_RATE = 16000
 DEFAULT_MIN_DURATION = 0.2
-DEFAULT_MAX_DURATION = 32.0
+DEFAULT_MAX_DURATION = 30.0
 DEFAULT_MIN_CHARS = 2
 DEFAULT_MAX_CHARS = 720
 DEFAULT_MIN_CHARS_PER_SEC = 2
@@ -588,26 +588,43 @@ def iter_dataset_specs(
 
 
 def _flatten_transcript_text(
-    transcript: Any, *, dataset_label: Optional[str] = None
+    transcript: Any,
+    *,
+    dataset_label: Optional[str] = None,
+    audio_reference: Optional[str] = None,
 ) -> str:
     if transcript is None:
         return ""
     if isinstance(transcript, str):
-        return normalize_text(transcript, dataset_label=dataset_label)
+        return normalize_text(
+            transcript,
+            dataset_label=dataset_label,
+            audio_reference=audio_reference,
+        )
     if isinstance(transcript, dict):
         return normalize_text(
-            str(transcript.get("text", "")), dataset_label=dataset_label
+            str(transcript.get("text", "")),
+            dataset_label=dataset_label,
+            audio_reference=audio_reference,
         )
     if isinstance(transcript, Sequence) and not isinstance(
         transcript, (str, bytes, bytearray)
     ):
         parts: List[str] = []
         for segment in transcript:
-            flattened = _flatten_transcript_text(segment, dataset_label=dataset_label)
+            flattened = _flatten_transcript_text(
+                segment,
+                dataset_label=dataset_label,
+                audio_reference=audio_reference,
+            )
             if flattened:
                 parts.append(flattened)
         return " ".join(parts).strip()
-    return normalize_text(str(transcript), dataset_label=dataset_label)
+    return normalize_text(
+        str(transcript),
+        dataset_label=dataset_label,
+        audio_reference=audio_reference,
+    )
 
 
 def sanitize_name(name: str) -> str:
@@ -615,23 +632,90 @@ def sanitize_name(name: str) -> str:
     return cleaned or "dataset"
 
 
+def _extract_audio_reference_for_logging(
+    item: Dict[str, Any],
+    *,
+    audio_key: Optional[str] = None,
+) -> Optional[str]:
+    """Extract an audio path-like reference from an item for debug logging."""
+
+    def _extract_reference(blob: Any) -> Optional[str]:
+        if isinstance(blob, str):
+            reference = blob.strip()
+            if reference and _looks_like_audio_path(reference):
+                return reference
+            return None
+        if hasattr(os, "PathLike") and isinstance(blob, os.PathLike):
+            return os.fspath(blob)
+        if isinstance(blob, dict):
+            for key in (
+                "path",
+                "audio_path",
+                "audio_filepath",
+                "filename",
+                "file",
+                "file_name",
+            ):
+                value = blob.get(key)
+                if isinstance(value, str):
+                    reference = value.strip()
+                    if reference:
+                        return reference
+                if hasattr(os, "PathLike") and isinstance(value, os.PathLike):
+                    return os.fspath(value)
+        return None
+
+    if audio_key:
+        reference = _extract_reference(item.get(audio_key))
+        if reference:
+            return reference
+
+    for key in _HF_AUDIO_CANDIDATE_KEYS:
+        if key == audio_key or key not in item:
+            continue
+        reference = _extract_reference(item.get(key))
+        if reference:
+            return reference
+
+    for key, value in item.items():
+        if key == audio_key or key in _HF_AUDIO_CANDIDATE_KEYS:
+            continue
+        reference = _extract_reference(value)
+        if reference:
+            return reference
+    return None
+
+
 def pick_text(
     item: Dict[str, Any],
     text_key: Optional[str] = None,
     *,
     dataset_label: Optional[str] = None,
+    audio_reference: Optional[str] = None,
 ) -> str:
     if text_key:
         value = item.get(text_key)
         if value is not None:
-            text = _flatten_transcript_text(value, dataset_label=dataset_label)
+            text = _flatten_transcript_text(
+                value,
+                dataset_label=dataset_label,
+                audio_reference=audio_reference,
+            )
             return unicodedata.normalize("NFKC", text)
     if "sentences" in item and item["sentences"] is not None:
-        text = _flatten_transcript_text(item["sentences"], dataset_label=dataset_label)
+        text = _flatten_transcript_text(
+            item["sentences"],
+            dataset_label=dataset_label,
+            audio_reference=audio_reference,
+        )
         return unicodedata.normalize("NFKC", text)
     for key in _HF_TEXT_CANDIDATE_KEYS:
         if key in item and item[key] is not None:
-            text = _flatten_transcript_text(item[key], dataset_label=dataset_label)
+            text = _flatten_transcript_text(
+                item[key],
+                dataset_label=dataset_label,
+                audio_reference=audio_reference,
+            )
             return unicodedata.normalize("NFKC", text)
     return ""
 
@@ -2030,6 +2114,9 @@ class AudioProcessResult:
     duration: Optional[float] = None
     audio_path: Optional[Path] = None
     audio_hash: Optional[bytes] = None
+    mismatch_chars: Optional[int] = None
+    audio_reference: Optional[str] = None
+    chars_per_sec: Optional[float] = None
 
 
 def _validate_transcript(
@@ -2088,6 +2175,9 @@ def _process_audio_item(
     audio_key: Optional[str] = None,
 ) -> AudioProcessResult:
     arr, sr, ref = read_audio_from_item(item, audio_key=audio_key)
+    audio_reference = ref or _extract_audio_reference_for_logging(
+        item, audio_key=audio_key
+    )
     arr, sr = load_audio(
         arr,
         sr,
@@ -2113,13 +2203,25 @@ def _process_audio_item(
             chars_per_sec = non_space_chars / duration
             if min_chars_per_sec is not None and min_chars_per_sec > 0:
                 if chars_per_sec < min_chars_per_sec:
+                    required_chars = int(np.ceil(min_chars_per_sec * duration))
+                    mismatch_chars = max(1, required_chars - non_space_chars)
                     return AudioProcessResult(
-                        status="text_audio_mismatch", transcript=transcript
+                        status="text_audio_mismatch",
+                        transcript=transcript,
+                        mismatch_chars=mismatch_chars,
+                        audio_reference=audio_reference,
+                        chars_per_sec=chars_per_sec,
                     )
             if max_chars_per_sec is not None and max_chars_per_sec > 0:
                 if chars_per_sec > max_chars_per_sec:
+                    allowed_chars = int(np.floor(max_chars_per_sec * duration))
+                    mismatch_chars = max(1, non_space_chars - allowed_chars)
                     return AudioProcessResult(
-                        status="text_audio_mismatch", transcript=transcript
+                        status="text_audio_mismatch",
+                        transcript=transcript,
+                        mismatch_chars=mismatch_chars,
+                        audio_reference=audio_reference,
+                        chars_per_sec=chars_per_sec,
                     )
 
     audio_hash = None
@@ -2235,6 +2337,23 @@ def process_items(
             manifest_file.write("\n")
             counts["kept"] += 1
             return
+        if result.status == "text_audio_mismatch":
+            audio_reference = result.audio_reference or "<unknown>"
+            mismatch_chars = (
+                str(result.mismatch_chars)
+                if result.mismatch_chars is not None
+                else "unknown"
+            )
+            chars_per_sec = (
+                f"{result.chars_per_sec:.2f}"
+                if result.chars_per_sec is not None
+                else "unknown"
+            )
+            print(
+                "  text_audio_mismatch: "
+                f"audio={audio_reference} mismatch_chars={mismatch_chars} "
+                f"chars_per_sec={chars_per_sec}"
+            )
         if result.status in counts:
             counts[result.status] += 1
         else:
@@ -2247,7 +2366,16 @@ def process_items(
                 counts["failed"] += 1
                 continue
 
-            transcript = pick_text(item, text_key=text_key, dataset_label=dataset_label)
+            audio_reference = _extract_audio_reference_for_logging(
+                item,
+                audio_key=audio_key,
+            )
+            transcript = pick_text(
+                item,
+                text_key=text_key,
+                dataset_label=dataset_label,
+                audio_reference=audio_reference,
+            )
             skip_reason = _validate_transcript(
                 transcript, min_chars=min_chars, max_chars=max_chars
             )
@@ -2297,8 +2425,15 @@ def process_items(
                     progress.update(1)
                     return True
 
+                audio_reference = _extract_audio_reference_for_logging(
+                    item,
+                    audio_key=audio_key,
+                )
                 transcript = pick_text(
-                    item, text_key=text_key, dataset_label=dataset_label
+                    item,
+                    text_key=text_key,
+                    dataset_label=dataset_label,
+                    audio_reference=audio_reference,
                 )
                 skip_reason = _validate_transcript(
                     transcript, min_chars=min_chars, max_chars=max_chars

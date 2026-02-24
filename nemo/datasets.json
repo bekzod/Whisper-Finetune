@@ -1,6 +1,10 @@
 {
   "train": [
     {
+      "name": "k2speech/FeruzaSpeech",
+      "splits": ["train", "test", "validation"]
+    },
+    {
       "name": "bekzod123/uzbek_voice",
       "splits": ["train"]
     },
@@ -61,10 +65,6 @@
     {
       "name": "bekzod123/uzbek_voice_4",
       "splits": ["train"]
-    },
-    {
-      "name": "k2speech/FeruzaSpeech",
-      "splits": ["train", "test", "validation"]
     },
     {
       "name": "Beehzod/dataset_for_STT_TTSmodels",
