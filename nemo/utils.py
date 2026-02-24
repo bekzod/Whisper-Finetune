@@ -793,7 +793,9 @@ _ORDINAL_TRIGGER_SUFFIXES = {
     "bosqich",
     "chorak",
     "guruh",
+    "daha",
     "epizod",
+    "video",
     "maktab",
     "raund",
     "kurs",
@@ -801,8 +803,13 @@ _ORDINAL_TRIGGER_SUFFIXES = {
     "qism",
     "qator",
     "qavat",
+    "mavze",
     "sahifa",
     "son",
+    "chisla",
+    "o'quv",
+    "xalqaro",
+    "asr",
     "joy",
     "o'rin",
     "daraja",
@@ -821,6 +828,8 @@ _ORDINAL_TRIGGER_SUFFIXES = {
 
 def _is_ordinal_trigger(suffix_lower: str) -> bool:
     """Check if a suffix (or compound suffix) triggers ordinal conversion."""
+    if len(suffix_lower) == 1 and suffix_lower.isalpha():
+        return True
     if _UZBEK_MONTH_WITH_CASE_RE.fullmatch(suffix_lower):
         return True
     if suffix_lower in _ORDINAL_TRIGGER_SUFFIXES:
@@ -1537,11 +1546,31 @@ def reset_hunspell_uzbek_corrector() -> None:
     _global_hunspell_uzbek_corrector = None
 
 
+def _compact_audio_reference(audio_reference: Optional[Any]) -> str:
+    """Return a short audio identifier suitable for log messages."""
+    if audio_reference is None:
+        return "unknown"
+    try:
+        raw_reference = str(audio_reference).strip()
+    except Exception:
+        return "unknown"
+    if not raw_reference:
+        return "unknown"
+    normalized_reference = raw_reference.replace("\\", "/")
+    normalized_reference = normalized_reference.split("?", 1)[0]
+    normalized_reference = normalized_reference.split("#", 1)[0]
+    normalized_reference = normalized_reference.rstrip("/")
+    if not normalized_reference:
+        return "unknown"
+    return normalized_reference.split("/")[-1] or normalized_reference
+
+
 def normalize_text(
     text: Any,
     stats: Optional[MisspellingStats] = None,
     dataset_label: Optional[str] = None,
     decimal_mode: Optional[str] = None,
+    audio_reference: Optional[Any] = None,
 ) -> str:
     """Normalize text to match training cleanup in utils/reader.py."""
     if text is None:
@@ -1585,8 +1614,9 @@ def normalize_text(
     words = _WORD_TOKENIZE_RE.findall(normalized.lower())
     if words:
         _LOGGER.debug(
-            "Normalized words dataset=%s words=%s",
+            "Normalized words dataset=%s audio=%s words=%s",
             dataset_label or "unknown",
+            _compact_audio_reference(audio_reference),
             " ".join(words),
         )
     return normalized
