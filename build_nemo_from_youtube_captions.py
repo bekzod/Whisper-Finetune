@@ -9,7 +9,7 @@ from typing import List, Optional, Tuple
 import soundfile as sf
 import webvtt
 
-from nemo.utils import _APOSTROPHE_TRANSLATION
+from nemo.utils import _APOSTROPHE_RE, _DASH_RE
 
 _VTT_TIMESTAMP_LINE_RE = re.compile(
     r"^(?P<start>\d{2}:\d{2}(?::\d{2})?\.\d{3})\s*-->\s*(?P<end>\d{2}:\d{2}(?::\d{2})?\.\d{3})"
@@ -177,7 +177,8 @@ def clean_caption_text(text: str) -> str:
     t = re.sub(r"<[^>]+>", "", t)  # tags
     t = t.replace("&nbsp;", " ")
     t = " ".join(part.strip() for part in t.split(">>") if part.strip())
-    t = t.translate(_APOSTROPHE_TRANSLATION)
+    t = _APOSTROPHE_RE.sub("'", t)
+    t = _DASH_RE.sub("-", t)
     t = re.sub(r"\s+", " ", t).strip()
     return t
 

@@ -18,27 +18,11 @@ _LOGGER = logging.getLogger(__name__)
 # Regex to match C or c NOT followed by h or H
 _STANDALONE_C_RE = re.compile(r"[Cc](?![Hh])")
 
-_APOSTROPHE_TRANSLATION = str.maketrans(
-    {
-        "\u2019": "'",  # RIGHT SINGLE QUOTATION MARK
-        "\u2018": "'",  # LEFT SINGLE QUOTATION MARK
-        "\u02bc": "'",  # MODIFIER LETTER APOSTROPHE
-        "\u02bb": "'",  # MODIFIER LETTER TURNED COMMA
-        "\u02b9": "'",  # MODIFIER LETTER PRIME
-        "\u02c8": "'",  # MODIFIER LETTER VERTICAL LINE
-        "`": "'",  # GRAVE ACCENT
-        "´": "'",  # ACUTE ACCENT
-        "‛": "'",  # SINGLE HIGH-REVERSED-9 QUOTATION MARK
-        "′": "'",  # PRIME
-        "ʻ": "'",  # MODIFIER LETTER TURNED COMMA (alternative)
-        "ʼ": "'",  # MODIFIER LETTER APOSTROPHE (alternative)
-        "'": "'",  # FULLWIDTH APOSTROPHE
-        "ˈ": "'",  # MODIFIER LETTER VERTICAL LINE (IPA)
-        "ʹ": "'",  # MODIFIER LETTER PRIME
-        "\u0027": "'",  # APOSTROPHE (standard, for completeness)
-        "\u055a": "'",  # ARMENIAN APOSTROPHE
-        "\ua78c": "'",  # LATIN SMALL LETTER SALTILLO
-    }
+_APOSTROPHE_RE = re.compile(
+    r"[\u2019\u2018\u02bc\u02bb\u02b9\u02c8`´‛′ʻʼ\uff07ˈʹ\u0027\u055a\ua78c]"
+)
+_DASH_RE = re.compile(
+    r"[\u2013\u2014\u2012\u2015\u2212\uFE58\uFE63\uFF0D\u00AD\u058A\u05BE\u1400\u1806\u2010\u2011]"
 )
 _ALLOWED_TEXT_RE = re.compile(r"[^a-zA-ZА-Яа-яЎўҚқҒғҲҳ0-9\s,.'\-?]+")
 
@@ -1576,7 +1560,8 @@ def normalize_text(
     resolved_decimal_mode = _resolve_decimal_mode(decimal_mode)
 
     normalized = _transliterate_uzbek_cyrillic(normalized)
-    normalized = normalized.translate(_APOSTROPHE_TRANSLATION)
+    normalized = _APOSTROPHE_RE.sub("'", normalized)
+    normalized = _DASH_RE.sub("-", normalized)
     normalized = _normalize_uzbek_abbreviations(normalized, stats=stats)
     before_fix = normalized
     normalized = _fix_uzbek_misspellings(normalized, stats)

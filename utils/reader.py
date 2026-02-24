@@ -87,17 +87,9 @@ _HF_ALLOWED_COLUMNS = (
     | set(_HF_OPTIONAL_KEYS)
 )
 
-_APOSTROPHE_TRANSLATION = str.maketrans(
-    {
-        "\u2019": "'",
-        "\u02bc": "'",
-        "\u02bb": "'",
-        "`": "'",
-        "´": "'",
-        "ʻ": "'",
-        "ʼ": "'",
-        "‛": "'",
-    }
+_APOSTROPHE_RE = re.compile(r"[\u2019\u02bc\u02bb`´ʻʼ‛]")
+_DASH_RE = re.compile(
+    r"[\u2013\u2014\u2012\u2015\u2212\uFE58\uFE63\uFF0D\u00AD\u058A\u05BE\u1400\u1806\u2010\u2011]"
 )
 _ALLOWED_TEXT_RE = re.compile(r"[^a-zA-ZА-Яа-яЎўҚқҒғҲҳ0-9\s,.'-]+")
 _MULTISPACE_RE = re.compile(r"\s+")
@@ -247,7 +239,8 @@ def normalize_text(text):
     normalized = _transliterate_uzbek_cyrillic(normalized)
 
     # Replace apostrophe-like characters with standard apostrophe
-    normalized = normalized.translate(_APOSTROPHE_TRANSLATION)
+    normalized = _APOSTROPHE_RE.sub("'", normalized)
+    normalized = _DASH_RE.sub("-", normalized)
 
     # This regex keeps Latin & Cyrillic letters, digits, spaces, comma, dot, apostrophe, dash
     normalized = _ALLOWED_TEXT_RE.sub("", normalized)

@@ -1345,12 +1345,21 @@ def iter_common_voice_items(
     seen_tsv: set = set()
     for variant in subset_variants or ["train", "validation", "test"]:
         tsv_file = transcript_dir / f"{variant}.tsv"
-        if not tsv_file.exists() or str(tsv_file) in seen_tsv:
+        csv_file = transcript_dir / f"{variant}.csv"
+        if tsv_file.exists() and str(tsv_file) not in seen_tsv:
+            data_file = tsv_file
+            file_delimiter = "\t"
+        elif csv_file.exists() and str(csv_file) not in seen_tsv:
+            data_file = csv_file
+            file_delimiter = ","
+        else:
             continue
-        seen_tsv.add(str(tsv_file))
-        print(f"  Processing TSV file: {tsv_file}")
-        with tsv_file.open("r", encoding="utf-8", newline="") as f:
-            header_keys, header_lookup, dict_rows = iter_tsv_dict_rows(f)
+        seen_tsv.add(str(data_file))
+        print(f"  Processing file: {data_file}")
+        with data_file.open("r", encoding="utf-8", newline="") as f:
+            header_keys, header_lookup, dict_rows = iter_tsv_dict_rows(
+                f, delimiter=file_delimiter
+            )
             if not header_keys:
                 continue
 
@@ -1368,7 +1377,7 @@ def iter_common_voice_items(
                 return None
 
             path_column = _select_column(
-                ["path", "audio", "audio_filename", "filename", "file"],
+                ["path", "audio", "audio_filename", "filename", "file_name", "file"],
                 default_idx=0,
             )
             text_column = _select_column(
@@ -1537,12 +1546,21 @@ def iter_fleurs_items(
     seen_tsv: set = set()
     for variant in split_candidates or ["train", "validation", "test"]:
         tsv_file = data_dir / f"{variant}.tsv"
-        if not tsv_file.exists() or str(tsv_file) in seen_tsv:
+        csv_file = data_dir / f"{variant}.csv"
+        if tsv_file.exists() and str(tsv_file) not in seen_tsv:
+            data_file = tsv_file
+            file_delimiter = "\t"
+        elif csv_file.exists() and str(csv_file) not in seen_tsv:
+            data_file = csv_file
+            file_delimiter = ","
+        else:
             continue
-        seen_tsv.add(str(tsv_file))
-        print(f"  Processing TSV file: {tsv_file}")
-        with tsv_file.open("r", encoding="utf-8", newline="") as f:
-            header_keys, header_lookup, dict_rows = iter_tsv_dict_rows(f)
+        seen_tsv.add(str(data_file))
+        print(f"  Processing file: {data_file}")
+        with data_file.open("r", encoding="utf-8", newline="") as f:
+            header_keys, header_lookup, dict_rows = iter_tsv_dict_rows(
+                f, delimiter=file_delimiter
+            )
             if not header_keys:
                 continue
 
@@ -1595,7 +1613,7 @@ def iter_fleurs_items(
                 return None
 
             audio_column = _resolve_column(
-                ["path", "filename", "file", "audio", "audio_filename"],
+                ["path", "filename", "file_name", "file", "audio", "audio_filename"],
                 default_idx=0,
             )
             text_column = _resolve_column(
