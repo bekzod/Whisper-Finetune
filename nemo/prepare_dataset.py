@@ -108,6 +108,7 @@ _HF_AUDIO_CANDIDATE_KEYS = (
 _HF_TEXT_CANDIDATE_KEYS = (
     "sentence",
     "text",
+    "text_latin",
     "transcription",
     "transcript",
     "label",
