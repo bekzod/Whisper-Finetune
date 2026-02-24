@@ -122,6 +122,7 @@ _HF_TEXT_CANDIDATE_KEYS = (
     "translation",
 )
 _DYNAMIC_REPAIR_REPOS = frozenset({"k2speech/FeruzaSpeech", "bekzod123/uzbek_voice_3"})
+_FORCED_DATASET_SEP_BY_REPO = {"k2speech/FeruzaSpeech": "\t"}
 
 _FILTERED_CLIENT_IDS = {
     "56ac8e86-b8c9-4879-a342-0eeb94f686fc",
@@ -3112,6 +3113,9 @@ def _process_single_spec(
                 load_kwargs["cache_dir"] = str(cache_path)
             if hf_token:
                 load_kwargs["use_auth_token"] = hf_token
+            forced_sep = _FORCED_DATASET_SEP_BY_REPO.get(spec.repo)
+            if forced_sep:
+                load_kwargs["sep"] = forced_sep
 
             try:
                 ds = _load_dataset_with_retries(
