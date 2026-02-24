@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import hashlib
 import importlib.util
 import inspect
@@ -80,7 +79,7 @@ DEFAULT_MAX_DURATION = 30.0
 DEFAULT_MIN_CHARS = 2
 DEFAULT_MAX_CHARS = 720
 DEFAULT_MIN_CHARS_PER_SEC = 2
-DEFAULT_MAX_CHARS_PER_SEC = 40
+DEFAULT_MAX_CHARS_PER_SEC = 35
 DEFAULT_SAMPLING_SEED = 3407
 DEFAULT_CACHE_ROOT = Path("/workspace")
 MAX_TAR_PATH_COMPONENT = 960
@@ -109,10 +108,8 @@ _HF_AUDIO_CANDIDATE_KEYS = (
 _HF_TEXT_CANDIDATE_KEYS = (
     "sentence",
     "text",
-    "text_latin",
     "transcription",
     "transcript",
-    "text_cyrillic",
     "label",
     "normalized_text",
     "norm_text",
@@ -121,8 +118,6 @@ _HF_TEXT_CANDIDATE_KEYS = (
     "target_text",
     "translation",
 )
-_DYNAMIC_REPAIR_REPOS = frozenset({"k2speech/FeruzaSpeech", "bekzod123/uzbek_voice_3"})
-_FORCED_DATASET_SEP_BY_REPO = {"k2speech/FeruzaSpeech": "\t"}
 
 _FILTERED_CLIENT_IDS = {
     "56ac8e86-b8c9-4879-a342-0eeb94f686fc",
@@ -468,12 +463,6 @@ def _is_missing_audiofolder_filename_error(exc: BaseException) -> bool:
     return "`file_name` or `*_file_name` must be present as dictionary key" in message
 
 
-def _is_unsupported_sep_error(exc: BaseException) -> bool:
-    """Detect loaders that don't accept csv/tsv separator kwargs."""
-    message = str(exc).lower()
-    return "unexpected keyword argument 'sep'" in message
-
-
 def _load_dataset_with_retries(
     repo: str,
     load_kwargs: Dict[str, Any],
@@ -598,358 +587,27 @@ def iter_dataset_specs(
             )
 
 
-_TIMESTAMP_SPAN_RE = re.compile(r"\[\s*\d+(?:\.\d+)?\s*-\s*\d+(?:\.\d+)?\s*\]")
-
-
-def _strip_word_timestamps(text: str) -> str:
-    cleaned = _TIMESTAMP_SPAN_RE.sub("", text or "")
-    return " ".join(cleaned.split())
-
-
-def _select_split_data_file(data_files: Any, split: str) -> Optional[str]:
-    if data_files is None:
-        return None
-    if isinstance(data_files, str):
-        return data_files
-    if isinstance(data_files, dict):
-        key_candidates: List[str] = [str(split), str(split).lower()]
-        split_lower = str(split).lower()
-        if split_lower == "dev":
-            key_candidates.append("validation")
-        elif split_lower == "validation":
-            key_candidates.append("dev")
-        for key in key_candidates:
-            value = data_files.get(key)
-            if value is not None:
-                picked = _select_split_data_file(value, split)
-                if picked:
-                    return picked
-        for value in data_files.values():
-            picked = _select_split_data_file(value, split)
-            if picked:
-                return picked
-        return None
-    if isinstance(data_files, IterableCollection) and not isinstance(
-        data_files, (str, bytes, bytearray)
-    ):
-        for value in data_files:
-            picked = _select_split_data_file(value, split)
-            if picked:
-                return picked
-    return None
-
-
-def _resolve_local_tabular_file(
-    repo: str,
-    data_files: Any,
-    split: str,
-) -> Optional[Path]:
-    candidates: List[str] = []
-    selected = _select_split_data_file(data_files, split)
-    if selected:
-        candidates.append(selected)
-    if repo:
-        candidates.append(str(repo).strip())
-
-    for raw_candidate in candidates:
-        if not raw_candidate:
-            continue
-        if "://" in raw_candidate and not raw_candidate.startswith("file://"):
-            continue
-        if raw_candidate.startswith("file://"):
-            raw_candidate = raw_candidate[7:]
-        candidate_path = Path(os.path.expanduser(raw_candidate))
-        if not candidate_path.is_absolute():
-            candidate_path = (Path.cwd() / candidate_path).resolve()
-        suffix = candidate_path.suffix.lower()
-        if suffix not in (".csv", ".tsv"):
-            continue
-        if candidate_path.is_file():
-            return candidate_path
-    return None
-
-
-def _split_variants(split: str) -> List[str]:
-    base = str(split).strip().lower()
-    variants: List[str] = []
-    if base:
-        variants.append(base)
-        if base == "dev":
-            variants.append("validation")
-        elif base == "validation":
-            variants.append("dev")
-        elif base == "validated":
-            variants.append("validation")
-        if base == "validation":
-            variants.append("validated")
-    return variants
-
-
-def _find_split_tabular_file(local_dir: Path, split: str) -> Optional[Path]:
-    variants = _split_variants(split) or [str(split).strip().lower()]
-    direct_parents = [local_dir, local_dir / "data", local_dir / "transcript"]
-    for variant in variants:
-        for parent in direct_parents:
-            for ext in (".tsv", ".csv"):
-                candidate = parent / f"{variant}{ext}"
-                if candidate.is_file():
-                    return candidate
-
-    for variant in variants:
-        for ext in (".tsv", ".csv"):
-            matches = sorted(local_dir.rglob(f"{variant}{ext}"))
-            if matches:
-                return matches[0]
-    return None
-
-
-def download_tabular_repo_snapshot(
-    repo_id: str,
-    cache_root: Path,
-    revision: Optional[str] = None,
-) -> Path:
-    repo_name = sanitize_name(repo_id)
-    local_dir = cache_root / repo_name
-    local_dir.mkdir(parents=True, exist_ok=True)
-    print(f"  Downloading tabular files for {repo_id} to {local_dir}")
-    snapshot_download(
-        repo_id=repo_id,
-        repo_type="dataset",
-        revision=revision,
-        local_dir=str(local_dir),
-        allow_patterns=[
-            "*.tsv",
-            "*.csv",
-            "**/*.tsv",
-            "**/*.csv",
-            "*.wav",
-            "*.mp3",
-            "*.flac",
-            "*.ogg",
-            "*.m4a",
-            "**/*.wav",
-            "**/*.mp3",
-            "**/*.flac",
-            "**/*.ogg",
-            "**/*.m4a",
-        ],
-    )
-    return local_dir
-
-
-def _repair_delimited_row(
-    row: Sequence[str],
-    *,
-    expected_len: int,
-    text_col_idx: int,
-    delimiter: str,
-) -> List[str]:
-    values = list(row)
-    if len(values) <= expected_len:
-        if len(values) < expected_len:
-            values.extend([""] * (expected_len - len(values)))
-        return values
-
-    suffix_count = max(0, expected_len - text_col_idx - 1)
-    prefix = values[:text_col_idx]
-    if suffix_count > 0:
-        suffix = values[-suffix_count:]
-        text_parts = values[text_col_idx : len(values) - suffix_count]
-    else:
-        suffix = []
-        text_parts = values[text_col_idx:]
-
-    merged_text = delimiter.join(
-        part.strip() for part in text_parts if part is not None
-    )
-    repaired = prefix + [merged_text] + suffix
-    if len(repaired) < expected_len:
-        repaired.extend([""] * (expected_len - len(repaired)))
-    elif len(repaired) > expected_len:
-        repaired = repaired[: expected_len - 1] + [
-            delimiter.join(repaired[expected_len - 1 :])
-        ]
-    return repaired
-
-
-def iter_local_tabular_items(
-    *,
-    data_file: Path,
-    audio_search_root: Optional[Path],
-    percentage: Optional[float],
-    seed: int,
-    limit: Optional[int],
-) -> Iterable[Dict[str, Any]]:
-    delimiter = "\t" if data_file.suffix.lower() == ".tsv" else ","
-    keep_prob = 1.0
-    if percentage is not None and percentage < 100:
-        keep_prob = max(0.0, min(1.0, float(percentage) / 100.0))
-    rng = random.Random(seed)
-    kept = 0
-    repaired_rows = 0
-
-    with data_file.open("r", encoding="utf-8", newline="") as handle:
-        reader = csv.reader(handle, delimiter=delimiter)
-        header = next(reader, None)
-        if not header:
-            return
-        header_keys = [str(col).strip().lower() for col in header]
-        header_lookup = {name: idx for idx, name in enumerate(header_keys)}
-
-        audio_col_idx = None
-        for col in (
-            "audio",
-            "audio_path",
-            "audio_filepath",
-            "filepath",
-            "file",
-            "filename",
-            "file_name",
-            "path",
-            "audio_file",
-        ):
-            idx = header_lookup.get(col)
-            if idx is not None:
-                audio_col_idx = idx
-                break
-
-        text_col_idx = None
-        for col in (
-            "text_latin",
-            "text",
-            "text_cyrillic",
-            "sentence",
-            "transcription",
-            "transcript",
-            "normalized_text",
-            "raw_text",
-            "target_text",
-            "translation",
-            "text_with_timestamp",
-        ):
-            idx = header_lookup.get(col)
-            if idx is not None:
-                text_col_idx = idx
-                break
-
-        timestamp_col_idx = header_lookup.get("text_with_timestamp")
-        if audio_col_idx is None or text_col_idx is None:
-            print(
-                f"  Warning: could not detect audio/text columns in {data_file}. "
-                f"Header: {header}"
-            )
-            return
-
-        for line_number, raw_row in enumerate(reader, start=2):
-            if not raw_row:
-                continue
-
-            row = [str(cell).strip() if cell is not None else "" for cell in raw_row]
-            expected_len = len(header_keys)
-            if len(row) != expected_len:
-                row = _repair_delimited_row(
-                    row,
-                    expected_len=expected_len,
-                    text_col_idx=text_col_idx,
-                    delimiter=delimiter,
-                )
-                repaired_rows += 1
-                if repaired_rows <= 3:
-                    print(
-                        f"  Info: repaired malformed row at {data_file}:{line_number} "
-                        f"(detected {len(raw_row)} columns, expected {expected_len})."
-                    )
-
-            audio_ref = row[audio_col_idx].strip()
-            if not audio_ref:
-                continue
-
-            text = row[text_col_idx].strip()
-            if (
-                not text
-                and timestamp_col_idx is not None
-                and timestamp_col_idx < len(row)
-            ):
-                text = _strip_word_timestamps(row[timestamp_col_idx])
-            if not text:
-                continue
-
-            if keep_prob < 1.0 and rng.random() > keep_prob:
-                continue
-
-            if os.path.isabs(audio_ref) and os.path.isfile(audio_ref):
-                resolved_audio = audio_ref
-            else:
-                resolved_audio = audio_ref
-                candidate_roots: List[Path] = [data_file.parent]
-                if audio_search_root is not None:
-                    candidate_roots.append(audio_search_root)
-                    candidate_roots.append(audio_search_root / "audio")
-                normalized_ref = audio_ref.replace("\\", os.sep).lstrip("./")
-                for root in candidate_roots:
-                    candidate = (root / normalized_ref).resolve()
-                    if candidate.is_file():
-                        resolved_audio = str(candidate)
-                        break
-
-                if resolved_audio == audio_ref:
-                    base_name = os.path.basename(normalized_ref)
-                    for root in candidate_roots:
-                        try:
-                            match = next(root.rglob(base_name))
-                        except (StopIteration, OSError):
-                            continue
-                        if match.is_file():
-                            resolved_audio = str(match.resolve())
-                            break
-
-            yield {"file_name": resolved_audio, "text": text}
-            kept += 1
-            if limit and kept >= limit:
-                break
-
-    if repaired_rows > 0:
-        print(f"  Info: repaired {repaired_rows} malformed rows in {data_file}.")
-
-
 def _flatten_transcript_text(
-    transcript: Any,
-    *,
-    dataset_label: Optional[str] = None,
-    audio_reference: Optional[str] = None,
+    transcript: Any, *, dataset_label: Optional[str] = None
 ) -> str:
     if transcript is None:
         return ""
     if isinstance(transcript, str):
-        return normalize_text(
-            transcript,
-            dataset_label=dataset_label,
-            audio_reference=audio_reference,
-        )
+        return normalize_text(transcript, dataset_label=dataset_label)
     if isinstance(transcript, dict):
         return normalize_text(
-            str(transcript.get("text", "")),
-            dataset_label=dataset_label,
-            audio_reference=audio_reference,
+            str(transcript.get("text", "")), dataset_label=dataset_label
         )
     if isinstance(transcript, Sequence) and not isinstance(
         transcript, (str, bytes, bytearray)
     ):
         parts: List[str] = []
         for segment in transcript:
-            flattened = _flatten_transcript_text(
-                segment,
-                dataset_label=dataset_label,
-                audio_reference=audio_reference,
-            )
+            flattened = _flatten_transcript_text(segment, dataset_label=dataset_label)
             if flattened:
                 parts.append(flattened)
         return " ".join(parts).strip()
-    return normalize_text(
-        str(transcript),
-        dataset_label=dataset_label,
-        audio_reference=audio_reference,
-    )
+    return normalize_text(str(transcript), dataset_label=dataset_label)
 
 
 def sanitize_name(name: str) -> str:
@@ -957,118 +615,24 @@ def sanitize_name(name: str) -> str:
     return cleaned or "dataset"
 
 
-def _extract_audio_reference_for_logging(
-    item: Dict[str, Any],
-    *,
-    audio_key: Optional[str] = None,
-) -> Optional[str]:
-    """Extract an audio path-like reference from an item for debug logging."""
-
-    def _extract_reference(blob: Any) -> Optional[str]:
-        if isinstance(blob, str):
-            reference = blob.strip()
-            if reference and _looks_like_audio_path(reference):
-                return reference
-            return None
-        if hasattr(os, "PathLike") and isinstance(blob, os.PathLike):
-            return os.fspath(blob)
-        if isinstance(blob, dict):
-            for key in (
-                "path",
-                "audio_path",
-                "audio_filepath",
-                "filename",
-                "file",
-                "file_name",
-            ):
-                value = blob.get(key)
-                if isinstance(value, str):
-                    reference = value.strip()
-                    if reference:
-                        return reference
-                if hasattr(os, "PathLike") and isinstance(value, os.PathLike):
-                    return os.fspath(value)
-        return None
-
-    if audio_key:
-        reference = _extract_reference(item.get(audio_key))
-        if reference:
-            return reference
-
-    for key in _HF_AUDIO_CANDIDATE_KEYS:
-        if key == audio_key or key not in item:
-            continue
-        reference = _extract_reference(item.get(key))
-        if reference:
-            return reference
-
-    for key, value in item.items():
-        if key == audio_key or key in _HF_AUDIO_CANDIDATE_KEYS:
-            continue
-        reference = _extract_reference(value)
-        if reference:
-            return reference
-    return None
-
-
 def pick_text(
     item: Dict[str, Any],
     text_key: Optional[str] = None,
     *,
     dataset_label: Optional[str] = None,
-    audio_reference: Optional[str] = None,
 ) -> str:
-    dynamic_repair_enabled = False
-    if dataset_label:
-        dataset_repo = str(dataset_label).split(":", 1)[0].strip()
-        dynamic_repair_enabled = dataset_repo in _DYNAMIC_REPAIR_REPOS
-
     if text_key:
         value = item.get(text_key)
         if value is not None:
-            text = _flatten_transcript_text(
-                value,
-                dataset_label=dataset_label,
-                audio_reference=audio_reference,
-            )
-            if (
-                str(text_key).lower() == "text_with_timestamp"
-                and dynamic_repair_enabled
-            ):
-                text = _strip_word_timestamps(text)
-            normalized = unicodedata.normalize("NFKC", text)
-            if normalized:
-                return normalized
+            text = _flatten_transcript_text(value, dataset_label=dataset_label)
+            return unicodedata.normalize("NFKC", text)
     if "sentences" in item and item["sentences"] is not None:
-        text = _flatten_transcript_text(
-            item["sentences"],
-            dataset_label=dataset_label,
-            audio_reference=audio_reference,
-        )
-        normalized = unicodedata.normalize("NFKC", text)
-        if normalized:
-            return normalized
+        text = _flatten_transcript_text(item["sentences"], dataset_label=dataset_label)
+        return unicodedata.normalize("NFKC", text)
     for key in _HF_TEXT_CANDIDATE_KEYS:
         if key in item and item[key] is not None:
-            text = _flatten_transcript_text(
-                item[key],
-                dataset_label=dataset_label,
-                audio_reference=audio_reference,
-            )
-            normalized = unicodedata.normalize("NFKC", text)
-            if normalized:
-                return normalized
-
-    if dynamic_repair_enabled and item.get("text_with_timestamp") is not None:
-        fallback_text = _flatten_transcript_text(
-            item.get("text_with_timestamp"),
-            dataset_label=dataset_label,
-            audio_reference=audio_reference,
-        )
-        fallback_text = _strip_word_timestamps(fallback_text)
-        normalized = unicodedata.normalize("NFKC", fallback_text)
-        if normalized:
-            return normalized
+            text = _flatten_transcript_text(item[key], dataset_label=dataset_label)
+            return unicodedata.normalize("NFKC", text)
     return ""
 
 
@@ -2035,9 +1599,7 @@ def iter_fleurs_items(
             )
             text_column = _resolve_column(
                 [
-                    "text_latin",
                     "text",
-                    "text_cyrillic",
                     "transcription",
                     "sentence",
                     "transcript",
@@ -2468,9 +2030,6 @@ class AudioProcessResult:
     duration: Optional[float] = None
     audio_path: Optional[Path] = None
     audio_hash: Optional[bytes] = None
-    mismatch_chars: Optional[int] = None
-    audio_reference: Optional[str] = None
-    chars_per_sec: Optional[float] = None
 
 
 def _validate_transcript(
@@ -2529,9 +2088,6 @@ def _process_audio_item(
     audio_key: Optional[str] = None,
 ) -> AudioProcessResult:
     arr, sr, ref = read_audio_from_item(item, audio_key=audio_key)
-    audio_reference = ref or _extract_audio_reference_for_logging(
-        item, audio_key=audio_key
-    )
     arr, sr = load_audio(
         arr,
         sr,
@@ -2557,25 +2113,13 @@ def _process_audio_item(
             chars_per_sec = non_space_chars / duration
             if min_chars_per_sec is not None and min_chars_per_sec > 0:
                 if chars_per_sec < min_chars_per_sec:
-                    required_chars = int(np.ceil(min_chars_per_sec * duration))
-                    mismatch_chars = max(1, required_chars - non_space_chars)
                     return AudioProcessResult(
-                        status="text_audio_mismatch",
-                        transcript=transcript,
-                        mismatch_chars=mismatch_chars,
-                        audio_reference=audio_reference,
-                        chars_per_sec=chars_per_sec,
+                        status="text_audio_mismatch", transcript=transcript
                     )
             if max_chars_per_sec is not None and max_chars_per_sec > 0:
                 if chars_per_sec > max_chars_per_sec:
-                    allowed_chars = int(np.floor(max_chars_per_sec * duration))
-                    mismatch_chars = max(1, non_space_chars - allowed_chars)
                     return AudioProcessResult(
-                        status="text_audio_mismatch",
-                        transcript=transcript,
-                        mismatch_chars=mismatch_chars,
-                        audio_reference=audio_reference,
-                        chars_per_sec=chars_per_sec,
+                        status="text_audio_mismatch", transcript=transcript
                     )
 
     audio_hash = None
@@ -2691,23 +2235,6 @@ def process_items(
             manifest_file.write("\n")
             counts["kept"] += 1
             return
-        if result.status == "text_audio_mismatch":
-            audio_reference = result.audio_reference or "<unknown>"
-            mismatch_chars = (
-                str(result.mismatch_chars)
-                if result.mismatch_chars is not None
-                else "unknown"
-            )
-            chars_per_sec = (
-                f"{result.chars_per_sec:.2f}"
-                if result.chars_per_sec is not None
-                else "unknown"
-            )
-            print(
-                "  text_audio_mismatch: "
-                f"audio={audio_reference} mismatch_chars={mismatch_chars} "
-                f"chars_per_sec={chars_per_sec}"
-            )
         if result.status in counts:
             counts[result.status] += 1
         else:
@@ -2720,16 +2247,7 @@ def process_items(
                 counts["failed"] += 1
                 continue
 
-            audio_reference = _extract_audio_reference_for_logging(
-                item,
-                audio_key=audio_key,
-            )
-            transcript = pick_text(
-                item,
-                text_key=text_key,
-                dataset_label=dataset_label,
-                audio_reference=audio_reference,
-            )
+            transcript = pick_text(item, text_key=text_key, dataset_label=dataset_label)
             skip_reason = _validate_transcript(
                 transcript, min_chars=min_chars, max_chars=max_chars
             )
@@ -2779,15 +2297,8 @@ def process_items(
                     progress.update(1)
                     return True
 
-                audio_reference = _extract_audio_reference_for_logging(
-                    item,
-                    audio_key=audio_key,
-                )
                 transcript = pick_text(
-                    item,
-                    text_key=text_key,
-                    dataset_label=dataset_label,
-                    audio_reference=audio_reference,
+                    item, text_key=text_key, dataset_label=dataset_label
                 )
                 skip_reason = _validate_transcript(
                     transcript, min_chars=min_chars, max_chars=max_chars
@@ -3051,58 +2562,6 @@ def _process_single_spec(
             f"[{group}] loading {spec.repo} split={split}"
             + (f" (subset={spec.subset})" if spec.subset else "")
         )
-        local_tabular_file: Optional[Path] = None
-        audio_search_root: Optional[Path] = None
-        if spec.repo in _DYNAMIC_REPAIR_REPOS:
-            local_tabular_file = _resolve_local_tabular_file(
-                spec.repo, spec.data_files, split
-            )
-            if local_tabular_file is not None:
-                audio_search_root = local_tabular_file.parent
-        if local_tabular_file is not None:
-            print(
-                f"  Using local tabular parser for {local_tabular_file} "
-                "(repairs malformed CSV/TSV rows dynamically)."
-            )
-            items = iter_local_tabular_items(
-                data_file=local_tabular_file,
-                audio_search_root=audio_search_root,
-                percentage=spec.percentage,
-                seed=spec.seed if spec.seed is not None else DEFAULT_SAMPLING_SEED,
-                limit=limit,
-            )
-            audio_root = output_dir / "audio" / group / dataset_id / split
-            counts = process_items(
-                items,
-                output_dir=output_dir,
-                audio_root=audio_root,
-                manifest_file=manifest_file,
-                desc=f"{dataset_id}:{split}",
-                sample_rate=sample_rate,
-                no_resample=no_resample,
-                mono=mono,
-                min_duration=min_duration,
-                max_duration=max_duration,
-                min_chars=min_chars,
-                max_chars=max_chars,
-                min_chars_per_sec=min_chars_per_sec,
-                max_chars_per_sec=max_chars_per_sec,
-                absolute_paths=absolute_paths,
-                frequency_collector=frequency_collector,
-                num_workers=num_workers,
-                dedupe_text_audio=dedupe_text_audio,
-                dedupe_index=dedupe_index,
-                dataset_label=f"{spec.repo}:{split}",
-            )
-            print(
-                f"[{group}] {spec.repo}:{split} "
-                f"total={counts['total']} kept={counts['kept']} deduped={counts['deduped']} "
-                f"no_text={counts['no_text']} no_audio={counts['no_audio']} "
-                f"dur_filtered={counts['dur_filtered']} text_filtered={counts['text_filtered']} "
-                f"text_audio_mismatch={counts['text_audio_mismatch']} "
-                f"failed={counts['failed']}"
-            )
-            continue
         with dataset_cache_context(cache_mode, cache_dir) as cache_path:
             load_kwargs: Dict[str, Any] = {"split": split}
             if spec.subset:
@@ -3119,11 +2578,7 @@ def _process_single_spec(
                 load_kwargs["cache_dir"] = str(cache_path)
             if hf_token:
                 load_kwargs["use_auth_token"] = hf_token
-            forced_sep = _FORCED_DATASET_SEP_BY_REPO.get(spec.repo)
-            if forced_sep:
-                load_kwargs["sep"] = forced_sep
 
-            ds = None
             try:
                 ds = _load_dataset_with_retries(
                     spec.repo,
@@ -3133,41 +2588,28 @@ def _process_single_spec(
                     hf_rate_limit_wait,
                 )
             except Exception as exc:
-                if forced_sep and _is_unsupported_sep_error(exc):
-                    retry_kwargs = dict(load_kwargs)
-                    retry_kwargs.pop("sep", None)
-                    ds = _load_dataset_with_retries(
-                        spec.repo,
-                        retry_kwargs,
-                        hf_load_retries,
-                        hf_retry_wait,
-                        hf_rate_limit_wait,
-                    )
-                if ds is not None:
-                    pass
-                else:
-                    can_try_parquet_fallback = (
-                        _is_missing_audiofolder_filename_error(exc)
-                        and not spec.revision
-                        and spec.data_dir is None
-                        and spec.data_files is None
-                    )
-                    if not can_try_parquet_fallback:
-                        raise
+                can_try_parquet_fallback = (
+                    _is_missing_audiofolder_filename_error(exc)
+                    and not spec.revision
+                    and spec.data_dir is None
+                    and spec.data_files is None
+                )
+                if not can_try_parquet_fallback:
+                    raise
 
-                    parquet_load_kwargs = dict(load_kwargs)
-                    parquet_load_kwargs["revision"] = "refs/convert/parquet"
-                    print(
-                        "  Encountered audiofolder metadata schema error; retrying "
-                        f"{spec.repo} from refs/convert/parquet."
-                    )
-                    ds = _load_dataset_with_retries(
-                        spec.repo,
-                        parquet_load_kwargs,
-                        hf_load_retries,
-                        hf_retry_wait,
-                        hf_rate_limit_wait,
-                    )
+                parquet_load_kwargs = dict(load_kwargs)
+                parquet_load_kwargs["revision"] = "refs/convert/parquet"
+                print(
+                    "  Encountered audiofolder metadata schema error; retrying "
+                    f"{spec.repo} from refs/convert/parquet."
+                )
+                ds = _load_dataset_with_retries(
+                    spec.repo,
+                    parquet_load_kwargs,
+                    hf_load_retries,
+                    hf_retry_wait,
+                    hf_rate_limit_wait,
+                )
             ds = _disable_audio_decoding(ds, label=f"{spec.repo}:{split}")
             filter_fn = get_filter_fn(spec.repo)
             if filter_fn is not None:
