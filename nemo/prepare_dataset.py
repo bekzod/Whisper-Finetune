@@ -468,6 +468,12 @@ def _is_missing_audiofolder_filename_error(exc: BaseException) -> bool:
     return "`file_name` or `*_file_name` must be present as dictionary key" in message
 
 
+def _is_unsupported_sep_error(exc: BaseException) -> bool:
+    """Detect loaders that don't accept csv/tsv separator kwargs."""
+    message = str(exc).lower()
+    return "unexpected keyword argument 'sep'" in message
+
+
 def _load_dataset_with_retries(
     repo: str,
     load_kwargs: Dict[str, Any],
@@ -3117,6 +3123,7 @@ def _process_single_spec(
             if forced_sep:
                 load_kwargs["sep"] = forced_sep
 
+            ds = None
             try:
                 ds = _load_dataset_with_retries(
                     spec.repo,
@@ -3126,28 +3133,41 @@ def _process_single_spec(
                     hf_rate_limit_wait,
                 )
             except Exception as exc:
-                can_try_parquet_fallback = (
-                    _is_missing_audiofolder_filename_error(exc)
-                    and not spec.revision
-                    and spec.data_dir is None
-                    and spec.data_files is None
-                )
-                if not can_try_parquet_fallback:
-                    raise
+                if forced_sep and _is_unsupported_sep_error(exc):
+                    retry_kwargs = dict(load_kwargs)
+                    retry_kwargs.pop("sep", None)
+                    ds = _load_dataset_with_retries(
+                        spec.repo,
+                        retry_kwargs,
+                        hf_load_retries,
+                        hf_retry_wait,
+                        hf_rate_limit_wait,
+                    )
+                if ds is not None:
+                    pass
+                else:
+                    can_try_parquet_fallback = (
+                        _is_missing_audiofolder_filename_error(exc)
+                        and not spec.revision
+                        and spec.data_dir is None
+                        and spec.data_files is None
+                    )
+                    if not can_try_parquet_fallback:
+                        raise
 
-                parquet_load_kwargs = dict(load_kwargs)
-                parquet_load_kwargs["revision"] = "refs/convert/parquet"
-                print(
-                    "  Encountered audiofolder metadata schema error; retrying "
-                    f"{spec.repo} from refs/convert/parquet."
-                )
-                ds = _load_dataset_with_retries(
-                    spec.repo,
-                    parquet_load_kwargs,
-                    hf_load_retries,
-                    hf_retry_wait,
-                    hf_rate_limit_wait,
-                )
+                    parquet_load_kwargs = dict(load_kwargs)
+                    parquet_load_kwargs["revision"] = "refs/convert/parquet"
+                    print(
+                        "  Encountered audiofolder metadata schema error; retrying "
+                        f"{spec.repo} from refs/convert/parquet."
+                    )
+                    ds = _load_dataset_with_retries(
+                        spec.repo,
+                        parquet_load_kwargs,
+                        hf_load_retries,
+                        hf_retry_wait,
+                        hf_rate_limit_wait,
+                    )
             ds = _disable_audio_decoding(ds, label=f"{spec.repo}:{split}")
             filter_fn = get_filter_fn(spec.repo)
             if filter_fn is not None:

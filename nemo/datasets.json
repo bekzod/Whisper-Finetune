@@ -5,6 +5,10 @@
       "splits": ["train", "test", "validation"]
     },
     {
+      "name": "bekzod123/uzbek_voice_3",
+      "splits": ["train", "validation"]
+    },
+    {
       "name": "bekzod123/uzbek_voice",
       "splits": ["train"]
     },
@@ -61,10 +65,6 @@
     {
       "name": "bekzod123/uzbek_voice_2",
       "splits": ["train", "validated", "test", "dev"]
-    },
-    {
-      "name": "bekzod123/uzbek_voice_3",
-      "splits": ["train", "validation"]
     },
     {
       "name": "bekzod123/uzbek_voice_4",
