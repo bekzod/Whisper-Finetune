@@ -66,10 +66,10 @@ model:
         min_speed_rate: 0.90
         max_speed_rate: 1.10
         num_rates: 5
-
-      #   # Codec/telephone-style distortion (requires sox available in environment)
-      #   transcode_aug:
-      #     prob: 0.1
+        
+        #   # Codec/telephone-style distortion (requires sox available in environment)
+      transcode_aug:
+        prob: 0.1
 
       # Random gain (loudness)
       gain:
