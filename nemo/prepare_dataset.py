@@ -3052,22 +3052,6 @@ def _process_single_spec(
             )
             if local_tabular_file is not None:
                 audio_search_root = local_tabular_file.parent
-            else:
-                try:
-                    with dataset_cache_context(cache_mode, cache_dir) as cache_path:
-                        snapshot_dir = download_tabular_repo_snapshot(
-                            spec.repo, cache_path, spec.revision
-                        )
-                        local_tabular_file = _find_split_tabular_file(
-                            snapshot_dir, split
-                        )
-                        if local_tabular_file is not None:
-                            audio_search_root = snapshot_dir
-                except Exception as exc:
-                    print(
-                        "  Warning: dynamic TSV/CSV snapshot parsing failed; "
-                        f"falling back to load_dataset. Error: {exc}"
-                    )
         if local_tabular_file is not None:
             print(
                 f"  Using local tabular parser for {local_tabular_file} "
