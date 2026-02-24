@@ -1,7 +1,7 @@
 {
   "train": [
     {
-      "name": "k2speech/FeruzaSpeech",
+      "name": "k2speech/FeruzaSpeech_parquet_dataset",
       "splits": ["train", "test", "validation"]
     },
     {
