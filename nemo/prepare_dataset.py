@@ -157,7 +157,6 @@ class DatasetSpec:
     data_dir: Optional[str]
     data_files: Optional[Any]
     trust_remote_code: Optional[bool]
-    load_from_cache_file: Optional[bool]
 
 
 def parse_args() -> argparse.Namespace:
@@ -586,7 +585,6 @@ def iter_dataset_specs(
                 data_dir=entry.get("data_dir"),
                 data_files=entry.get("data_files"),
                 trust_remote_code=entry.get("trust_remote_code"),
-                load_from_cache_file=entry.get("load_from_cache_file"),
             )
 
 
@@ -2602,10 +2600,6 @@ def _process_single_spec(
                 load_kwargs["data_files"] = spec.data_files
             if spec.trust_remote_code is not None:
                 load_kwargs["trust_remote_code"] = spec.trust_remote_code
-            if spec.load_from_cache_file is not None:
-                load_kwargs["download_mode"] = (
-                    None if spec.load_from_cache_file else "force_redownload"
-                )
             if cache_path:
                 load_kwargs["cache_dir"] = str(cache_path)
             if hf_token:

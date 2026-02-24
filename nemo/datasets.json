@@ -2,8 +2,7 @@
   "train": [
     {
       "name": "bekzod123/uzbek_voice_3",
-      "splits": ["train", "validation"],
-      "load_from_cache_file": true
+      "splits": ["train", "validation"]
     },
     {
       "name": "k2speech/FeruzaSpeech_parquet_dataset",
