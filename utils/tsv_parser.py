@@ -40,7 +40,7 @@ def _iter_tsv_rows(
     reader = csv.reader(
         file_obj,
         delimiter=delimiter,
-        quoting=csv.QUOTE_NONE,
+        quoting=csv.QUOTE_MINIMAL,
         skipinitialspace=False,
     )
     for raw_row in reader:
