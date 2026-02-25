@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
 import importlib.util
 import inspect
@@ -130,6 +131,176 @@ _FILTERED_CLIENT_IDS = {
     "10b29e87-bf01-4b16-bead-a044076f849b",
     "e3412d51-f079-4167-b3f9-311a976443ce",
 }
+
+_UZBEK_VOICE_3_REPO = "bekzod123/uzbek_voice_3"
+_UZBEK_VOICE_3_METADATA_PATH = Path(__file__).with_name("metadata.csv")
+_SPLIT_PREFIXES = {"train", "val"}
+_UZBEK_VOICE_3_METADATA_LOCK = threading.Lock()
+_UZBEK_VOICE_3_METADATA_INDEX: Optional[Tuple[Dict[str, str], Dict[str, str]]] = None
+_UZBEK_VOICE_3_METADATA_MISSING_WARNED = False
+
+
+def _normalize_audio_reference(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    ref = str(value).strip()
+    if not ref:
+        return None
+    ref = ref.replace("\\", "/")
+    ref = ref.lstrip("./")
+    ref = re.sub(r"/+", "/", ref)
+    return ref or None
+
+
+def _build_audio_ref_variants(ref: str) -> List[str]:
+    variants: List[str] = [ref]
+
+    if ref.startswith("audio/"):
+        variants.append(ref[len("audio/") :])
+    else:
+        variants.append(f"audio/{ref}")
+
+    path = PurePosixPath(ref)
+    name = path.name
+    if name:
+        variants.append(name)
+
+    parts = path.parts
+    if parts and parts[0] in _SPLIT_PREFIXES and len(parts) > 1:
+        tail = PurePosixPath(*parts[1:]).as_posix()
+        if tail:
+            variants.append(tail)
+            variants.append(f"audio/{tail}")
+    if len(parts) > 2 and parts[0] == "audio" and parts[1] in _SPLIT_PREFIXES:
+        tail = PurePosixPath(*parts[2:]).as_posix()
+        if tail:
+            variants.append(tail)
+
+    seen = set()
+    unique: List[str] = []
+    for variant in variants:
+        normalized = _normalize_audio_reference(variant)
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            unique.append(normalized)
+    return unique
+
+
+def _extract_item_audio_references(item: Dict[str, Any]) -> List[str]:
+    refs: List[str] = []
+
+    def _append(value: Any) -> None:
+        normalized = _normalize_audio_reference(value)
+        if normalized:
+            refs.append(normalized)
+
+    for key in (
+        "file_name",
+        "filename",
+        "path",
+        "file",
+        "audio_path",
+        "audio_filepath",
+        "audio_filename",
+    ):
+        value = item.get(key)
+        if isinstance(value, str):
+            _append(value)
+
+    audio_obj = item.get("audio")
+    if isinstance(audio_obj, dict):
+        for key in ("path", "file_name", "filename", "audio_filepath"):
+            _append(audio_obj.get(key))
+    elif isinstance(audio_obj, str):
+        _append(audio_obj)
+
+    seen = set()
+    unique: List[str] = []
+    for ref in refs:
+        if ref not in seen:
+            seen.add(ref)
+            unique.append(ref)
+    return unique
+
+
+def _load_uzbek_voice_3_metadata_index() -> Tuple[Dict[str, str], Dict[str, str]]:
+    global _UZBEK_VOICE_3_METADATA_INDEX
+    global _UZBEK_VOICE_3_METADATA_MISSING_WARNED
+    if _UZBEK_VOICE_3_METADATA_INDEX is not None:
+        return _UZBEK_VOICE_3_METADATA_INDEX
+
+    with _UZBEK_VOICE_3_METADATA_LOCK:
+        if _UZBEK_VOICE_3_METADATA_INDEX is not None:
+            return _UZBEK_VOICE_3_METADATA_INDEX
+
+        by_path: Dict[str, str] = {}
+        basename_candidates: Dict[str, set] = {}
+
+        if not _UZBEK_VOICE_3_METADATA_PATH.exists():
+            if not _UZBEK_VOICE_3_METADATA_MISSING_WARNED:
+                print(
+                    "  Warning: metadata.csv not found for "
+                    f"{_UZBEK_VOICE_3_REPO} at {_UZBEK_VOICE_3_METADATA_PATH}; "
+                    "falling back to dataset text columns."
+                )
+                _UZBEK_VOICE_3_METADATA_MISSING_WARNED = True
+            _UZBEK_VOICE_3_METADATA_INDEX = ({}, {})
+            return _UZBEK_VOICE_3_METADATA_INDEX
+
+        with _UZBEK_VOICE_3_METADATA_PATH.open(
+            "r", encoding="utf-8", newline=""
+        ) as handle:
+            reader = csv.DictReader(handle)
+            for row in reader:
+                file_name = _normalize_audio_reference(row.get("file_name"))
+                text = row.get("text")
+                if not file_name or text is None:
+                    continue
+                text = text.strip()
+                if not text:
+                    continue
+
+                basename = PurePosixPath(file_name).name
+                for variant in _build_audio_ref_variants(file_name):
+                    if not variant or variant == basename:
+                        continue
+                    by_path.setdefault(variant, text)
+                if basename:
+                    basename_candidates.setdefault(basename, set()).add(text)
+
+        by_basename: Dict[str, str] = {}
+        for basename, texts in basename_candidates.items():
+            if len(texts) == 1:
+                by_basename[basename] = next(iter(texts))
+
+        _UZBEK_VOICE_3_METADATA_INDEX = (by_path, by_basename)
+        return _UZBEK_VOICE_3_METADATA_INDEX
+
+
+def _pick_uzbek_voice_3_text(
+    item: Dict[str, Any], *, dataset_label: Optional[str]
+) -> Optional[str]:
+    if not dataset_label:
+        return None
+    repo = dataset_label.split(":", 1)[0].strip()
+    if repo != _UZBEK_VOICE_3_REPO:
+        return None
+
+    by_path, by_basename = _load_uzbek_voice_3_metadata_index()
+    if not by_path and not by_basename:
+        return None
+
+    for ref in _extract_item_audio_references(item):
+        for variant in _build_audio_ref_variants(ref):
+            matched = by_path.get(variant)
+            if matched:
+                return matched
+        basename = PurePosixPath(ref).name
+        if basename:
+            matched = by_basename.get(basename)
+            if matched:
+                return matched
+    return None
 
 
 def _filter_bekzod123_uzbek_voice(ex: Dict[str, Any]) -> bool:
@@ -622,6 +793,11 @@ def pick_text(
     *,
     dataset_label: Optional[str] = None,
 ) -> str:
+    override_text = _pick_uzbek_voice_3_text(item, dataset_label=dataset_label)
+    if override_text is not None:
+        text = _flatten_transcript_text(override_text, dataset_label=dataset_label)
+        return unicodedata.normalize("NFKC", text)
+
     if text_key:
         value = item.get(text_key)
         if value is not None:
@@ -2134,14 +2310,18 @@ def _process_audio_item(
             if min_chars_per_sec is not None and min_chars_per_sec > 0:
                 if chars_per_sec < min_chars_per_sec:
                     return AudioProcessResult(
-                        status="text_audio_mismatch", transcript=transcript,
-                        duration=duration, source_ref=ref,
+                        status="text_audio_mismatch",
+                        transcript=transcript,
+                        duration=duration,
+                        source_ref=ref,
                     )
             if max_chars_per_sec is not None and max_chars_per_sec > 0:
                 if chars_per_sec > max_chars_per_sec:
                     return AudioProcessResult(
-                        status="text_audio_mismatch", transcript=transcript,
-                        duration=duration, source_ref=ref,
+                        status="text_audio_mismatch",
+                        transcript=transcript,
+                        duration=duration,
+                        source_ref=ref,
                     )
 
     audio_hash = None
@@ -2260,7 +2440,9 @@ def process_items(
         if result.status == "text_audio_mismatch":
             dur_str = f"{result.duration:.2f}s" if result.duration is not None else "?"
             src = result.source_ref or "unknown"
-            print(f"  text_audio_mismatch: duration={dur_str} file={src} text={result.transcript!r}")
+            print(
+                f"  text_audio_mismatch: duration={dur_str} file={src} text={result.transcript!r}"
+            )
         if result.status in counts:
             counts[result.status] += 1
         else:
