@@ -235,6 +235,43 @@ parser.add_argument(
     help="Rebuild <data_root>/text_corpus/document.txt even if it already exists.",
 )
 parser.add_argument(
+    "--strip_urls_emails",
+    dest="strip_urls_emails",
+    action="store_true",
+    help="Strip URLs/emails from corpus before tokenizer training (disabled by default).",
+)
+# Backward-compatibility: old flag now maps to the default behavior.
+parser.add_argument(
+    "--no_strip_urls_emails",
+    dest="strip_urls_emails",
+    action="store_false",
+    help=argparse.SUPPRESS,
+)
+parser.add_argument(
+    "--no_strip_html_tags",
+    dest="strip_html_tags",
+    action="store_false",
+    help="Keep HTML/XML-like tags and entities in corpus instead of stripping them.",
+)
+parser.add_argument(
+    "--min_alpha_ratio",
+    type=float,
+    default=0.35,
+    help="Drop lines with low alphabetic-character ratio after cleanup (0 disables this filter).",
+)
+parser.add_argument(
+    "--max_single_char_word_ratio",
+    type=float,
+    default=0.8,
+    help="Drop lines dominated by one-letter words when ratio exceeds this value (1 disables this filter).",
+)
+parser.add_argument(
+    "--single_char_ratio_min_words",
+    type=int,
+    default=5,
+    help="Only apply single-char-word filter when at least this many word tokens are present.",
+)
+parser.add_argument(
     "--progress_log_interval",
     type=int,
     default=200000,
@@ -247,11 +284,23 @@ parser.add_argument(
     help="Number of cleaned lines to buffer before writing to disk.",
 )
 parser.add_argument("--log", action="store_true")
-parser.set_defaults(log=False, lower_case=True, spe_train_extremely_large_corpus=False)
+parser.set_defaults(
+    log=False,
+    lower_case=True,
+    spe_train_extremely_large_corpus=False,
+    strip_urls_emails=False,
+    strip_html_tags=True,
+)
 args = parser.parse_args()
 
 WHITESPACE_BEFORE_PUNCT_RE = re.compile(r"\s+([,.])")
 REPEATED_PUNCT_RE = re.compile(r"[,.]{2,}")
+URL_RE = re.compile(r"(?:https?://|www\.)\S+")
+EMAIL_RE = re.compile(r"\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b")
+HTML_TAG_RE = re.compile(r"<[^>\n]{1,256}>")
+HTML_ENTITY_RE = re.compile(r"&[A-Za-z][A-Za-z0-9#]{1,15};")
+MULTISPACE_RE = re.compile(r"\s+")
+WORD_WITH_LETTERS_RE = re.compile(r"[A-Za-zА-Яа-яЎўҚқҒғҲҳ']+")
 
 
 def __json_loads(raw: str):
@@ -262,6 +311,61 @@ def __json_loads(raw: str):
 
 def __keep_last_punct(match: re.Match) -> str:
     return match.group(0)[-1]
+
+
+def __strip_noise_segments(
+    text: str,
+    strip_urls_emails: bool,
+    strip_html_tags: bool,
+) -> str:
+    cleaned = text
+    if strip_urls_emails and ("http" in cleaned or "www." in cleaned or "@" in cleaned):
+        cleaned = URL_RE.sub(" ", cleaned)
+        cleaned = EMAIL_RE.sub(" ", cleaned)
+    if strip_html_tags and ("<" in cleaned or ">" in cleaned or "&" in cleaned):
+        cleaned = HTML_TAG_RE.sub(" ", cleaned)
+        cleaned = HTML_ENTITY_RE.sub(" ", cleaned)
+    if cleaned != text:
+        cleaned = MULTISPACE_RE.sub(" ", cleaned).strip()
+    return cleaned
+
+
+def __line_quality_drop_reason(
+    cleaned: str,
+    min_alpha_ratio: float,
+    max_single_char_word_ratio: float,
+    single_char_ratio_min_words: int,
+) -> Optional[str]:
+    compact = cleaned.replace(" ", "")
+    if not compact:
+        return "empty"
+
+    if min_alpha_ratio > 0.0:
+        alpha_chars = 0
+        for char in compact:
+            if char.isalpha():
+                alpha_chars += 1
+        if alpha_chars / len(compact) < min_alpha_ratio:
+            return "low_alpha_ratio"
+
+    if max_single_char_word_ratio < 1.0 and single_char_ratio_min_words > 0:
+        words = WORD_WITH_LETTERS_RE.findall(cleaned.lower())
+        word_count = len(words)
+        if word_count >= single_char_ratio_min_words:
+            one_letter_words = 0
+            for word in words:
+                letter_count = 0
+                for char in word:
+                    if char != "'":
+                        letter_count += 1
+                if letter_count <= 1:
+                    one_letter_words += 1
+            if word_count > 0 and (
+                one_letter_words / word_count > max_single_char_word_ratio
+            ):
+                return "single_char_heavy"
+
+    return None
 
 
 def __clean_line(text: str, normalize: bool) -> str:
@@ -283,6 +387,11 @@ def __build_document_from_manifests(
     min_chars: int,
     max_chars: int,
     force_rebuild_text_corpus: bool,
+    strip_urls_emails: bool,
+    strip_html_tags: bool,
+    min_alpha_ratio: float,
+    max_single_char_word_ratio: float,
+    single_char_ratio_min_words: int,
     progress_log_interval: int,
     write_buffer_lines: int,
 ):
@@ -313,6 +422,9 @@ def __build_document_from_manifests(
         "empty": 0,
         "too_short": 0,
         "too_long": 0,
+        "low_alpha_ratio": 0,
+        "single_char_heavy": 0,
+        "noise_segments_stripped": 0,
         "overrepresented": 0,
     }
     buffer: List[str] = []
@@ -332,8 +444,18 @@ def __build_document_from_manifests(
                     stats["total"] += 1
                     source_seen += 1
                     item = __json_loads(line)
-                    text = item.get("text", item.get("normalized_text", ""))
-                    cleaned = __clean_line(text, normalize_text_corpus)
+                    raw_text_value = item.get("text")
+                    if raw_text_value is None:
+                        raw_text_value = item.get("normalized_text", "")
+                    raw_text = str(raw_text_value) if raw_text_value is not None else ""
+                    precleaned = __strip_noise_segments(
+                        raw_text,
+                        strip_urls_emails=strip_urls_emails,
+                        strip_html_tags=strip_html_tags,
+                    )
+                    if precleaned != raw_text:
+                        stats["noise_segments_stripped"] += 1
+                    cleaned = __clean_line(precleaned, normalize_text_corpus)
 
                     if not cleaned:
                         stats["empty"] += 1
@@ -345,6 +467,16 @@ def __build_document_from_manifests(
 
                     if max_len and len(cleaned) > max_len:
                         stats["too_long"] += 1
+                        continue
+
+                    drop_reason = __line_quality_drop_reason(
+                        cleaned=cleaned,
+                        min_alpha_ratio=min_alpha_ratio,
+                        max_single_char_word_ratio=max_single_char_word_ratio,
+                        single_char_ratio_min_words=single_char_ratio_min_words,
+                    )
+                    if drop_reason is not None:
+                        stats[drop_reason] += 1
                         continue
 
                     if dedupe_enabled:
@@ -391,13 +523,17 @@ def __build_document_from_manifests(
 
         logging.info(
             "Finished extracting manifests. Total lines: %d, written: %d, dropped empty: %d, "
-            "dropped too short: %d, dropped too long: %d, dropped duplicate cap: %d, unique kept: %d, "
+            "dropped too short: %d, dropped too long: %d, dropped low alpha ratio: %d, "
+            "dropped single-char-heavy: %d, stripped noise segments: %d, dropped duplicate cap: %d, unique kept: %d, "
             "elapsed: %.2fs, throughput: %.1f lines/s",
             stats["total"],
             stats["written"],
             stats["empty"],
             stats["too_short"],
             stats["too_long"],
+            stats["low_alpha_ratio"],
+            stats["single_char_heavy"],
+            stats["noise_segments_stripped"],
             stats["overrepresented"],
             unique_kept,
             total_elapsed,
@@ -414,6 +550,11 @@ def __build_document_from_data_files(
     min_chars: int,
     max_chars: int,
     force_rebuild_text_corpus: bool,
+    strip_urls_emails: bool,
+    strip_html_tags: bool,
+    min_alpha_ratio: float,
+    max_single_char_word_ratio: float,
+    single_char_ratio_min_words: int,
     progress_log_interval: int,
     write_buffer_lines: int,
 ):
@@ -444,6 +585,9 @@ def __build_document_from_data_files(
         "empty": 0,
         "too_short": 0,
         "too_long": 0,
+        "low_alpha_ratio": 0,
+        "single_char_heavy": 0,
+        "noise_segments_stripped": 0,
         "overrepresented": 0,
     }
     buffer: List[str] = []
@@ -462,7 +606,15 @@ def __build_document_from_data_files(
                 for line in in_reader:
                     stats["total"] += 1
                     source_seen += 1
-                    cleaned = __clean_line(line.rstrip("\n"), normalize_text_corpus)
+                    raw_text = line.rstrip("\n")
+                    precleaned = __strip_noise_segments(
+                        raw_text,
+                        strip_urls_emails=strip_urls_emails,
+                        strip_html_tags=strip_html_tags,
+                    )
+                    if precleaned != raw_text:
+                        stats["noise_segments_stripped"] += 1
+                    cleaned = __clean_line(precleaned, normalize_text_corpus)
 
                     if not cleaned:
                         stats["empty"] += 1
@@ -474,6 +626,16 @@ def __build_document_from_data_files(
 
                     if max_len and len(cleaned) > max_len:
                         stats["too_long"] += 1
+                        continue
+
+                    drop_reason = __line_quality_drop_reason(
+                        cleaned=cleaned,
+                        min_alpha_ratio=min_alpha_ratio,
+                        max_single_char_word_ratio=max_single_char_word_ratio,
+                        single_char_ratio_min_words=single_char_ratio_min_words,
+                    )
+                    if drop_reason is not None:
+                        stats[drop_reason] += 1
                         continue
 
                     if dedupe_enabled:
@@ -520,13 +682,17 @@ def __build_document_from_data_files(
 
         logging.info(
             "Finished extracting text files. Total lines: %d, written: %d, dropped empty: %d, "
-            "dropped too short: %d, dropped too long: %d, dropped duplicate cap: %d, unique kept: %d, "
+            "dropped too short: %d, dropped too long: %d, dropped low alpha ratio: %d, "
+            "dropped single-char-heavy: %d, stripped noise segments: %d, dropped duplicate cap: %d, unique kept: %d, "
             "elapsed: %.2fs, throughput: %.1f lines/s",
             stats["total"],
             stats["written"],
             stats["empty"],
             stats["too_short"],
             stats["too_long"],
+            stats["low_alpha_ratio"],
+            stats["single_char_heavy"],
+            stats["noise_segments_stripped"],
             stats["overrepresented"],
             unique_kept,
             total_elapsed,
@@ -674,6 +840,11 @@ def main():
     min_chars = args.min_chars
     max_chars = args.max_chars
     force_rebuild_text_corpus = args.force_rebuild_text_corpus
+    strip_urls_emails = args.strip_urls_emails
+    strip_html_tags = args.strip_html_tags
+    min_alpha_ratio = max(0.0, min(1.0, args.min_alpha_ratio))
+    max_single_char_word_ratio = max(0.0, min(1.0, args.max_single_char_word_ratio))
+    single_char_ratio_min_words = max(0, args.single_char_ratio_min_words)
     progress_log_interval = args.progress_log_interval
     write_buffer_lines = args.write_buffer_lines
 
@@ -688,11 +859,16 @@ def main():
         )
 
     logging.info(
-        "Starting tokenizer preparation (tokenizer=%s, vocab=%d, normalize=%s, dedupe_cap=%d)",
+        "Starting tokenizer preparation (tokenizer=%s, vocab=%d, normalize=%s, dedupe_cap=%d, "
+        "strip_urls_emails=%s, strip_html_tags=%s, min_alpha_ratio=%.2f, max_single_char_word_ratio=%.2f)",
         tokenizer,
         vocab_size,
         normalize_text_corpus,
         max_line_occurrence,
+        strip_urls_emails,
+        strip_html_tags,
+        min_alpha_ratio,
+        max_single_char_word_ratio,
     )
 
     if manifests:
@@ -704,6 +880,11 @@ def main():
             min_chars=min_chars,
             max_chars=max_chars,
             force_rebuild_text_corpus=force_rebuild_text_corpus,
+            strip_urls_emails=strip_urls_emails,
+            strip_html_tags=strip_html_tags,
+            min_alpha_ratio=min_alpha_ratio,
+            max_single_char_word_ratio=max_single_char_word_ratio,
+            single_char_ratio_min_words=single_char_ratio_min_words,
             progress_log_interval=progress_log_interval,
             write_buffer_lines=write_buffer_lines,
         )
@@ -716,6 +897,11 @@ def main():
             min_chars=min_chars,
             max_chars=max_chars,
             force_rebuild_text_corpus=force_rebuild_text_corpus,
+            strip_urls_emails=strip_urls_emails,
+            strip_html_tags=strip_html_tags,
+            min_alpha_ratio=min_alpha_ratio,
+            max_single_char_word_ratio=max_single_char_word_ratio,
+            single_char_ratio_min_words=single_char_ratio_min_words,
             progress_log_interval=progress_log_interval,
             write_buffer_lines=write_buffer_lines,
         )
