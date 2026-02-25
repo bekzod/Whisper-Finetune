@@ -100,6 +100,7 @@ import json
 import logging
 import os
 import re
+import time
 from collections import Counter
 from typing import Dict, List, Optional
 
@@ -108,6 +109,11 @@ from nemo.collections.common.tokenizers.sentencepiece_tokenizer import create_sp
 from nemo.utils.data_utils import DataStoreObject
 
 from utils import normalize_text
+
+try:
+    import orjson
+except ImportError:
+    orjson = None
 
 parser = argparse.ArgumentParser(description="Create tokenizer")
 group = parser.add_mutually_exclusive_group(required=True)
@@ -228,15 +234,44 @@ parser.add_argument(
     action="store_true",
     help="Rebuild <data_root>/text_corpus/document.txt even if it already exists.",
 )
+parser.add_argument(
+    "--progress_log_interval",
+    type=int,
+    default=200000,
+    help="Log progress every N processed lines while building text corpus (0 disables periodic progress logs).",
+)
+parser.add_argument(
+    "--write_buffer_lines",
+    type=int,
+    default=10000,
+    help="Number of cleaned lines to buffer before writing to disk.",
+)
 parser.add_argument("--log", action="store_true")
 parser.set_defaults(log=False, lower_case=True, spe_train_extremely_large_corpus=False)
 args = parser.parse_args()
 
+WHITESPACE_BEFORE_PUNCT_RE = re.compile(r"\s+([,.])")
+REPEATED_PUNCT_RE = re.compile(r"[,.]{2,}")
+
+
+def __json_loads(raw: str):
+    if orjson is not None:
+        return orjson.loads(raw)
+    return json.loads(raw)
+
+
+def __keep_last_punct(match: re.Match) -> str:
+    return match.group(0)[-1]
+
 
 def __clean_line(text: str, normalize: bool) -> str:
     cleaned = normalize_text(text) if normalize else str(text).strip()
-    cleaned = re.sub(r"\s+([,.])", r"\1", cleaned)
-    cleaned = re.sub(r"[,.]{2,}", lambda match: match.group(0)[-1], cleaned)
+    if not cleaned:
+        return ""
+    if (" " in cleaned) and ("," in cleaned or "." in cleaned):
+        cleaned = WHITESPACE_BEFORE_PUNCT_RE.sub(r"\1", cleaned)
+    if ("," in cleaned or "." in cleaned) and REPEATED_PUNCT_RE.search(cleaned):
+        cleaned = REPEATED_PUNCT_RE.sub(__keep_last_punct, cleaned)
     return cleaned.strip()
 
 
@@ -248,6 +283,8 @@ def __build_document_from_manifests(
     min_chars: int,
     max_chars: int,
     force_rebuild_text_corpus: bool,
+    progress_log_interval: int,
+    write_buffer_lines: int,
 ):
     if "," in manifests:
         manifests = manifests.split(",")
@@ -255,8 +292,7 @@ def __build_document_from_manifests(
         manifests = [manifests]
 
     document_dir = os.path.join(data_root, "text_corpus")
-    if not os.path.exists(document_dir):
-        os.makedirs(document_dir)
+    os.makedirs(document_dir, exist_ok=True)
 
     document_path = os.path.join(document_dir, "document.txt")
 
@@ -268,7 +304,9 @@ def __build_document_from_manifests(
 
     min_len = max(min_chars, 0)
     max_len = max_chars if max_chars > 0 else 0
-    line_counts: Counter = Counter()
+    dedupe_enabled = max_line_occurrence > 0
+    line_counts: Optional[Counter] = Counter() if dedupe_enabled else None
+    write_buffer_lines = max(1, write_buffer_lines)
     stats: Dict[str, int] = {
         "total": 0,
         "written": 0,
@@ -277,15 +315,23 @@ def __build_document_from_manifests(
         "too_long": 0,
         "overrepresented": 0,
     }
+    buffer: List[str] = []
+    total_start_time = time.perf_counter()
 
-    with open(document_path, "w", encoding="utf-8") as out_writer:
+    with open(
+        document_path, "w", encoding="utf-8", buffering=1024 * 1024
+    ) as out_writer:
         for manifest in manifests:
+            source_start = time.perf_counter()
+            source_seen = 0
+            source_written = 0
             with open(
                 DataStoreObject(manifest).get(), "r", encoding="utf-8"
             ) as in_reader:
                 for line in in_reader:
                     stats["total"] += 1
-                    item = json.loads(line)
+                    source_seen += 1
+                    item = __json_loads(line)
                     text = item.get("text", item.get("normalized_text", ""))
                     cleaned = __clean_line(text, normalize_text_corpus)
 
@@ -301,29 +347,61 @@ def __build_document_from_manifests(
                         stats["too_long"] += 1
                         continue
 
-                    if (
-                        max_line_occurrence > 0
-                        and line_counts[cleaned] >= max_line_occurrence
-                    ):
-                        stats["overrepresented"] += 1
-                        continue
+                    if dedupe_enabled:
+                        current_count = line_counts[cleaned]
+                        if current_count >= max_line_occurrence:
+                            stats["overrepresented"] += 1
+                            continue
+                        line_counts[cleaned] = current_count + 1
 
-                    line_counts[cleaned] += 1
-                    out_writer.write(cleaned + "\n")
+                    buffer.append(cleaned + "\n")
+                    if len(buffer) >= write_buffer_lines:
+                        out_writer.writelines(buffer)
+                        buffer.clear()
                     stats["written"] += 1
+                    source_written += 1
 
-            logging.info(f"Finished extracting manifest : {manifest}")
+                    if (
+                        progress_log_interval > 0
+                        and stats["total"] % progress_log_interval == 0
+                    ):
+                        elapsed = max(time.perf_counter() - total_start_time, 1e-6)
+                        logging.info(
+                            "Progress: processed=%d written=%d dropped=%d rate=%.1f lines/s",
+                            stats["total"],
+                            stats["written"],
+                            stats["total"] - stats["written"],
+                            stats["total"] / elapsed,
+                        )
+
+            if buffer:
+                out_writer.writelines(buffer)
+                buffer.clear()
+
+            logging.info(
+                "Finished extracting manifest: %s (seen=%d, written=%d, elapsed=%.2fs)",
+                manifest,
+                source_seen,
+                source_written,
+                time.perf_counter() - source_start,
+            )
+
+        total_elapsed = max(time.perf_counter() - total_start_time, 1e-6)
+        unique_kept = len(line_counts) if line_counts is not None else 0
 
         logging.info(
             "Finished extracting manifests. Total lines: %d, written: %d, dropped empty: %d, "
-            "dropped too short: %d, dropped too long: %d, dropped duplicate cap: %d, unique kept: %d",
+            "dropped too short: %d, dropped too long: %d, dropped duplicate cap: %d, unique kept: %d, "
+            "elapsed: %.2fs, throughput: %.1f lines/s",
             stats["total"],
             stats["written"],
             stats["empty"],
             stats["too_short"],
             stats["too_long"],
             stats["overrepresented"],
-            len(line_counts),
+            unique_kept,
+            total_elapsed,
+            stats["total"] / total_elapsed,
         )
     return document_path
 
@@ -336,6 +414,8 @@ def __build_document_from_data_files(
     min_chars: int,
     max_chars: int,
     force_rebuild_text_corpus: bool,
+    progress_log_interval: int,
+    write_buffer_lines: int,
 ):
     if "," in data_files:
         data_files = data_files.split(",")
@@ -343,8 +423,7 @@ def __build_document_from_data_files(
         data_files = [data_files]
 
     document_dir = os.path.join(data_root, "text_corpus")
-    if not os.path.exists(document_dir):
-        os.makedirs(document_dir)
+    os.makedirs(document_dir, exist_ok=True)
 
     document_path = os.path.join(document_dir, "document.txt")
 
@@ -356,7 +435,9 @@ def __build_document_from_data_files(
 
     min_len = max(min_chars, 0)
     max_len = max_chars if max_chars > 0 else 0
-    line_counts: Counter = Counter()
+    dedupe_enabled = max_line_occurrence > 0
+    line_counts: Optional[Counter] = Counter() if dedupe_enabled else None
+    write_buffer_lines = max(1, write_buffer_lines)
     stats: Dict[str, int] = {
         "total": 0,
         "written": 0,
@@ -365,14 +446,22 @@ def __build_document_from_data_files(
         "too_long": 0,
         "overrepresented": 0,
     }
+    buffer: List[str] = []
+    total_start_time = time.perf_counter()
 
-    with open(document_path, "w", encoding="utf-8") as out_writer:
+    with open(
+        document_path, "w", encoding="utf-8", buffering=1024 * 1024
+    ) as out_writer:
         for data_file in data_files:
+            source_start = time.perf_counter()
+            source_seen = 0
+            source_written = 0
             with open(
                 DataStoreObject(data_file).get(), "r", encoding="utf-8"
             ) as in_reader:
                 for line in in_reader:
                     stats["total"] += 1
+                    source_seen += 1
                     cleaned = __clean_line(line.rstrip("\n"), normalize_text_corpus)
 
                     if not cleaned:
@@ -387,29 +476,61 @@ def __build_document_from_data_files(
                         stats["too_long"] += 1
                         continue
 
-                    if (
-                        max_line_occurrence > 0
-                        and line_counts[cleaned] >= max_line_occurrence
-                    ):
-                        stats["overrepresented"] += 1
-                        continue
+                    if dedupe_enabled:
+                        current_count = line_counts[cleaned]
+                        if current_count >= max_line_occurrence:
+                            stats["overrepresented"] += 1
+                            continue
+                        line_counts[cleaned] = current_count + 1
 
-                    line_counts[cleaned] += 1
-                    out_writer.write(cleaned + "\n")
+                    buffer.append(cleaned + "\n")
+                    if len(buffer) >= write_buffer_lines:
+                        out_writer.writelines(buffer)
+                        buffer.clear()
                     stats["written"] += 1
+                    source_written += 1
 
-            logging.info(f"Finished extracting data file : {data_file}")
+                    if (
+                        progress_log_interval > 0
+                        and stats["total"] % progress_log_interval == 0
+                    ):
+                        elapsed = max(time.perf_counter() - total_start_time, 1e-6)
+                        logging.info(
+                            "Progress: processed=%d written=%d dropped=%d rate=%.1f lines/s",
+                            stats["total"],
+                            stats["written"],
+                            stats["total"] - stats["written"],
+                            stats["total"] / elapsed,
+                        )
+
+            if buffer:
+                out_writer.writelines(buffer)
+                buffer.clear()
+
+            logging.info(
+                "Finished extracting data file: %s (seen=%d, written=%d, elapsed=%.2fs)",
+                data_file,
+                source_seen,
+                source_written,
+                time.perf_counter() - source_start,
+            )
+
+        total_elapsed = max(time.perf_counter() - total_start_time, 1e-6)
+        unique_kept = len(line_counts) if line_counts is not None else 0
 
         logging.info(
             "Finished extracting text files. Total lines: %d, written: %d, dropped empty: %d, "
-            "dropped too short: %d, dropped too long: %d, dropped duplicate cap: %d, unique kept: %d",
+            "dropped too short: %d, dropped too long: %d, dropped duplicate cap: %d, unique kept: %d, "
+            "elapsed: %.2fs, throughput: %.1f lines/s",
             stats["total"],
             stats["written"],
             stats["empty"],
             stats["too_short"],
             stats["too_long"],
             stats["overrepresented"],
-            len(line_counts),
+            unique_kept,
+            total_elapsed,
+            stats["total"] / total_elapsed,
         )
     return document_path
 
@@ -529,6 +650,7 @@ def __process_data(
 
 
 def main():
+    start_time = time.perf_counter()
     data_root = args.data_root
     manifests = args.manifest
     data_file = args.data_file
@@ -552,12 +674,26 @@ def main():
     min_chars = args.min_chars
     max_chars = args.max_chars
     force_rebuild_text_corpus = args.force_rebuild_text_corpus
+    progress_log_interval = args.progress_log_interval
+    write_buffer_lines = args.write_buffer_lines
 
     if not os.path.exists(data_root):
         os.makedirs(data_root)
 
     if args.log:
-        logging.basicConfig(level=logging.INFO)
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s | %(levelname)s | %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+
+    logging.info(
+        "Starting tokenizer preparation (tokenizer=%s, vocab=%d, normalize=%s, dedupe_cap=%d)",
+        tokenizer,
+        vocab_size,
+        normalize_text_corpus,
+        max_line_occurrence,
+    )
 
     if manifests:
         text_corpus_path = __build_document_from_manifests(
@@ -568,6 +704,8 @@ def main():
             min_chars=min_chars,
             max_chars=max_chars,
             force_rebuild_text_corpus=force_rebuild_text_corpus,
+            progress_log_interval=progress_log_interval,
+            write_buffer_lines=write_buffer_lines,
         )
     else:
         text_corpus_path = __build_document_from_data_files(
@@ -578,6 +716,8 @@ def main():
             min_chars=min_chars,
             max_chars=max_chars,
             force_rebuild_text_corpus=force_rebuild_text_corpus,
+            progress_log_interval=progress_log_interval,
+            write_buffer_lines=write_buffer_lines,
         )
     tokenizer_path = __process_data(
         text_corpus_path,
@@ -602,7 +742,7 @@ def main():
     )
 
     print("Serialized tokenizer at location :", tokenizer_path)
-    logging.info("Done!")
+    logging.info("Done! Total elapsed: %.2fs", time.perf_counter() - start_time)
 
 
 if __name__ == "__main__":
