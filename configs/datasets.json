@@ -27,11 +27,6 @@
       "splits": ["train"]
     },
     {
-      "name": "google/fleurs",
-      "subset": "uz_uz",
-      "splits": ["train", "test", "dev"]
-    },
-    {
       "name": "bekzod123/uzbek_voice",
       "splits": ["train"]
     },
