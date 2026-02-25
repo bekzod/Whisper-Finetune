@@ -34,7 +34,7 @@ model:
   train_ds:
     manifest_filepath: ./output/train_manifest.jsonl
     sample_rate: ${model.sample_rate}
-    batch_size: 24
+    batch_size: 32
     shuffle: true
     num_workers: 24
     pin_memory: true
@@ -100,7 +100,7 @@ model:
     manifest_filepath: ./output/eval_manifest.jsonl
     sample_rate: ${model.sample_rate}
     # Keep validation batch conservative since utterance lengths are often long/variable.
-    batch_size: 32
+    batch_size: 44
     shuffle: false
     use_start_end_token: false
     num_workers: 24
@@ -220,7 +220,7 @@ model:
     # However, to preserve memory, this ratio can be 1:8 or even 1:16.
     # Extreme case of 1:B (i.e. fused_batch_size=1) should be avoided as training speed would be very slow.
     fuse_loss_wer: true
-    fused_batch_size: 16
+    fused_batch_size: 18
 
     jointnet:
       joint_hidden: ${model.model_defaults.joint_hidden}
