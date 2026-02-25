@@ -911,6 +911,13 @@ def _number_to_spoken_uzbek(value: int) -> str:
     while number > 0:
         number, chunk = divmod(number, 1000)
         if chunk:
+            # Fall back to digit-wise pronunciation when value exceeds the
+            # highest named Uzbek scale supported by this normalizer.
+            if scale_idx >= len(_UZBEK_NUMBER_SCALES):
+                digits_spoken = _digits_to_spoken_uzbek(str(abs(value)))
+                if is_negative:
+                    return f"minus {digits_spoken}"
+                return digits_spoken
             chunk_words = _uzbek_under_thousand(chunk)
             scale = _UZBEK_NUMBER_SCALES[scale_idx]
             parts.append(f"{chunk_words} {scale}".strip())
