@@ -54,11 +54,6 @@
       "splits": ["train"]
     },
     {
-      "name": "google/fleurs",
-      "subset": "uz_uz",
-      "splits": ["train", "test", "dev"]
-    },
-    {
       "name": "DavronSherbaev/uzbekvoice-filtered",
       "splits": ["train", "validate"]
     },
