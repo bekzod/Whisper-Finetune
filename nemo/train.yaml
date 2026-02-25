@@ -120,7 +120,7 @@ model:
   # /scripts/tokenizers/process_asr_text_tokenizer.py
   # We recommend to use vocab size of 1024 with SPE Unigram for most languages
   tokenizer:
-    dir: ./tokenizer_spe_bpe_v2048
+    dir: ./tokenizer_spe_bpe_v1024
     type: bpe # bpe (SentencePiece) or wpe (WordPiece)
 
   preprocessor:
