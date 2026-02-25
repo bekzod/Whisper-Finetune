@@ -102,7 +102,7 @@ import os
 import re
 import time
 from collections import Counter
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import tokenizers
 from nemo.collections.common.tokenizers.sentencepiece_tokenizer import create_spt_model
@@ -272,6 +272,12 @@ parser.add_argument(
     help="Only apply single-char-word filter when at least this many word tokens are present.",
 )
 parser.add_argument(
+    "--no_strip_uzbek_tag_tokens",
+    dest="strip_uzbek_tag_tokens",
+    action="store_false",
+    help="Keep metadata-like tokens containing uzb/uzbek/ozbek markers.",
+)
+parser.add_argument(
     "--progress_log_interval",
     type=int,
     default=200000,
@@ -290,6 +296,7 @@ parser.set_defaults(
     spe_train_extremely_large_corpus=False,
     strip_urls_emails=False,
     strip_html_tags=True,
+    strip_uzbek_tag_tokens=True,
 )
 args = parser.parse_args()
 
@@ -301,6 +308,8 @@ HTML_TAG_RE = re.compile(r"<[^>\n]{1,256}>")
 HTML_ENTITY_RE = re.compile(r"&[A-Za-z][A-Za-z0-9#]{1,15};")
 MULTISPACE_RE = re.compile(r"\s+")
 WORD_WITH_LETTERS_RE = re.compile(r"[A-Za-zА-Яа-яЎўҚқҒғҲҳ']+")
+UZBEK_TAG_TOKEN_RE = re.compile(r"(?:uzb|uzbek|ozbek|o['’]zbek)", re.IGNORECASE)
+METADATA_MARKER_RE = re.compile(r"[_/#@=|:\\\[\]{}()<>]")
 
 
 def __json_loads(raw: str):
@@ -368,6 +377,42 @@ def __line_quality_drop_reason(
     return None
 
 
+def __strip_uzbek_tag_tokens(text: str, enabled: bool) -> Tuple[str, int]:
+    if not enabled or not text:
+        return text, 0
+    lowered = text.lower()
+    if (
+        "uzb" not in lowered
+        and "uzbek" not in lowered
+        and "ozbek" not in lowered
+        and "lang=" not in lowered
+        and "locale=" not in lowered
+    ):
+        return text, 0
+
+    kept_tokens: List[str] = []
+    stripped_count = 0
+    for token in text.split():
+        core = token.strip(".,;!?\"'()[]{}")
+        core_lower = core.lower()
+        is_tag_noise = False
+        if core_lower == "uzb":
+            is_tag_noise = True
+        elif UZBEK_TAG_TOKEN_RE.search(core_lower) and METADATA_MARKER_RE.search(core):
+            is_tag_noise = True
+        elif core_lower.startswith(("lang=uz", "locale=uz", "lang:uz", "locale:uz")):
+            is_tag_noise = True
+
+        if is_tag_noise:
+            stripped_count += 1
+            continue
+        kept_tokens.append(token)
+
+    if stripped_count == 0:
+        return text, 0
+    return MULTISPACE_RE.sub(" ", " ".join(kept_tokens)).strip(), stripped_count
+
+
 def __clean_line(text: str, normalize: bool) -> str:
     cleaned = normalize_text(text) if normalize else str(text).strip()
     if not cleaned:
@@ -389,6 +434,7 @@ def __build_document_from_manifests(
     force_rebuild_text_corpus: bool,
     strip_urls_emails: bool,
     strip_html_tags: bool,
+    strip_uzbek_tag_tokens: bool,
     min_alpha_ratio: float,
     max_single_char_word_ratio: float,
     single_char_ratio_min_words: int,
@@ -425,6 +471,7 @@ def __build_document_from_manifests(
         "low_alpha_ratio": 0,
         "single_char_heavy": 0,
         "noise_segments_stripped": 0,
+        "uzbek_tag_tokens_stripped": 0,
         "overrepresented": 0,
     }
     buffer: List[str] = []
@@ -455,6 +502,11 @@ def __build_document_from_manifests(
                     )
                     if precleaned != raw_text:
                         stats["noise_segments_stripped"] += 1
+                    precleaned, stripped_tag_count = __strip_uzbek_tag_tokens(
+                        precleaned, enabled=strip_uzbek_tag_tokens
+                    )
+                    if stripped_tag_count > 0:
+                        stats["uzbek_tag_tokens_stripped"] += stripped_tag_count
                     cleaned = __clean_line(precleaned, normalize_text_corpus)
 
                     if not cleaned:
@@ -524,7 +576,8 @@ def __build_document_from_manifests(
         logging.info(
             "Finished extracting manifests. Total lines: %d, written: %d, dropped empty: %d, "
             "dropped too short: %d, dropped too long: %d, dropped low alpha ratio: %d, "
-            "dropped single-char-heavy: %d, stripped noise segments: %d, dropped duplicate cap: %d, unique kept: %d, "
+            "dropped single-char-heavy: %d, stripped noise segments: %d, stripped uzbek tag tokens: %d, "
+            "dropped duplicate cap: %d, unique kept: %d, "
             "elapsed: %.2fs, throughput: %.1f lines/s",
             stats["total"],
             stats["written"],
@@ -534,6 +587,7 @@ def __build_document_from_manifests(
             stats["low_alpha_ratio"],
             stats["single_char_heavy"],
             stats["noise_segments_stripped"],
+            stats["uzbek_tag_tokens_stripped"],
             stats["overrepresented"],
             unique_kept,
             total_elapsed,
@@ -552,6 +606,7 @@ def __build_document_from_data_files(
     force_rebuild_text_corpus: bool,
     strip_urls_emails: bool,
     strip_html_tags: bool,
+    strip_uzbek_tag_tokens: bool,
     min_alpha_ratio: float,
     max_single_char_word_ratio: float,
     single_char_ratio_min_words: int,
@@ -588,6 +643,7 @@ def __build_document_from_data_files(
         "low_alpha_ratio": 0,
         "single_char_heavy": 0,
         "noise_segments_stripped": 0,
+        "uzbek_tag_tokens_stripped": 0,
         "overrepresented": 0,
     }
     buffer: List[str] = []
@@ -614,6 +670,11 @@ def __build_document_from_data_files(
                     )
                     if precleaned != raw_text:
                         stats["noise_segments_stripped"] += 1
+                    precleaned, stripped_tag_count = __strip_uzbek_tag_tokens(
+                        precleaned, enabled=strip_uzbek_tag_tokens
+                    )
+                    if stripped_tag_count > 0:
+                        stats["uzbek_tag_tokens_stripped"] += stripped_tag_count
                     cleaned = __clean_line(precleaned, normalize_text_corpus)
 
                     if not cleaned:
@@ -683,7 +744,8 @@ def __build_document_from_data_files(
         logging.info(
             "Finished extracting text files. Total lines: %d, written: %d, dropped empty: %d, "
             "dropped too short: %d, dropped too long: %d, dropped low alpha ratio: %d, "
-            "dropped single-char-heavy: %d, stripped noise segments: %d, dropped duplicate cap: %d, unique kept: %d, "
+            "dropped single-char-heavy: %d, stripped noise segments: %d, stripped uzbek tag tokens: %d, "
+            "dropped duplicate cap: %d, unique kept: %d, "
             "elapsed: %.2fs, throughput: %.1f lines/s",
             stats["total"],
             stats["written"],
@@ -693,6 +755,7 @@ def __build_document_from_data_files(
             stats["low_alpha_ratio"],
             stats["single_char_heavy"],
             stats["noise_segments_stripped"],
+            stats["uzbek_tag_tokens_stripped"],
             stats["overrepresented"],
             unique_kept,
             total_elapsed,
@@ -842,6 +905,7 @@ def main():
     force_rebuild_text_corpus = args.force_rebuild_text_corpus
     strip_urls_emails = args.strip_urls_emails
     strip_html_tags = args.strip_html_tags
+    strip_uzbek_tag_tokens = args.strip_uzbek_tag_tokens
     min_alpha_ratio = max(0.0, min(1.0, args.min_alpha_ratio))
     max_single_char_word_ratio = max(0.0, min(1.0, args.max_single_char_word_ratio))
     single_char_ratio_min_words = max(0, args.single_char_ratio_min_words)
@@ -860,13 +924,15 @@ def main():
 
     logging.info(
         "Starting tokenizer preparation (tokenizer=%s, vocab=%d, normalize=%s, dedupe_cap=%d, "
-        "strip_urls_emails=%s, strip_html_tags=%s, min_alpha_ratio=%.2f, max_single_char_word_ratio=%.2f)",
+        "strip_urls_emails=%s, strip_html_tags=%s, strip_uzbek_tag_tokens=%s, "
+        "min_alpha_ratio=%.2f, max_single_char_word_ratio=%.2f)",
         tokenizer,
         vocab_size,
         normalize_text_corpus,
         max_line_occurrence,
         strip_urls_emails,
         strip_html_tags,
+        strip_uzbek_tag_tokens,
         min_alpha_ratio,
         max_single_char_word_ratio,
     )
@@ -882,6 +948,7 @@ def main():
             force_rebuild_text_corpus=force_rebuild_text_corpus,
             strip_urls_emails=strip_urls_emails,
             strip_html_tags=strip_html_tags,
+            strip_uzbek_tag_tokens=strip_uzbek_tag_tokens,
             min_alpha_ratio=min_alpha_ratio,
             max_single_char_word_ratio=max_single_char_word_ratio,
             single_char_ratio_min_words=single_char_ratio_min_words,
@@ -899,6 +966,7 @@ def main():
             force_rebuild_text_corpus=force_rebuild_text_corpus,
             strip_urls_emails=strip_urls_emails,
             strip_html_tags=strip_html_tags,
+            strip_uzbek_tag_tokens=strip_uzbek_tag_tokens,
             min_alpha_ratio=min_alpha_ratio,
             max_single_char_word_ratio=max_single_char_word_ratio,
             single_char_ratio_min_words=single_char_ratio_min_words,
