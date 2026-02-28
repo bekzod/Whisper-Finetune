@@ -31,6 +31,7 @@ _ALLOWED_TEXT_RE = re.compile(r"[^a-zA-ZА-Яа-яЎўҚқҒғҲҳ0-9\s,.'\-?]+"
 _UZBEK_MISSPELLINGS = {
     # Missing apostrophes in bo'lmoq (to be/become) forms
     "boladi": "bo'ladi",
+    "raxmat": "rahmat",
     "bolish": "bo'lish",
     "bolgan": "bo'lgan",
     "bolib": "bo'lib",
