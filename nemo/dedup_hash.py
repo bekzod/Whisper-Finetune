@@ -131,6 +131,7 @@ def dedup_jsonl(
     state_db: str | None = None,
     hash_cache_size: int = DEFAULT_HASH_CACHE_SIZE,
     commit_every: int = DEFAULT_COMMIT_EVERY,
+    reverse: bool = False,
 ) -> None:
     manifest_path = Path(input_path).expanduser().resolve()
     audio_root_path = (
@@ -159,8 +160,23 @@ def dedup_jsonl(
         state_db_path.parent.mkdir(parents=True, exist_ok=True)
 
     with contextlib.ExitStack() as stack:
-        fin = stack.enter_context(open(input_path, "r", encoding="utf-8"))
-        fout = stack.enter_context(open(output_path, "w", encoding="utf-8"))
+        if reverse:
+            print("Reverse mode: reading all lines into memory...")
+            with open(input_path, "r", encoding="utf-8") as f:
+                all_lines = f.readlines()
+            all_lines.reverse()
+            print(f"Loaded {len(all_lines):,} lines (reversed). Starting dedup...")
+            line_iter = iter(all_lines)
+        else:
+            fin = stack.enter_context(open(input_path, "r", encoding="utf-8"))
+            line_iter = iter(fin)
+
+        out_lines: list[str] | None = [] if reverse else None
+        fout = (
+            None
+            if reverse
+            else stack.enter_context(open(output_path, "w", encoding="utf-8"))
+        )
         removed_fout = (
             stack.enter_context(open(removed_files_txt, "w", encoding="utf-8"))
             if removed_files_txt
@@ -170,7 +186,7 @@ def dedup_jsonl(
         _init_state_db(conn)
         conn.execute("BEGIN")
 
-        for line in fin:
+        for line in line_iter:
             processed += 1
             line = line.strip()
             if line:
@@ -183,7 +199,11 @@ def dedup_jsonl(
                     dedup_key = _make_group_key(duration_micros, text)
 
                 if dedup_key is None:
-                    fout.write(json.dumps(row, ensure_ascii=False) + "\n")
+                    _out_line = json.dumps(row, ensure_ascii=False) + "\n"
+                    if out_lines is not None:
+                        out_lines.append(_out_line)
+                    else:
+                        fout.write(_out_line)
                     kept += 1
                 else:
                     state_row = conn.execute(
@@ -195,7 +215,11 @@ def dedup_jsonl(
                             "INSERT INTO group_state (group_key, first_audio_ref, initialized) VALUES (?, ?, 0)",
                             (dedup_key, audio_ref),
                         )
-                        fout.write(json.dumps(row, ensure_ascii=False) + "\n")
+                        _out_line = json.dumps(row, ensure_ascii=False) + "\n"
+                    if out_lines is not None:
+                        out_lines.append(_out_line)
+                    else:
+                        fout.write(_out_line)
                         kept += 1
                     else:
                         collisions += 1
@@ -277,7 +301,11 @@ def dedup_jsonl(
                                 (dedup_key, current_hash),
                             )
                         # If we can't hash current audio, we keep the row.
-                        fout.write(json.dumps(row, ensure_ascii=False) + "\n")
+                        _out_line = json.dumps(row, ensure_ascii=False) + "\n"
+                    if out_lines is not None:
+                        out_lines.append(_out_line)
+                    else:
+                        fout.write(_out_line)
                         kept += 1
 
             if log_every > 0 and processed % log_every == 0:
@@ -297,6 +325,13 @@ def dedup_jsonl(
                 conn.execute("BEGIN")
 
         conn.commit()
+
+    if reverse and out_lines is not None:
+        print(f"Writing {len(out_lines):,} kept lines in original order...")
+        out_lines.reverse()
+        with open(output_path, "w", encoding="utf-8") as fout_rev:
+            fout_rev.writelines(out_lines)
+        del out_lines
 
     total_time = time.monotonic() - t_start
     print(
@@ -354,6 +389,11 @@ if __name__ == "__main__":
         default=DEFAULT_COMMIT_EVERY,
         help="Commit SQLite state every N rows (set <=0 to commit only at the end).",
     )
+    p.add_argument(
+        "--reverse",
+        action="store_true",
+        help="Process lines from bottom to top (keep last occurrence, remove earlier duplicates).",
+    )
     args = p.parse_args()
     dedup_jsonl(
         args.input_jsonl,
@@ -364,4 +404,5 @@ if __name__ == "__main__":
         state_db=args.state_db,
         hash_cache_size=args.hash_cache_size,
         commit_every=args.commit_every,
+        reverse=args.reverse,
     )
