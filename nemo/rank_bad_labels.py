@@ -409,6 +409,17 @@ def main():
     manifest_dir = str(Path(args.manifest).resolve().parent)
     unsorted_path = f"{args.output_prefix}._unsorted.jsonl"
 
+    # Clean stale worker/unsorted files when NOT resuming
+    if not args.resume:
+        import glob as _glob
+
+        for stale in _glob.glob(f"{args.output_prefix}._worker_*.jsonl"):
+            os.remove(stale)
+            LOGGER.info("Removed stale worker file: %s", stale)
+        if os.path.exists(unsorted_path):
+            os.remove(unsorted_path)
+            LOGGER.info("Removed stale unsorted file: %s", unsorted_path)
+
     # Count total rows for progress bar
     LOGGER.info("Counting manifest rows: %s", args.manifest)
     total_rows = count_manifest_lines(args.manifest)
