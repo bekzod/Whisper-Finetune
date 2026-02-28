@@ -1,6 +1,10 @@
 {
   "train": [
     {
+      "name": "mrmuminov/uzbek_voice",
+      "splits": ["train"]
+    },
+    {
       "name": "bekzod123/uzbek_voice_3",
       "splits": ["train", "validation"]
     },
