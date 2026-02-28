@@ -216,10 +216,10 @@ def dedup_jsonl(
                             (dedup_key, audio_ref),
                         )
                         _out_line = json.dumps(row, ensure_ascii=False) + "\n"
-                    if out_lines is not None:
-                        out_lines.append(_out_line)
-                    else:
-                        fout.write(_out_line)
+                        if out_lines is not None:
+                            out_lines.append(_out_line)
+                        else:
+                            fout.write(_out_line)
                         kept += 1
                     else:
                         collisions += 1
@@ -302,10 +302,10 @@ def dedup_jsonl(
                             )
                         # If we can't hash current audio, we keep the row.
                         _out_line = json.dumps(row, ensure_ascii=False) + "\n"
-                    if out_lines is not None:
-                        out_lines.append(_out_line)
-                    else:
-                        fout.write(_out_line)
+                        if out_lines is not None:
+                            out_lines.append(_out_line)
+                        else:
+                            fout.write(_out_line)
                         kept += 1
 
             if log_every > 0 and processed % log_every == 0:
