@@ -52,6 +52,8 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, List, Tuple
 
 import pandas as pd
+import torch
+import torch.multiprocessing as mp
 from tqdm import tqdm
 
 try:
@@ -252,6 +254,108 @@ def compute_row_scores(
     }
 
 
+def estimate_max_workers(model_size_gb: float = 1.5, headroom_gb: float = 2.0) -> int:
+    """Estimate how many model replicas fit in free VRAM."""
+    if not torch.cuda.is_available():
+        return 1
+    free_bytes, total_bytes = torch.cuda.mem_get_info()
+    free_gb = free_bytes / (1024**3)
+    usable = max(0, free_gb - headroom_gb)
+    n = max(1, int(usable // model_size_gb))
+    return n
+
+
+def _collect_done_audio_paths(worker_paths: List[str]) -> set:
+    """Read all existing worker files and collect audio_filepath values already processed."""
+    done = set()
+    for wpath in worker_paths:
+        if os.path.exists(wpath):
+            with open(wpath, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                        done.add(rec["audio_filepath"])
+                    except (json.JSONDecodeError, KeyError):
+                        continue
+    return done
+
+
+def _worker_transcribe(
+    worker_id: int,
+    model_name: str,
+    device: str,
+    chunk: List[Dict[str, Any]],
+    batch_size: int,
+    manifest_dir: str,
+    resolve_relative: bool,
+    lowercase: bool,
+    remove_punctuation: bool,
+    output_path: str,
+    done_audio_paths: set,
+):
+    """Worker process: loads its own model replica, transcribes its chunk, writes results."""
+    import nemo.collections.asr as nemo_asr  # re-import in subprocess
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format=f"%(asctime)s | worker-{worker_id} | %(levelname)s | %(message)s",
+    )
+    log = logging.getLogger(f"worker-{worker_id}")
+
+    # Resolve paths first so we can filter already-done rows
+    for row in chunk:
+        prepare_row(row, manifest_dir, resolve_relative)
+
+    if done_audio_paths:
+        before = len(chunk)
+        chunk = [r for r in chunk if r["audio_filepath"] not in done_audio_paths]
+        skipped = before - len(chunk)
+        if skipped:
+            log.info("Resuming: skipping %d already-processed rows", skipped)
+
+    if not chunk:
+        log.info("Nothing to do, all rows already processed")
+        return
+
+    log.info("Loading model: %s", model_name)
+    if model_name.endswith(".nemo") and os.path.exists(model_name):
+        model = nemo_asr.models.ASRModel.restore_from(model_name)
+    else:
+        model = nemo_asr.models.ASRModel.from_pretrained(model_name=model_name)
+
+    if device == "cuda":
+        model = model.cuda()
+    model.eval()
+    log.info("Model ready, processing %d rows", len(chunk))
+
+    with open(output_path, "a", encoding="utf-8") as out_f:
+        for i in range(0, len(chunk), batch_size):
+            batch_rows = chunk[i : i + batch_size]
+
+            audio_paths = [r["audio_filepath"] for r in batch_rows]
+            hyps = transcribe_batch(model, audio_paths)
+
+            for row, hyp in zip(batch_rows, hyps):
+                metrics = compute_row_scores(
+                    ref_raw=row["text"],
+                    hyp_raw=hyp,
+                    duration=row.get("duration", float("nan")),
+                    lowercase=lowercase,
+                    remove_punctuation=remove_punctuation,
+                )
+                out = dict(row)
+                out["model_hypothesis"] = hyp
+                out.update(metrics)
+                out_f.write(json.dumps(out, ensure_ascii=False) + "\n")
+
+            out_f.flush()
+
+    log.info("Done: wrote %d rows to %s", len(chunk), output_path)
+
+
 def prepare_row(row: Dict[str, Any], manifest_dir: str, resolve_relative: bool) -> None:
     """Resolve paths and fill missing durations in-place."""
     if resolve_relative and not os.path.isabs(row["audio_filepath"]):
@@ -284,8 +388,16 @@ def main():
         "--resolve-relative-to-manifest", action="store_true", default=False
     )
     parser.add_argument(
-        "--resume", action="store_true", default=False,
+        "--resume",
+        action="store_true",
+        default=False,
         help="Resume from a previous interrupted run",
+    )
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=4,
+        help="Number of parallel model replicas (0 = auto-detect from free VRAM)",
     )
     args = parser.parse_args()
 
@@ -302,6 +414,15 @@ def main():
     total_rows = count_manifest_lines(args.manifest)
     LOGGER.info("Total rows: %d", total_rows)
 
+    # Determine number of workers
+    num_workers = args.num_workers
+    if num_workers <= 0:
+        if args.device == "cuda" and torch.cuda.is_available():
+            num_workers = estimate_max_workers(model_size_gb=1.5, headroom_gb=2.0)
+        else:
+            num_workers = 1
+    LOGGER.info("Using %d parallel worker(s)", num_workers)
+
     # Resume support: count already-processed lines
     skip_rows = 0
     if args.resume and os.path.exists(unsorted_path):
@@ -310,98 +431,136 @@ def main():
                 skip_rows += 1
         LOGGER.info("Resuming: skipping %d already-processed rows", skip_rows)
 
-    # Load model
-    LOGGER.info("Loading model: %s", args.model)
-    if args.model.endswith(".nemo") and os.path.exists(args.model):
-        model = nemo_asr.models.ASRModel.restore_from(args.model)
-    else:
-        model = nemo_asr.models.ASRModel.from_pretrained(model_name=args.model)
-
-    if args.device == "cuda":
-        model = model.cuda()
-    LOGGER.info("Model ready on device: %s", args.device)
-
-    # Streaming pass: transcribe + score + write to disk batch by batch
-    # Top-K heap: stores (suspicion_score, row_index, row_dict) — min-heap so
-    # smallest scores get evicted first.
-    top_k_heap: List[Tuple[float, int, Dict]] = []
-    bucket_counts: Counter = Counter()
-    rows_processed = 0
-
+    # Read all remaining rows into memory for chunking
     manifest_iter = iter_manifest(args.manifest)
-
-    # Skip already-processed rows when resuming
     if skip_rows > 0:
         for _ in zip(range(skip_rows), manifest_iter):
             pass
-        rows_processed = skip_rows
+    remaining_rows = list(manifest_iter)
+    remaining = len(remaining_rows)
+    LOGGER.info("Rows to process: %d (skipped %d)", remaining, skip_rows)
 
-    open_mode = "a" if (args.resume and skip_rows > 0) else "w"
-    remaining = total_rows - skip_rows
-    total_batches = math.ceil(remaining / max(1, args.batch_size))
+    if num_workers > 1 and remaining > 0:
+        # --- Multi-worker parallel path ---
+        mp.set_start_method("spawn", force=True)
 
-    LOGGER.info(
-        "Starting transcription for %d files (%d batches, batch_size=%d)",
-        remaining,
-        total_batches,
-        args.batch_size,
-    )
+        # Split rows into roughly equal chunks
+        chunk_size = math.ceil(remaining / num_workers)
+        chunks = [
+            remaining_rows[i : i + chunk_size] for i in range(0, remaining, chunk_size)
+        ]
+        actual_workers = len(chunks)
 
-    with open(unsorted_path, open_mode, encoding="utf-8") as out_f:
-        for batch_rows in tqdm(
-            batchify_iter(manifest_iter, args.batch_size),
-            total=total_batches,
-            desc="Transcribing & scoring",
-        ):
-            # Prepare rows (resolve paths, fill durations)
-            for row in batch_rows:
-                prepare_row(row, manifest_dir, args.resolve_relative_to_manifest)
+        # Stable worker output files (survive interrupts for resume)
+        worker_paths = [
+            f"{args.output_prefix}._worker_{i}.jsonl" for i in range(actual_workers)
+        ]
 
-            # Transcribe
-            audio_paths = [r["audio_filepath"] for r in batch_rows]
-            hyps = transcribe_batch(model, audio_paths)
-
-            # Score and write each row
-            for row, hyp in zip(batch_rows, hyps):
-                metrics = compute_row_scores(
-                    ref_raw=row["text"],
-                    hyp_raw=hyp,
-                    duration=row.get("duration", float("nan")),
-                    lowercase=args.lowercase,
-                    remove_punctuation=args.remove_punctuation,
+        # On resume, collect already-processed audio paths from worker files
+        done_audio_paths: set = set()
+        if args.resume:
+            done_audio_paths = _collect_done_audio_paths(worker_paths)
+            if done_audio_paths:
+                LOGGER.info(
+                    "Resume: found %d already-processed rows across worker files",
+                    len(done_audio_paths),
                 )
 
-                out = dict(row)
-                out["model_hypothesis"] = hyp
-                out.update(metrics)
+        LOGGER.info(
+            "Spawning %d workers (chunks of ~%d rows each)",
+            actual_workers,
+            chunk_size,
+        )
 
-                # Write to disk immediately
-                out_f.write(json.dumps(out, ensure_ascii=False) + "\n")
+        processes = []
+        for i, (chunk, wpath) in enumerate(zip(chunks, worker_paths)):
+            p = mp.Process(
+                target=_worker_transcribe,
+                args=(
+                    i,
+                    args.model,
+                    args.device,
+                    chunk,
+                    args.batch_size,
+                    manifest_dir,
+                    args.resolve_relative_to_manifest,
+                    args.lowercase,
+                    args.remove_punctuation,
+                    wpath,
+                    done_audio_paths,
+                ),
+            )
+            p.start()
+            processes.append(p)
 
-                # Update bucket counter
-                bucket_counts[metrics["bucket"]] += 1
+        for p in processes:
+            p.join()
 
-                # Maintain top-K heap
-                score = metrics["suspicion_score"]
-                entry = (score, rows_processed, out)
-                if len(top_k_heap) < TOP_K:
-                    heapq.heappush(top_k_heap, entry)
-                elif score > top_k_heap[0][0]:
-                    heapq.heapreplace(top_k_heap, entry)
+        # Check for failures
+        for i, p in enumerate(processes):
+            if p.exitcode != 0:
+                LOGGER.error("Worker %d exited with code %d", i, p.exitcode)
 
-                rows_processed += 1
+        # Merge worker outputs into unsorted file
+        with open(unsorted_path, "w", encoding="utf-8") as out_f:
+            for wpath in worker_paths:
+                if os.path.exists(wpath):
+                    with open(wpath, "r", encoding="utf-8") as wf:
+                        for line in wf:
+                            out_f.write(line)
 
-            # Flush after each batch so progress is saved
-            out_f.flush()
+    elif remaining > 0:
+        # --- Single-worker path (original logic) ---
+        LOGGER.info("Loading model: %s", args.model)
+        if args.model.endswith(".nemo") and os.path.exists(args.model):
+            model = nemo_asr.models.ASRModel.restore_from(args.model)
+        else:
+            model = nemo_asr.models.ASRModel.from_pretrained(model_name=args.model)
 
-    LOGGER.info("Streaming pass complete: %d rows processed", rows_processed)
+        if args.device == "cuda":
+            model = model.cuda()
+        model.eval()
+        LOGGER.info("Model ready on device: %s", args.device)
 
-    # If resuming, we need to rebuild bucket_counts and top_k_heap from the
-    # full unsorted file (since we only tracked the new rows above).
-    if skip_rows > 0:
-        LOGGER.info("Rebuilding stats from full unsorted file for resume consistency")
-        top_k_heap = []
-        bucket_counts = Counter()
+        total_batches = math.ceil(remaining / max(1, args.batch_size))
+        open_mode = "a" if (args.resume and skip_rows > 0) else "w"
+
+        with open(unsorted_path, open_mode, encoding="utf-8") as out_f:
+            for i in tqdm(
+                range(0, remaining, args.batch_size),
+                total=total_batches,
+                desc="Transcribing & scoring",
+            ):
+                batch_rows = remaining_rows[i : i + args.batch_size]
+
+                for row in batch_rows:
+                    prepare_row(row, manifest_dir, args.resolve_relative_to_manifest)
+
+                audio_paths = [r["audio_filepath"] for r in batch_rows]
+                hyps = transcribe_batch(model, audio_paths)
+
+                for row, hyp in zip(batch_rows, hyps):
+                    metrics = compute_row_scores(
+                        ref_raw=row["text"],
+                        hyp_raw=hyp,
+                        duration=row.get("duration", float("nan")),
+                        lowercase=args.lowercase,
+                        remove_punctuation=args.remove_punctuation,
+                    )
+                    out = dict(row)
+                    out["model_hypothesis"] = hyp
+                    out.update(metrics)
+                    out_f.write(json.dumps(out, ensure_ascii=False) + "\n")
+
+                out_f.flush()
+
+    LOGGER.info("Transcription pass complete: %d rows processed", remaining + skip_rows)
+
+    # Build bucket_counts and top_k_heap from the full unsorted file
+    top_k_heap: List[Tuple[float, int, Dict]] = []
+    bucket_counts: Counter = Counter()
+    rows_processed = 0
+    if os.path.exists(unsorted_path):
         with open(unsorted_path, "r", encoding="utf-8") as f:
             for idx, line in enumerate(f):
                 rec = json.loads(line)
@@ -412,13 +571,14 @@ def main():
                     heapq.heappush(top_k_heap, entry)
                 elif score > top_k_heap[0][0]:
                     heapq.heapreplace(top_k_heap, entry)
+                rows_processed += 1
 
     # Sort and write final outputs
     LOGGER.info("Reading unsorted results for final sort")
     df = pd.read_json(unsorted_path, lines=True)
-    df = df.sort_values(
-        ["suspicion_score", "wer", "cer"], ascending=False
-    ).reset_index(drop=True)
+    df = df.sort_values(["suspicion_score", "wer", "cer"], ascending=False).reset_index(
+        drop=True
+    )
 
     csv_path = f"{args.output_prefix}.csv"
     jsonl_path = f"{args.output_prefix}.jsonl"
@@ -440,11 +600,19 @@ def main():
     LOGGER.info("Saved: %s", jsonl_path)
     LOGGER.info("Saved: %s", top500_path)
 
-    # Clean up temp file
+    # Clean up temp files
     try:
         os.remove(unsorted_path)
     except OSError:
         pass
+    # Remove worker shard files from multi-worker runs
+    import glob as _glob
+
+    for wf in _glob.glob(f"{args.output_prefix}._worker_*.jsonl"):
+        try:
+            os.remove(wf)
+        except OSError:
+            pass
 
     # Summary
     print()
