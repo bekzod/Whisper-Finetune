@@ -299,7 +299,7 @@ model:
 trainer:
   devices: -1 # Single GPU. Set to -1 to use all available GPUs.
   num_nodes: 1
-  max_epochs: 500
+  max_epochs: 50
   max_steps: -1
   val_check_interval: 0.5
   accelerator: gpu
