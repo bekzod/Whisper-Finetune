@@ -220,7 +220,7 @@ parser.add_argument(
 parser.add_argument(
     "--min_chars",
     type=int,
-    default=1,
+    default=3,
     help="Drop cleaned lines shorter than this length when building text corpus.",
 )
 parser.add_argument(
