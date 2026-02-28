@@ -3,12 +3,42 @@ import argparse
 import contextlib
 import hashlib
 import json
+import sqlite3
+import struct
+import tempfile
+from collections import OrderedDict
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 AUDIO_PATH_KEYS = ("audio_filepath", "audio_file", "file", "filepath", "path")
 FILE_HASH_ALGO = "sha256"
 FILE_READ_CHUNK_SIZE = 1024 * 1024
+GROUP_KEY_HASH_BYTES = 16
+DEFAULT_HASH_CACHE_SIZE = 200_000
+DEFAULT_COMMIT_EVERY = 50_000
+_CACHE_MISS: Final[object] = object()
+
+
+class AudioHashCache:
+    def __init__(self, max_entries: int) -> None:
+        self.max_entries = max(0, int(max_entries))
+        self._data: OrderedDict[str, bytes | None] = OrderedDict()
+
+    def get(self, key: str) -> bytes | None | object:
+        if self.max_entries <= 0:
+            return _CACHE_MISS
+        value = self._data.pop(key, _CACHE_MISS)
+        if value is not _CACHE_MISS:
+            self._data[key] = value
+        return value
+
+    def put(self, key: str, value: bytes | None) -> None:
+        if self.max_entries <= 0:
+            return
+        self._data[key] = value
+        self._data.move_to_end(key)
+        if len(self._data) > self.max_entries:
+            self._data.popitem(last=False)
 
 
 def _extract_audio_ref(row: dict[str, Any]) -> str | None:
@@ -19,11 +49,18 @@ def _extract_audio_ref(row: dict[str, Any]) -> str | None:
     return None
 
 
-def _normalize_duration(value: Any) -> float | None:
+def _normalize_duration_micros(value: Any) -> int | None:
     try:
-        return round(float(value), 6)
+        return int(round(float(value) * 1_000_000))
     except (TypeError, ValueError):
         return None
+
+
+def _make_group_key(duration_micros: int, text: str) -> bytes:
+    hasher = hashlib.blake2b(digest_size=GROUP_KEY_HASH_BYTES)
+    hasher.update(struct.pack("<q", duration_micros))
+    hasher.update(text.encode("utf-8", "ignore"))
+    return hasher.digest()
 
 
 def _resolve_audio_path(
@@ -33,21 +70,12 @@ def _resolve_audio_path(
     if raw_path.is_absolute():
         return raw_path
 
-    candidates: list[Path] = []
-    if audio_root is not None:
-        candidates.append(audio_root / raw_path)
-    candidates.extend((Path.cwd() / raw_path, manifest_path.parent / raw_path))
-
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-
     if audio_root is not None:
         return audio_root / raw_path
-    return Path.cwd() / raw_path
+    return manifest_path.parent / raw_path
 
 
-def _hash_audio_path(path: Path) -> str:
+def _hash_audio_path(path: Path) -> bytes:
     hasher = hashlib.new(FILE_HASH_ALGO)
     with path.open("rb") as f:
         while True:
@@ -55,7 +83,34 @@ def _hash_audio_path(path: Path) -> str:
             if not chunk:
                 break
             hasher.update(chunk)
-    return hasher.hexdigest()
+    return hasher.digest()
+
+
+def _init_state_db(conn: sqlite3.Connection) -> None:
+    conn.execute("PRAGMA journal_mode=OFF")
+    conn.execute("PRAGMA synchronous=OFF")
+    conn.execute("PRAGMA temp_store=MEMORY")
+    conn.execute("PRAGMA cache_size=-200000")
+    conn.execute("PRAGMA mmap_size=268435456")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS group_state (
+            group_key BLOB PRIMARY KEY,
+            first_audio_ref TEXT,
+            initialized INTEGER NOT NULL DEFAULT 0
+        ) WITHOUT ROWID
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS group_hash (
+            group_key BLOB NOT NULL,
+            audio_hash BLOB NOT NULL,
+            PRIMARY KEY (group_key, audio_hash)
+        ) WITHOUT ROWID
+        """
+    )
+    conn.commit()
 
 
 def dedup_jsonl(
@@ -64,20 +119,30 @@ def dedup_jsonl(
     log_every: int = 100_000,
     removed_files_txt: str | None = None,
     audio_root: str | None = None,
+    state_db: str | None = None,
+    hash_cache_size: int = DEFAULT_HASH_CACHE_SIZE,
+    commit_every: int = DEFAULT_COMMIT_EVERY,
 ) -> None:
     manifest_path = Path(input_path).expanduser().resolve()
     audio_root_path = (
         Path(audio_root).expanduser().resolve() if audio_root is not None else None
     )
-
-    # Keep the first row per (duration, text). If we see the same pair again, we hash files
-    # and drop rows that match an already-seen hash in that pair.
-    groups: dict[tuple[float, str], dict[str, Any]] = {}
-    hash_cache: dict[Path, str | None] = {}
+    hash_cache = AudioHashCache(hash_cache_size)
     processed = 0
     kept = 0
     dropped = 0
     hash_failures = 0
+
+    temp_db_path: Path | None = None
+    if state_db is None:
+        with tempfile.NamedTemporaryFile(
+            prefix="dedup_hash_", suffix=".sqlite3", delete=False
+        ) as tmp:
+            temp_db_path = Path(tmp.name)
+        state_db_path = temp_db_path
+    else:
+        state_db_path = Path(state_db).expanduser().resolve()
+        state_db_path.parent.mkdir(parents=True, exist_ok=True)
 
     with contextlib.ExitStack() as stack:
         fin = stack.enter_context(open(input_path, "r", encoding="utf-8"))
@@ -87,6 +152,9 @@ def dedup_jsonl(
             if removed_files_txt
             else None
         )
+        conn = stack.enter_context(sqlite3.connect(state_db_path))
+        _init_state_db(conn)
+        conn.execute("BEGIN")
 
         for line in fin:
             processed += 1
@@ -94,90 +162,114 @@ def dedup_jsonl(
             if line:
                 row = json.loads(line)
                 text = row.get("text")
-                duration = _normalize_duration(row.get("duration"))
+                duration_micros = _normalize_duration_micros(row.get("duration"))
                 audio_ref = _extract_audio_ref(row)
-                dedup_key = (
-                    (duration, text)
-                    if duration is not None and isinstance(text, str)
-                    else None
-                )
+                dedup_key = None
+                if duration_micros is not None and isinstance(text, str):
+                    dedup_key = _make_group_key(duration_micros, text)
 
                 if dedup_key is None:
                     fout.write(json.dumps(row, ensure_ascii=False) + "\n")
                     kept += 1
                 else:
-                    state = groups.get(dedup_key)
-                    if state is None:
-                        groups[dedup_key] = {
-                            "first_audio_ref": audio_ref,
-                            "hashes": None,
-                        }
+                    state_row = conn.execute(
+                        "SELECT initialized, first_audio_ref FROM group_state WHERE group_key = ?",
+                        (dedup_key,),
+                    ).fetchone()
+                    if state_row is None:
+                        conn.execute(
+                            "INSERT INTO group_state (group_key, first_audio_ref, initialized) VALUES (?, ?, 0)",
+                            (dedup_key, audio_ref),
+                        )
                         fout.write(json.dumps(row, ensure_ascii=False) + "\n")
                         kept += 1
                     else:
-                        hashes = state.get("hashes")
-                        if hashes is None:
-                            hashes = set()
-                            first_audio_ref = state.get("first_audio_ref")
+                        initialized = bool(state_row[0])
+                        first_audio_ref = state_row[1] if not initialized else None
+
+                        if not initialized:
                             if isinstance(first_audio_ref, str) and first_audio_ref:
                                 first_path = _resolve_audio_path(
                                     first_audio_ref,
                                     manifest_path=manifest_path,
                                     audio_root=audio_root_path,
                                 )
-                                if first_path in hash_cache:
-                                    first_hash = hash_cache[first_path]
-                                else:
+                                first_cache_key = str(first_path)
+                                cached_first_hash = hash_cache.get(first_cache_key)
+                                if cached_first_hash is _CACHE_MISS:
                                     try:
                                         first_hash = _hash_audio_path(first_path)
                                     except OSError:
                                         first_hash = None
                                         hash_failures += 1
-                                    hash_cache[first_path] = first_hash
-                                if first_hash is not None:
-                                    hashes.add(first_hash)
-                            state["hashes"] = hashes
-                            state["first_audio_ref"] = None
+                                    hash_cache.put(first_cache_key, first_hash)
+                                else:
+                                    first_hash = cached_first_hash
 
-                        current_hash: str | None = None
+                                if first_hash is not None:
+                                    conn.execute(
+                                        "INSERT OR IGNORE INTO group_hash (group_key, audio_hash) VALUES (?, ?)",
+                                        (dedup_key, first_hash),
+                                    )
+                            conn.execute(
+                                "UPDATE group_state SET initialized = 1, first_audio_ref = NULL WHERE group_key = ?",
+                                (dedup_key,),
+                            )
+
+                        current_hash: bytes | None = None
                         if isinstance(audio_ref, str) and audio_ref:
                             current_path = _resolve_audio_path(
                                 audio_ref,
                                 manifest_path=manifest_path,
                                 audio_root=audio_root_path,
                             )
-                            if current_path in hash_cache:
-                                current_hash = hash_cache[current_path]
-                            else:
+                            current_cache_key = str(current_path)
+                            cached_current_hash = hash_cache.get(current_cache_key)
+                            if cached_current_hash is _CACHE_MISS:
                                 try:
                                     current_hash = _hash_audio_path(current_path)
                                 except OSError:
                                     current_hash = None
                                     hash_failures += 1
-                                hash_cache[current_path] = current_hash
+                                hash_cache.put(current_cache_key, current_hash)
+                            else:
+                                current_hash = cached_current_hash
 
-                        if current_hash is not None and current_hash in hashes:
-                            dropped += 1
-                            if removed_fout is not None:
-                                removed_ref = (
-                                    audio_ref
-                                    or row.get("audio_filepath")
-                                    or row.get("audio_file")
-                                    or row.get("file")
-                                    or row.get("filepath")
-                                    or row.get("path")
-                                )
-                                removed_fout.write(f"{removed_ref}\n")
-                        else:
-                            if current_hash is not None:
-                                hashes.add(current_hash)
-                            fout.write(json.dumps(row, ensure_ascii=False) + "\n")
-                            kept += 1
+                        if current_hash is not None:
+                            exists = conn.execute(
+                                "SELECT 1 FROM group_hash WHERE group_key = ? AND audio_hash = ? LIMIT 1",
+                                (dedup_key, current_hash),
+                            ).fetchone()
+                            if exists is not None:
+                                dropped += 1
+                                if removed_fout is not None:
+                                    removed_ref = (
+                                        audio_ref
+                                        or row.get("audio_filepath")
+                                        or row.get("audio_file")
+                                        or row.get("file")
+                                        or row.get("filepath")
+                                        or row.get("path")
+                                    )
+                                    removed_fout.write(f"{removed_ref or ''}\n")
+                                continue
+                            conn.execute(
+                                "INSERT INTO group_hash (group_key, audio_hash) VALUES (?, ?)",
+                                (dedup_key, current_hash),
+                            )
+                        # If we can't hash current audio, we keep the row.
+                        fout.write(json.dumps(row, ensure_ascii=False) + "\n")
+                        kept += 1
 
             if log_every > 0 and processed % log_every == 0:
                 print(
                     f"Processed: {processed:,} | Kept: {kept:,} | Removed duplicates: {dropped:,}"
                 )
+            if commit_every > 0 and processed % commit_every == 0:
+                conn.commit()
+                conn.execute("BEGIN")
+
+        conn.commit()
 
     print(
         f"Done. Processed: {processed:,} | Kept: {kept:,} | Removed duplicates: {dropped:,}"
@@ -188,6 +280,11 @@ def dedup_jsonl(
         )
     if removed_files_txt:
         print(f"Removed-file log written to: {removed_files_txt}")
+    if temp_db_path is not None:
+        try:
+            temp_db_path.unlink()
+        except OSError:
+            pass
 
 
 if __name__ == "__main__":
@@ -210,6 +307,23 @@ if __name__ == "__main__":
         default=None,
         help="Optional root directory for relative audio paths in the JSONL.",
     )
+    p.add_argument(
+        "--state-db",
+        default=None,
+        help="Optional SQLite path for dedupe state (default: temporary file).",
+    )
+    p.add_argument(
+        "--hash-cache-size",
+        type=int,
+        default=DEFAULT_HASH_CACHE_SIZE,
+        help="In-memory LRU size for audio file hashes (set <=0 to disable).",
+    )
+    p.add_argument(
+        "--commit-every",
+        type=int,
+        default=DEFAULT_COMMIT_EVERY,
+        help="Commit SQLite state every N rows (set <=0 to commit only at the end).",
+    )
     args = p.parse_args()
     dedup_jsonl(
         args.input_jsonl,
@@ -217,4 +331,7 @@ if __name__ == "__main__":
         log_every=args.log_every,
         removed_files_txt=args.removed_files_txt,
         audio_root=args.audio_root,
+        state_db=args.state_db,
+        hash_cache_size=args.hash_cache_size,
+        commit_every=args.commit_every,
     )
