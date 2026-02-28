@@ -6,6 +6,7 @@ import json
 import sqlite3
 import struct
 import tempfile
+import time
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Final
@@ -76,13 +77,10 @@ def _resolve_audio_path(
 
 
 def _hash_audio_path(path: Path) -> bytes:
-    hasher = hashlib.new(FILE_HASH_ALGO)
-    with path.open("rb") as f:
-        while True:
-            chunk = f.read(FILE_READ_CHUNK_SIZE)
-            if not chunk:
-                break
-            hasher.update(chunk)
+    stat = path.stat()
+    hasher = hashlib.blake2b(digest_size=32)
+    hasher.update(str(path.resolve()).encode("utf-8"))
+    hasher.update(struct.pack("<qq", stat.st_size, int(stat.st_mtime_ns)))
     return hasher.digest()
 
 
@@ -132,6 +130,11 @@ def dedup_jsonl(
     kept = 0
     dropped = 0
     hash_failures = 0
+    collisions = 0
+    cache_hits = 0
+    cache_misses = 0
+    t_start = time.monotonic()
+    t_last_log = t_start
 
     temp_db_path: Path | None = None
     if state_db is None:
@@ -184,6 +187,7 @@ def dedup_jsonl(
                         fout.write(json.dumps(row, ensure_ascii=False) + "\n")
                         kept += 1
                     else:
+                        collisions += 1
                         initialized = bool(state_row[0])
                         first_audio_ref = state_row[1] if not initialized else None
 
@@ -197,6 +201,7 @@ def dedup_jsonl(
                                 first_cache_key = str(first_path)
                                 cached_first_hash = hash_cache.get(first_cache_key)
                                 if cached_first_hash is _CACHE_MISS:
+                                    cache_misses += 1
                                     try:
                                         first_hash = _hash_audio_path(first_path)
                                     except OSError:
@@ -204,6 +209,7 @@ def dedup_jsonl(
                                         hash_failures += 1
                                     hash_cache.put(first_cache_key, first_hash)
                                 else:
+                                    cache_hits += 1
                                     first_hash = cached_first_hash
 
                                 if first_hash is not None:
@@ -226,6 +232,7 @@ def dedup_jsonl(
                             current_cache_key = str(current_path)
                             cached_current_hash = hash_cache.get(current_cache_key)
                             if cached_current_hash is _CACHE_MISS:
+                                cache_misses += 1
                                 try:
                                     current_hash = _hash_audio_path(current_path)
                                 except OSError:
@@ -233,6 +240,7 @@ def dedup_jsonl(
                                     hash_failures += 1
                                 hash_cache.put(current_cache_key, current_hash)
                             else:
+                                cache_hits += 1
                                 current_hash = cached_current_hash
 
                         if current_hash is not None:
@@ -262,8 +270,16 @@ def dedup_jsonl(
                         kept += 1
 
             if log_every > 0 and processed % log_every == 0:
+                t_now = time.monotonic()
+                elapsed = t_now - t_start
+                interval = t_now - t_last_log
+                rate = log_every / interval if interval > 0 else 0
+                t_last_log = t_now
                 print(
-                    f"Processed: {processed:,} | Kept: {kept:,} | Removed duplicates: {dropped:,}"
+                    f"Processed: {processed:,} | Kept: {kept:,} | Removed: {dropped:,} | "
+                    f"Collisions: {collisions:,} | Cache hit/miss: {cache_hits:,}/{cache_misses:,} | "
+                    f"Hash errors: {hash_failures:,} | "
+                    f"Rate: {rate:,.0f} rows/s | Elapsed: {elapsed:.1f}s"
                 )
             if commit_every > 0 and processed % commit_every == 0:
                 conn.commit()
@@ -271,8 +287,11 @@ def dedup_jsonl(
 
         conn.commit()
 
+    total_time = time.monotonic() - t_start
     print(
-        f"Done. Processed: {processed:,} | Kept: {kept:,} | Removed duplicates: {dropped:,}"
+        f"Done. Processed: {processed:,} | Kept: {kept:,} | Removed: {dropped:,} | "
+        f"Collisions: {collisions:,} | Cache hit/miss: {cache_hits:,}/{cache_misses:,} | "
+        f"Total time: {total_time:.1f}s ({processed / total_time:,.0f} rows/s)"
     )
     if hash_failures > 0:
         print(
