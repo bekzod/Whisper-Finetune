@@ -76,11 +76,22 @@ def _resolve_audio_path(
     return manifest_path.parent / raw_path
 
 
+SAMPLE_CHUNK = 64 * 1024  # 64 KiB from head + tail
+
+
 def _hash_audio_path(path: Path) -> bytes:
     stat = path.stat()
+    size = stat.st_size
     hasher = hashlib.blake2b(digest_size=32)
-    hasher.update(str(path.resolve()).encode("utf-8"))
-    hasher.update(struct.pack("<qq", stat.st_size, int(stat.st_mtime_ns)))
+    hasher.update(struct.pack("<q", size))
+    with path.open("rb") as f:
+        head = f.read(SAMPLE_CHUNK)
+        hasher.update(head)
+        if size > SAMPLE_CHUNK * 2:
+            f.seek(-SAMPLE_CHUNK, 2)
+            hasher.update(f.read(SAMPLE_CHUNK))
+        elif size > len(head):
+            hasher.update(f.read())
     return hasher.digest()
 
 
