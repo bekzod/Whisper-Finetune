@@ -41,6 +41,7 @@ Notes:
 """
 
 import argparse
+import glob as _glob
 import heapq
 import json
 import logging
@@ -411,8 +412,6 @@ def main():
 
     # Clean stale worker/unsorted files when NOT resuming
     if not args.resume:
-        import glob as _glob
-
         for stale in _glob.glob(f"{args.output_prefix}._worker_*.jsonl"):
             os.remove(stale)
             LOGGER.info("Removed stale worker file: %s", stale)
@@ -617,8 +616,6 @@ def main():
     except OSError:
         pass
     # Remove worker shard files from multi-worker runs
-    import glob as _glob
-
     for wf in _glob.glob(f"{args.output_prefix}._worker_*.jsonl"):
         try:
             os.remove(wf)
