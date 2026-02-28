@@ -111,6 +111,7 @@ _HF_TEXT_CANDIDATE_KEYS = (
     "text",
     "text_latin",
     "transcription",
+    "original_sentence",
     "transcript",
     "label",
     "normalized_text",
