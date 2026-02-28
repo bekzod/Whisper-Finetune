@@ -107,6 +107,7 @@ _HF_AUDIO_CANDIDATE_KEYS = (
     "wav",
 )
 _HF_TEXT_CANDIDATE_KEYS = (
+    "clear_sentence",
     "sentence",
     "text",
     "text_latin",

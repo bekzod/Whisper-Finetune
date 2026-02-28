@@ -5,6 +5,10 @@
       "splits": ["train"]
     },
     {
+      "name": "mrmuminov/audio_small_uz",
+      "splits": ["train"]
+    },
+    {
       "name": "bekzod123/uzbek_voice_3",
       "splits": ["train", "validation"]
     },
