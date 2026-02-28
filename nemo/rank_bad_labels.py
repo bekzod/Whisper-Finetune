@@ -28,6 +28,9 @@ Install:
   pip install nemo_toolkit['asr'] jiwer soundfile librosa pandas tqdm
 
 Notes:
+  - Streams results to disk incrementally — only one batch + a top-K heap
+    are held in memory at a time.
+  - Supports --resume to continue from where a previous run left off.
   - This version uses robust, model-agnostic signals:
       * WER / CER between existing text and model hypothesis
       * normalized edit distances
@@ -38,13 +41,15 @@ Notes:
 """
 
 import argparse
+import heapq
 import json
 import logging
 import math
 import os
 import re
+from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterator, List, Tuple
 
 import pandas as pd
 from tqdm import tqdm
@@ -61,6 +66,8 @@ from jiwer import cer, wer
 _WHITESPACE_RE = re.compile(r"\s+")
 _PUNCT_RE = re.compile(r"[^\w\s]", flags=re.UNICODE)
 LOGGER = logging.getLogger(__name__)
+
+TOP_K = 500
 
 
 def normalize_text(
@@ -98,8 +105,18 @@ def get_duration_seconds(audio_path: str) -> float:
     return float(info.frames) / float(info.samplerate)
 
 
-def load_manifest(path: str) -> List[Dict[str, Any]]:
-    rows = []
+def count_manifest_lines(path: str) -> int:
+    """Quick first pass to count non-empty lines for progress bars."""
+    count = 0
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                count += 1
+    return count
+
+
+def iter_manifest(path: str) -> Iterator[Dict[str, Any]]:
+    """Yield one row at a time from a JSONL manifest."""
     with open(path, "r", encoding="utf-8") as f:
         for lineno, line in enumerate(f, start=1):
             line = line.strip()
@@ -115,13 +132,19 @@ def load_manifest(path: str) -> List[Dict[str, Any]]:
             if "text" not in item:
                 raise ValueError(f"Line {lineno} missing 'text'")
 
-            rows.append(item)
-    return rows
+            yield item
 
 
-def batchify(xs: List[Any], batch_size: int):
-    for i in range(0, len(xs), batch_size):
-        yield xs[i : i + batch_size]
+def batchify_iter(it: Iterator[Any], batch_size: int) -> Iterator[List[Any]]:
+    """Collect items from an iterator into batches."""
+    batch = []
+    for item in it:
+        batch.append(item)
+        if len(batch) == batch_size:
+            yield batch
+            batch = []
+    if batch:
+        yield batch
 
 
 def transcribe_batch(model, audio_paths: List[str]) -> List[str]:
@@ -188,10 +211,9 @@ def compute_row_scores(
         cps_mismatch = 0.0
 
     # Heuristic score: emphasize transcript disagreement first.
-    # Saturate each component into [0,1] so one metric cannot dominate too hard.
-    wer_s = clamp01(row_wer)  # already often in [0, 1+]
+    wer_s = clamp01(row_wer)
     cer_s = clamp01(row_cer)
-    word_len_s = clamp01(word_len_mismatch / 1.0)  # ln(2) ~ 0.69 => noticeable mismatch
+    word_len_s = clamp01(word_len_mismatch / 1.0)
     char_len_s = clamp01(char_len_mismatch / 1.0)
     cps_s = clamp01(cps_mismatch / 0.7)
 
@@ -203,7 +225,6 @@ def compute_row_scores(
         + 0.05 * cps_s
     )
 
-    # Buckets that are useful when listening
     if suspicion >= 0.85:
         bucket = "very_high"
     elif suspicion >= 0.65:
@@ -231,6 +252,18 @@ def compute_row_scores(
     }
 
 
+def prepare_row(row: Dict[str, Any], manifest_dir: str, resolve_relative: bool) -> None:
+    """Resolve paths and fill missing durations in-place."""
+    if resolve_relative and not os.path.isabs(row["audio_filepath"]):
+        row["audio_filepath"] = str(Path(manifest_dir) / row["audio_filepath"])
+
+    if "duration" not in row or row["duration"] in (None, ""):
+        try:
+            row["duration"] = get_duration_seconds(row["audio_filepath"])
+        except Exception:
+            row["duration"] = float("nan")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest", required=True, help="Input JSONL manifest")
@@ -250,6 +283,10 @@ def main():
     parser.add_argument(
         "--resolve-relative-to-manifest", action="store_true", default=False
     )
+    parser.add_argument(
+        "--resume", action="store_true", default=False,
+        help="Resume from a previous interrupted run",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -257,25 +294,21 @@ def main():
         format="%(asctime)s | %(levelname)s | %(message)s",
     )
 
-    LOGGER.info("Loading manifest: %s", args.manifest)
-    rows = load_manifest(args.manifest)
-    LOGGER.info("Loaded %d rows", len(rows))
     manifest_dir = str(Path(args.manifest).resolve().parent)
+    unsorted_path = f"{args.output_prefix}._unsorted.jsonl"
 
-    missing_duration = 0
-    for row in tqdm(rows, desc="Preparing rows"):
-        if args.resolve_relative_to_manifest and not os.path.isabs(
-            row["audio_filepath"]
-        ):
-            row["audio_filepath"] = str(Path(manifest_dir) / row["audio_filepath"])
+    # Count total rows for progress bar
+    LOGGER.info("Counting manifest rows: %s", args.manifest)
+    total_rows = count_manifest_lines(args.manifest)
+    LOGGER.info("Total rows: %d", total_rows)
 
-        if "duration" not in row or row["duration"] in (None, ""):
-            missing_duration += 1
-            try:
-                row["duration"] = get_duration_seconds(row["audio_filepath"])
-            except Exception:
-                row["duration"] = float("nan")
-    LOGGER.info("Rows missing duration: %d", missing_duration)
+    # Resume support: count already-processed lines
+    skip_rows = 0
+    if args.resume and os.path.exists(unsorted_path):
+        with open(unsorted_path, "r", encoding="utf-8") as f:
+            for _ in f:
+                skip_rows += 1
+        LOGGER.info("Resuming: skipping %d already-processed rows", skip_rows)
 
     # Load model
     LOGGER.info("Loading model: %s", args.model)
@@ -288,52 +321,104 @@ def main():
         model = model.cuda()
     LOGGER.info("Model ready on device: %s", args.device)
 
-    # Transcribe
-    audio_paths = [r["audio_filepath"] for r in rows]
-    hypotheses: List[str] = []
-    total_batches = math.ceil(len(audio_paths) / max(1, args.batch_size))
+    # Streaming pass: transcribe + score + write to disk batch by batch
+    # Top-K heap: stores (suspicion_score, row_index, row_dict) — min-heap so
+    # smallest scores get evicted first.
+    top_k_heap: List[Tuple[float, int, Dict]] = []
+    bucket_counts: Counter = Counter()
+    rows_processed = 0
+
+    manifest_iter = iter_manifest(args.manifest)
+
+    # Skip already-processed rows when resuming
+    if skip_rows > 0:
+        for _ in zip(range(skip_rows), manifest_iter):
+            pass
+        rows_processed = skip_rows
+
+    open_mode = "a" if (args.resume and skip_rows > 0) else "w"
+    remaining = total_rows - skip_rows
+    total_batches = math.ceil(remaining / max(1, args.batch_size))
+
     LOGGER.info(
         "Starting transcription for %d files (%d batches, batch_size=%d)",
-        len(audio_paths),
+        remaining,
         total_batches,
         args.batch_size,
     )
-    for batch in tqdm(
-        batchify(audio_paths, args.batch_size), total=total_batches, desc="Transcribing"
-    ):
-        hyps = transcribe_batch(model, batch)
-        hypotheses.extend(hyps)
-    LOGGER.info("Transcription complete: %d hypotheses", len(hypotheses))
 
-    if len(hypotheses) != len(rows):
-        raise RuntimeError(
-            f"Mismatch: got {len(hypotheses)} hypotheses for {len(rows)} rows"
-        )
+    with open(unsorted_path, open_mode, encoding="utf-8") as out_f:
+        for batch_rows in tqdm(
+            batchify_iter(manifest_iter, args.batch_size),
+            total=total_batches,
+            desc="Transcribing & scoring",
+        ):
+            # Prepare rows (resolve paths, fill durations)
+            for row in batch_rows:
+                prepare_row(row, manifest_dir, args.resolve_relative_to_manifest)
 
-    # Score
-    LOGGER.info("Scoring hypotheses against references")
-    out_rows = []
-    for row, hyp in tqdm(zip(rows, hypotheses), total=len(rows), desc="Scoring"):
-        ref = row["text"]
-        duration = row.get("duration", float("nan"))
+            # Transcribe
+            audio_paths = [r["audio_filepath"] for r in batch_rows]
+            hyps = transcribe_batch(model, audio_paths)
 
-        metrics = compute_row_scores(
-            ref_raw=ref,
-            hyp_raw=hyp,
-            duration=duration,
-            lowercase=args.lowercase,
-            remove_punctuation=args.remove_punctuation,
-        )
+            # Score and write each row
+            for row, hyp in zip(batch_rows, hyps):
+                metrics = compute_row_scores(
+                    ref_raw=row["text"],
+                    hyp_raw=hyp,
+                    duration=row.get("duration", float("nan")),
+                    lowercase=args.lowercase,
+                    remove_punctuation=args.remove_punctuation,
+                )
 
-        out = dict(row)
-        out["model_hypothesis"] = hyp
-        out.update(metrics)
-        out_rows.append(out)
+                out = dict(row)
+                out["model_hypothesis"] = hyp
+                out.update(metrics)
 
-    df = pd.DataFrame(out_rows)
-    df = df.sort_values(["suspicion_score", "wer", "cer"], ascending=False).reset_index(
-        drop=True
-    )
+                # Write to disk immediately
+                out_f.write(json.dumps(out, ensure_ascii=False) + "\n")
+
+                # Update bucket counter
+                bucket_counts[metrics["bucket"]] += 1
+
+                # Maintain top-K heap
+                score = metrics["suspicion_score"]
+                entry = (score, rows_processed, out)
+                if len(top_k_heap) < TOP_K:
+                    heapq.heappush(top_k_heap, entry)
+                elif score > top_k_heap[0][0]:
+                    heapq.heapreplace(top_k_heap, entry)
+
+                rows_processed += 1
+
+            # Flush after each batch so progress is saved
+            out_f.flush()
+
+    LOGGER.info("Streaming pass complete: %d rows processed", rows_processed)
+
+    # If resuming, we need to rebuild bucket_counts and top_k_heap from the
+    # full unsorted file (since we only tracked the new rows above).
+    if skip_rows > 0:
+        LOGGER.info("Rebuilding stats from full unsorted file for resume consistency")
+        top_k_heap = []
+        bucket_counts = Counter()
+        with open(unsorted_path, "r", encoding="utf-8") as f:
+            for idx, line in enumerate(f):
+                rec = json.loads(line)
+                bucket_counts[rec["bucket"]] += 1
+                score = rec["suspicion_score"]
+                entry = (score, idx, rec)
+                if len(top_k_heap) < TOP_K:
+                    heapq.heappush(top_k_heap, entry)
+                elif score > top_k_heap[0][0]:
+                    heapq.heapreplace(top_k_heap, entry)
+
+    # Sort and write final outputs
+    LOGGER.info("Reading unsorted results for final sort")
+    df = pd.read_json(unsorted_path, lines=True)
+    df = df.sort_values(
+        ["suspicion_score", "wer", "cer"], ascending=False
+    ).reset_index(drop=True)
 
     csv_path = f"{args.output_prefix}.csv"
     jsonl_path = f"{args.output_prefix}.jsonl"
@@ -346,16 +431,26 @@ def main():
         for rec in df.to_dict(orient="records"):
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
-    df.head(500).to_csv(top500_path, index=False)
+    # Top 500 from heap (already in memory, no need to read from disk)
+    top_k_sorted = sorted(top_k_heap, key=lambda x: x[0], reverse=True)
+    top_k_rows = [entry[2] for entry in top_k_sorted]
+    pd.DataFrame(top_k_rows).to_csv(top500_path, index=False)
 
     LOGGER.info("Saved: %s", csv_path)
     LOGGER.info("Saved: %s", jsonl_path)
     LOGGER.info("Saved: %s", top500_path)
 
-    # Simple summary
+    # Clean up temp file
+    try:
+        os.remove(unsorted_path)
+    except OSError:
+        pass
+
+    # Summary
     print()
     print("Bucket counts:")
-    print(df["bucket"].value_counts(dropna=False).to_string())
+    for bucket in ["very_high", "high", "medium", "low"]:
+        print(f"  {bucket:>10s}  {bucket_counts.get(bucket, 0)}")
 
     print()
     print("Top 10 suspicious rows:")
@@ -368,7 +463,8 @@ def main():
         "text",
         "model_hypothesis",
     ]
-    print(df[cols].head(10).to_string(index=False))
+    top10 = [entry[2] for entry in top_k_sorted[:10]]
+    print(pd.DataFrame(top10)[cols].to_string(index=False))
 
 
 if __name__ == "__main__":
