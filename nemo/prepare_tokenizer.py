@@ -214,7 +214,7 @@ parser.add_argument(
 parser.add_argument(
     "--max_line_occurrence",
     type=int,
-    default=3,
+    default=1,
     help="Maximum times the same cleaned line can appear in corpus (0 = no limit).",
 )
 parser.add_argument(
