@@ -34,7 +34,7 @@ model:
   train_ds:
     manifest_filepath: ./output/train_manifest.jsonl
     sample_rate: ${model.sample_rate}
-    batch_size: 32
+    batch_size: 34
     shuffle: true
     num_workers: 24
     pin_memory: true
