@@ -290,10 +290,9 @@ model:
 
     # scheduler setup
     sched:
-      name: NoamAnnealing
-      d_model: ${model.encoder.d_model}
-      # scheduler config override
-      warmup_steps: 8000
+      name: CosineAnnealing
+      # scheduler config
+      warmup_steps: 20000
       warmup_ratio: null
       min_lr: 1e-6
 
