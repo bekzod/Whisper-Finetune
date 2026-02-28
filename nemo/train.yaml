@@ -301,7 +301,7 @@ trainer:
   num_nodes: 1
   max_epochs: 500
   max_steps: -1
-  val_check_interval: 1.0
+  val_check_interval: 0.5
   accelerator: gpu
   # Let Lightning pick the right strategy (`single_device` or `ddp`) from devices/nodes.
   strategy: auto
