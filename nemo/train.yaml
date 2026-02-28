@@ -39,7 +39,7 @@ model:
     num_workers: 24
     pin_memory: true
     max_duration: 29.5
-    min_duration: 0.1
+    min_duration: 0.15
 
     # tarred datasets
     is_tarred: false
