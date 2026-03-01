@@ -1,10 +1,6 @@
 {
   "train": [
     {
-      "name": "mrmuminov/uzbek_voice",
-      "splits": ["train"]
-    },
-    {
       "name": "mrmuminov/audio_small_uz",
       "splits": ["train"]
     },
