@@ -64,6 +64,7 @@ except ImportError:
 
 # NeMo
 import nemo.collections.asr as nemo_asr
+from huggingface_hub import hf_hub_download
 from jiwer import cer, wer
 
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -284,9 +285,32 @@ def _collect_done_audio_paths(worker_paths: List[str]) -> set:
     return done
 
 
+def _resolve_model_path(model_name: str, model_filename: str = None) -> str:
+    """Return a local .nemo path, downloading from HF if model_filename is set."""
+    if model_filename:
+        return hf_hub_download(
+            repo_id=model_name, filename=model_filename, repo_type="model"
+        )
+    return model_name
+
+
+def _load_asr_model(model_name: str, model_filename: str = None, device: str = "cuda"):
+    """Load a NeMo ASR model from a local path, HF repo file, or pretrained name."""
+    path = _resolve_model_path(model_name, model_filename)
+    if path.endswith(".nemo") and os.path.exists(path):
+        model = nemo_asr.models.ASRModel.restore_from(path, map_location=device)
+    else:
+        model = nemo_asr.models.ASRModel.from_pretrained(model_name=path)
+    if device == "cuda":
+        model = model.cuda()
+    model.eval()
+    return model
+
+
 def _worker_transcribe(
     worker_id: int,
     model_name: str,
+    model_filename: str,
     device: str,
     chunk: List[Dict[str, Any]],
     batch_size: int,
@@ -321,15 +345,8 @@ def _worker_transcribe(
         log.info("Nothing to do, all rows already processed")
         return
 
-    log.info("Loading model: %s", model_name)
-    if model_name.endswith(".nemo") and os.path.exists(model_name):
-        model = nemo_asr.models.ASRModel.restore_from(model_name)
-    else:
-        model = nemo_asr.models.ASRModel.from_pretrained(model_name=model_name)
-
-    if device == "cuda":
-        model = model.cuda()
-    model.eval()
+    log.info("Loading model: %s (filename=%s)", model_name, model_filename)
+    model = _load_asr_model(model_name, model_filename, device)
     log.info("Model ready, processing %d rows", len(chunk))
 
     with open(output_path, "a", encoding="utf-8") as out_f:
@@ -376,6 +393,12 @@ def main():
         "--model",
         default="nvidia/parakeet-tdt-0.6b-v3",
         help="NeMo/HF model name or local .nemo path",
+    )
+    parser.add_argument(
+        "--model-filename",
+        default=None,
+        help="Filename inside the HF repo to download (e.g. 'nemo_asr_2.nemo'). "
+        "When set, uses hf_hub_download to fetch the file from --model repo.",
     )
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--output-prefix", default="ranked_manifest")
@@ -489,6 +512,7 @@ def main():
                 args=(
                     i,
                     args.model,
+                    args.model_filename,
                     args.device,
                     chunk,
                     args.batch_size,
@@ -521,15 +545,8 @@ def main():
 
     elif remaining > 0:
         # --- Single-worker path (original logic) ---
-        LOGGER.info("Loading model: %s", args.model)
-        if args.model.endswith(".nemo") and os.path.exists(args.model):
-            model = nemo_asr.models.ASRModel.restore_from(args.model)
-        else:
-            model = nemo_asr.models.ASRModel.from_pretrained(model_name=args.model)
-
-        if args.device == "cuda":
-            model = model.cuda()
-        model.eval()
+        LOGGER.info("Loading model: %s (filename=%s)", args.model, args.model_filename)
+        model = _load_asr_model(args.model, args.model_filename, args.device)
         LOGGER.info("Model ready on device: %s", args.device)
 
         total_batches = math.ceil(remaining / max(1, args.batch_size))
