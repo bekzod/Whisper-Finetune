@@ -11,9 +11,6 @@ name: "FastConformer-Hybrid-TDT-CTC-BPE"
 init_from_pretrained_model:
   model0:
     name: "./nemo_asr_2"
-    include: ["encoder"]
-
-freeze_encoder_steps: 8000
 
 model:
   sample_rate: 16000
@@ -38,7 +35,7 @@ model:
     shuffle: true
     num_workers: 24
     pin_memory: true
-    max_duration: 29.5
+    max_duration: 30
     min_duration: 0.15
 
     # tarred datasets
@@ -96,7 +93,7 @@ model:
     #     max_snr_db: 30
 
   validation_ds:
-    manifest_filepath: ./output/eval_manifest.jsonl
+    manifest_filepath: ./output/eval_manifest_lowercase.jsonl
     sample_rate: ${model.sample_rate}
     # Keep validation batch conservative since utterance lengths are often long/variable.
     batch_size: 44
@@ -282,7 +279,7 @@ model:
 
   optim:
     name: adamw
-    lr: 1
+    lr: 1e-4
     # optimizer arguments
     betas: [0.9, 0.98]
     weight_decay: 1e-3
@@ -291,7 +288,7 @@ model:
     sched:
       name: CosineAnnealing
       # scheduler config
-      warmup_steps: 20000
+      warmup_steps: 3000
       warmup_ratio: null
       min_lr: 1e-6
 
