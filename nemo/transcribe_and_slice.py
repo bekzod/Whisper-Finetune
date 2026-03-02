@@ -27,11 +27,11 @@ import logging
 import os
 from pathlib import Path
 
+import nemo.collections.asr as nemo_asr
 import soundfile as sf
 import torch
+from huggingface_hub import hf_hub_download
 from tqdm import tqdm
-
-import nemo.collections.asr as nemo_asr
 
 LOGGER = logging.getLogger(__name__)
 
@@ -67,31 +67,37 @@ def transcribe_with_timestamps(model, audio_paths: list[str]) -> list[list[dict]
             ts = out.timestep
             if hasattr(ts, "segments") and ts.segments:
                 for seg in ts.segments:
-                    segments.append({
-                        "start": seg.start,
-                        "end": seg.end,
-                        "text": seg.text if hasattr(seg, "text") else str(seg),
-                    })
+                    segments.append(
+                        {
+                            "start": seg.start,
+                            "end": seg.end,
+                            "text": seg.text if hasattr(seg, "text") else str(seg),
+                        }
+                    )
             elif hasattr(ts, "words") and ts.words:
                 # Fall back to word-level timestamps grouped into segments
                 # Group words into segments by silence gaps
                 segments = _words_to_segments(ts.words)
         elif hasattr(out, "segments") and out.segments:
             for seg in out.segments:
-                segments.append({
-                    "start": seg.start if hasattr(seg, "start") else seg["start"],
-                    "end": seg.end if hasattr(seg, "end") else seg["end"],
-                    "text": seg.text if hasattr(seg, "text") else seg["text"],
-                })
+                segments.append(
+                    {
+                        "start": seg.start if hasattr(seg, "start") else seg["start"],
+                        "end": seg.end if hasattr(seg, "end") else seg["end"],
+                        "text": seg.text if hasattr(seg, "text") else seg["text"],
+                    }
+                )
 
         if not segments:
             # Fallback: entire file as one segment
             text = out.text if hasattr(out, "text") else str(out)
-            segments.append({
-                "start": None,
-                "end": None,
-                "text": text,
-            })
+            segments.append(
+                {
+                    "start": None,
+                    "end": None,
+                    "text": text,
+                }
+            )
 
         all_segments.append(segments)
     return all_segments
@@ -117,11 +123,13 @@ def _words_to_segments(words, gap_threshold: float = 0.5) -> list[dict]:
             current_end = w_end
             current_words.append(w_text)
         elif w_start - current_end > gap_threshold:
-            segments.append({
-                "start": current_start,
-                "end": current_end,
-                "text": " ".join(current_words).strip(),
-            })
+            segments.append(
+                {
+                    "start": current_start,
+                    "end": current_end,
+                    "text": " ".join(current_words).strip(),
+                }
+            )
             current_start = w_start
             current_end = w_end
             current_words = [w_text]
@@ -130,11 +138,13 @@ def _words_to_segments(words, gap_threshold: float = 0.5) -> list[dict]:
             current_words.append(w_text)
 
     if current_words:
-        segments.append({
-            "start": current_start,
-            "end": current_end,
-            "text": " ".join(current_words).strip(),
-        })
+        segments.append(
+            {
+                "start": current_start,
+                "end": current_end,
+                "text": " ".join(current_words).strip(),
+            }
+        )
 
     return segments
 
@@ -157,7 +167,9 @@ def slice_and_save(
     end_frame = int(end * sr)
     num_frames = end_frame - start_frame
 
-    data, file_sr = sf.read(source_path, start=start_frame, frames=num_frames, dtype="float32")
+    data, file_sr = sf.read(
+        source_path, start=start_frame, frames=num_frames, dtype="float32"
+    )
 
     # Convert to mono if needed
     if data.ndim > 1:
@@ -166,6 +178,7 @@ def slice_and_save(
     # Resample if needed
     if file_sr != target_sr:
         import librosa
+
         data = librosa.resample(data, orig_sr=file_sr, target_sr=target_sr)
 
     sf.write(output_path, data, target_sr, subtype="PCM_16")
@@ -184,7 +197,7 @@ def main():
     )
     parser.add_argument(
         "--model",
-        default="nvidia/parakeet-tdt-0.6b-v3",
+        default="bekzod123/nemo_asr_2",
         help="NeMo/HF model name or local .nemo path",
     )
     parser.add_argument("--batch-size", type=int, default=8)
@@ -215,11 +228,15 @@ def main():
     # Load model on CPU
     LOGGER.info("Loading model: %s", args.model)
     if args.model.endswith(".nemo") and os.path.exists(args.model):
-        model = nemo_asr.models.ASRModel.restore_from(args.model)
+        local_nemo_path = args.model
     else:
-        model = nemo_asr.models.ASRModel.from_pretrained(model_name=args.model)
+        local_nemo_path = hf_hub_download(
+            repo_id=args.model, filename="nemo_asr_2-3.nemo", repo_type="model"
+        )
 
-    model = model.cpu()
+    model = nemo_asr.models.ASRModel.restore_from(
+        restore_path=local_nemo_path, map_location="cpu"
+    )
     model.eval()
     LOGGER.info("Model ready on CPU")
 
