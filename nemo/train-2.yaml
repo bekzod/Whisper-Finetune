@@ -32,7 +32,7 @@ model:
     num_tdt_durations: 5
 
   train_ds:
-    manifest_filepath: ./output/train_manifest.jsonl
+    manifest_filepath: ./output/train_manifest_lowercase.jsonl
     sample_rate: ${model.sample_rate}
     batch_size: 34
     shuffle: true
@@ -340,7 +340,7 @@ exp_manager:
     log_model: false # set to true to log model checkpoints to wandb
 
 # Keep the current working directory stable (Hydra otherwise runs inside a generated output dir,
-# which breaks relative paths like `./output/train_manifest.jsonl`).
+# which breaks relative paths like `./output/train_manifest_lowercase.jsonl`).
 hydra:
   job:
     chdir: false
