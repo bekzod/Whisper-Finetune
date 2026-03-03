@@ -239,8 +239,6 @@ def compute_row_scores(
         bucket = "low"
 
     return {
-        "ref_norm": ref,
-        "hyp_norm": hyp,
         "wer": row_wer,
         "cer": row_cer,
         "ref_words": len(ref_words),
