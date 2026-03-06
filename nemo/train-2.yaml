@@ -8,9 +8,7 @@ name: "FastConformer-Hybrid-TDT-CTC-BPE"
 
 # Initialize encoder from pretrained model for fine-tuning
 # This loads only the encoder weights, allowing use of custom Uzbek tokenizer for decoder
-init_from_nemo_model:
-  model0:
-    name: "./nemo_asr_2.nemo"
+init_from_nemo_model: "./nemo_asr_2.nemo"
 
 model:
   sample_rate: 16000
