@@ -278,7 +278,7 @@ exp_manager:
   resume_if_exists: false
   resume_ignore_no_checkpoint: false
 
-  create_wandb_logger: false
+  create_wandb_logger: true
   wandb_logger_kwargs:
     name: ${name}
     project: "parakeet-nemo-asr"
