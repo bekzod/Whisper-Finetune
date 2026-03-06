@@ -185,6 +185,7 @@ model:
 
     # greedy strategy config
     greedy:
+      use_cuda_graph_decoder: false
       max_symbols: 10
 
     # beam strategy config
