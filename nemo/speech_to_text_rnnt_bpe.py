@@ -1,6 +1,6 @@
 import os
 
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 import torch
 from nemo.collections.asr.models import EncDecHybridRNNTCTCBPEModel
 from nemo.core.config import hydra_runner
