@@ -31,11 +31,11 @@ model:
   train_ds:
     manifest_filepath: ???
     sample_rate: ${model.sample_rate}
-    batch_size: 16 # you may increase batch_size if your memory allows
+    batch_size: 34 # you may increase batch_size if your memory allows
     shuffle: true
-    num_workers: 8
+    num_workers: 12
     pin_memory: true
-    max_duration: 20 # you may need to update it for your dataset
+    max_duration: 29.5
     min_duration: 0.1
     # tarred datasets
     is_tarred: false
@@ -48,7 +48,7 @@ model:
   validation_ds:
     manifest_filepath: ???
     sample_rate: ${model.sample_rate}
-    batch_size: 16
+    batch_size: 44
     shuffle: false
     use_start_end_token: false
     num_workers: 8
