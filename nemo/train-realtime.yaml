@@ -29,7 +29,7 @@ model:
     joint_hidden: 640
 
   train_ds:
-    manifest_filepath: ???
+    manifest_filepath: ./output/train_manifest.jsonl
     sample_rate: ${model.sample_rate}
     batch_size: 34 # you may increase batch_size if your memory allows
     shuffle: true
@@ -46,7 +46,7 @@ model:
     bucketing_batch_size: null
 
   validation_ds:
-    manifest_filepath: ???
+    manifest_filepath: ./output/eval_manifest.jsonl
     sample_rate: ${model.sample_rate}
     batch_size: 44
     shuffle: false
@@ -66,7 +66,7 @@ model:
   # You may find more detail on how to train a tokenizer at: /scripts/tokenizers/process_asr_text_tokenizer.py
   # We recommend to use vocab size of 1024 with SPE Unigram for most languages
   tokenizer:
-    dir: ??? # path to directory which contains either tokenizer.model (bpe) or vocab.txt (for wpe)
+    dir: ./tokenizer_spe_bpe_v1024 # path to directory which contains either tokenizer.model (bpe) or vocab.txt (for wpe)
     type: bpe # Can be either bpe (SentencePiece tokenizer) or wpe (WordPiece tokenizer)
 
   preprocessor:
