@@ -14,7 +14,7 @@ name: "FastConformer-Hybrid-Transducer-CTC-BPE-Streaming"
 
 init_from_pretrained_model:
   model0:
-    name: "nvidia/stt_en_fastconformer_hybrid_medium_streaming_80ms"
+    name: "nvidia/stt_en_fastconformer_hybrid_large_streaming_multi"
     include: ["encoder"]
 
 model:
