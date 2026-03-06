@@ -12,7 +12,10 @@
 
 name: "FastConformer-Hybrid-Transducer-CTC-BPE-Streaming"
 
-init_from_nemo_model: "./nemo_asr_2.nemo"
+init_from_pretrained_model:
+  model0:
+    name: "nvidia/stt_en_fastconformer_hybrid_medium_streaming_80ms"
+    include: ["encoder"]
 
 model:
   sample_rate: 16000
