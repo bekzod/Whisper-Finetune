@@ -286,8 +286,7 @@ model:
     sched:
       name: CosineAnnealing
       # scheduler config
-      warmup_steps: null
-      warmup_ratio: 0.1
+      warmup_steps: 17000
       min_lr: 1e-5
 
 trainer:
