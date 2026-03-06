@@ -20,8 +20,8 @@ init_from_pretrained_model:
 model:
   sample_rate: 16000
   compute_eval_loss: false # eval samples can be very long and exhaust memory. Disable computation of transducer loss during validation/testing with this flag.
-  log_prediction: true # enables logging sample predictions in the output during training
-  skip_nan_grad: false
+  log_prediction: false # enables logging sample predictions in the output during training
+  skip_nan_grad: true
 
   model_defaults:
     enc_hidden: ${model.encoder.d_model}
@@ -247,7 +247,7 @@ trainer:
   num_nodes: 1
   max_epochs: 1000
   max_steps: -1 # computed at runtime if not set
-  val_check_interval: 1.0 # Set to 0.25 to check 4 times per epoch, or an int for number of iterations
+  val_check_interval: 1
   accelerator: auto
   strategy:
     _target_: lightning.pytorch.strategies.DDPStrategy
@@ -255,7 +255,7 @@ trainer:
   accumulate_grad_batches: 1
   gradient_clip_val: 1.0
   precision: bf16-mixed
-  log_every_n_steps: 10 # Interval of logging.
+  log_every_n_steps: 1000
   enable_progress_bar: True
   num_sanity_val_steps: 0 # number of steps to perform validation steps for sanity check the validation process before starting the training, setting to 0 disables it
   check_val_every_n_epoch: 1 # number of evaluations on validation every n epochs
@@ -267,10 +267,9 @@ trainer:
 exp_manager:
   exp_dir: null
   name: ${name}
-  create_tensorboard_logger: true
+  create_tensorboard_logger: false
   create_checkpoint_callback: true
   checkpoint_callback_params:
-    # in case of multiple validation sets, first one is used
     monitor: "val_wer"
     mode: "min"
     save_top_k: 5
@@ -281,5 +280,8 @@ exp_manager:
 
   create_wandb_logger: false
   wandb_logger_kwargs:
-    name: null
-    project: null
+    name: ${name}
+    project: "parakeet-nemo-asr"
+    entity: null # set your wandb team/username if needed
+    tags: ["fastconformer", "hybrid", "realtime"]
+    log_model: false # set to true to log model checkpoints to wandb
