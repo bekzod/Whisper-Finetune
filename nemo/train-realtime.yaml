@@ -248,7 +248,6 @@ trainer:
   num_nodes: 1
   max_epochs: 1000
   max_steps: -1 # computed at runtime if not set
-  val_check_interval: 1
   accelerator: auto
   strategy:
     _target_: lightning.pytorch.strategies.DDPStrategy
