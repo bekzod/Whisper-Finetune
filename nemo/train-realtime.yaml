@@ -29,7 +29,7 @@ model:
     joint_hidden: 640
 
   train_ds:
-    manifest_filepath: ./output/train_manifest.jsonl
+    manifest_filepath: ./output/train_manifest_lowercase.jsonl
     sample_rate: ${model.sample_rate}
     batch_size: 34 # you may increase batch_size if your memory allows
     shuffle: true
@@ -46,7 +46,7 @@ model:
     bucketing_batch_size: null
 
   validation_ds:
-    manifest_filepath: ./output/eval_manifest.jsonl
+    manifest_filepath: ./output/eval_manifest_lowercase.jsonl
     sample_rate: ${model.sample_rate}
     batch_size: 44
     shuffle: false
