@@ -15,6 +15,8 @@ Output:
   - ranked CSV
   - ranked JSONL
   sorted by suspicion_score descending
+  - includes best-effort likely_bad_* columns that point to the most suspicious
+    mismatch between the manifest text and the ASR hypothesis
 
 Example:
   python rank_bad_labels.py \
@@ -41,6 +43,7 @@ Notes:
 """
 
 import argparse
+import copy
 import glob as _glob
 import heapq
 import json
@@ -49,8 +52,9 @@ import math
 import os
 import re
 from collections import Counter
+from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import pandas as pd
 import torch
@@ -151,24 +155,311 @@ def batchify_iter(it: Iterator[Any], batch_size: int) -> Iterator[List[Any]]:
         yield batch
 
 
-def transcribe_batch(model, audio_paths: List[str]) -> List[str]:
+def tokenize_text(
+    text: str,
+    lowercase: bool,
+    remove_punctuation: bool,
+) -> List[str]:
+    normalized = normalize_text(
+        text, lowercase=lowercase, remove_punctuation=remove_punctuation
+    )
+    return normalized.split() if normalized else []
+
+
+def _hypothesis_text(output: Any) -> str:
+    if isinstance(output, str):
+        return output
+    if hasattr(output, "text"):
+        return str(output.text)
+    return str(output)
+
+
+def _coerce_confidence(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, torch.Tensor):
+        if value.numel() != 1:
+            return None
+        value = value.item()
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(value):
+        return None
+    return value
+
+
+def _expand_confidences(
+    words: List[str],
+    confidences: Any,
+    lowercase: bool,
+    remove_punctuation: bool,
+) -> Optional[Tuple[List[str], List[Optional[float]]]]:
+    if not isinstance(confidences, (list, tuple)) or len(confidences) != len(words):
+        return None
+
+    expanded_words = []
+    expanded_confidences = []
+    for word, confidence in zip(words, confidences):
+        normalized_parts = tokenize_text(
+            word,
+            lowercase=lowercase,
+            remove_punctuation=remove_punctuation,
+        )
+        if not normalized_parts:
+            continue
+        coerced_confidence = _coerce_confidence(confidence)
+        for part in normalized_parts:
+            expanded_words.append(part)
+            expanded_confidences.append(coerced_confidence)
+
+    return expanded_words, expanded_confidences
+
+
+def _extract_word_confidences(
+    output: Any,
+    lowercase: bool,
+    remove_punctuation: bool,
+) -> Optional[List[Optional[float]]]:
+    hyp_text = _hypothesis_text(output)
+    hyp_words = tokenize_text(
+        hyp_text,
+        lowercase=lowercase,
+        remove_punctuation=remove_punctuation,
+    )
+    if not hyp_words:
+        return None
+
+    direct_conf = _expand_confidences(
+        hyp_text.split(),
+        getattr(output, "word_confidence", None),
+        lowercase=lowercase,
+        remove_punctuation=remove_punctuation,
+    )
+    if direct_conf is not None and direct_conf[0] == hyp_words:
+        return direct_conf[1]
+
+    timestep = getattr(output, "timestep", None)
+    if timestep is not None:
+        timestep_conf = _expand_confidences(
+            hyp_text.split(),
+            getattr(timestep, "word_confidence", None),
+            lowercase=lowercase,
+            remove_punctuation=remove_punctuation,
+        )
+        if timestep_conf is not None and timestep_conf[0] == hyp_words:
+            return timestep_conf[1]
+
+        words = getattr(timestep, "words", None)
+        if isinstance(words, list):
+            parsed_words = []
+            parsed_confidences = []
+            for item in words:
+                if isinstance(item, dict):
+                    word_text = item.get("word") or item.get("text")
+                    conf = item.get("confidence")
+                    if conf is None:
+                        conf = item.get("word_confidence")
+                else:
+                    word_text = getattr(item, "word", None) or getattr(
+                        item, "text", None
+                    )
+                    conf = getattr(item, "confidence", None)
+                    if conf is None:
+                        conf = getattr(item, "word_confidence", None)
+
+                if not word_text:
+                    continue
+
+                normalized_word = normalize_text(
+                    word_text,
+                    lowercase=lowercase,
+                    remove_punctuation=remove_punctuation,
+                )
+                if not normalized_word:
+                    continue
+
+                normalized_parts = normalized_word.split()
+                coerced_confidence = _coerce_confidence(conf)
+                for part in normalized_parts:
+                    parsed_words.append(part)
+                    parsed_confidences.append(coerced_confidence)
+
+            if parsed_words == hyp_words:
+                return parsed_confidences
+
+    return None
+
+
+def transcribe_batch(
+    model,
+    audio_paths: List[str],
+    lowercase: bool,
+    remove_punctuation: bool,
+) -> List[Dict[str, Any]]:
     """
     Works with NeMo ASR models whose transcribe() may return:
       - list[str]
       - list[Hypothesis/text-like objects]
     """
-    outputs = model.transcribe(audio_paths, batch_size=len(audio_paths))
-    hyps = []
+    try:
+        outputs = model.transcribe(
+            audio_paths,
+            batch_size=len(audio_paths),
+            return_hypotheses=True,
+        )
+    except TypeError:
+        outputs = model.transcribe(audio_paths, batch_size=len(audio_paths))
 
+    if isinstance(outputs, tuple) and outputs:
+        outputs = outputs[0]
+
+    hyps = []
     for out in outputs:
-        if isinstance(out, str):
-            hyps.append(out)
-        elif hasattr(out, "text"):
-            hyps.append(out.text)
-        else:
-            hyps.append(str(out))
+        hyps.append(
+            {
+                "text": _hypothesis_text(out),
+                "word_confidences": _extract_word_confidences(
+                    out,
+                    lowercase=lowercase,
+                    remove_punctuation=remove_punctuation,
+                ),
+            }
+        )
 
     return hyps
+
+
+def _best_confidence(
+    confidences: Optional[List[Optional[float]]], start: int, end: int
+) -> Optional[float]:
+    if not confidences or start >= end:
+        return None
+    values = [c for c in confidences[start:end] if c is not None]
+    if not values:
+        return None
+    return min(values)
+
+
+def identify_likely_bad_span(
+    ref_raw: str,
+    hyp_raw: str,
+    hyp_word_confidences: Optional[List[Optional[float]]],
+    lowercase: bool,
+    remove_punctuation: bool,
+) -> Dict[str, Any]:
+    ref_words = tokenize_text(
+        ref_raw, lowercase=lowercase, remove_punctuation=remove_punctuation
+    )
+    hyp_words = tokenize_text(
+        hyp_raw, lowercase=lowercase, remove_punctuation=remove_punctuation
+    )
+
+    default_result = {
+        "likely_bad_text": "",
+        "likely_bad_model_text": "",
+        "likely_bad_operation": "",
+        "likely_bad_word_confidence": None,
+        "likely_bad_has_word_confidence": False,
+    }
+
+    if not ref_words and not hyp_words:
+        return default_result
+
+    candidates = []
+    matcher = SequenceMatcher(a=ref_words, b=hyp_words, autojunk=False)
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            continue
+
+        ref_span = " ".join(ref_words[i1:i2])
+        hyp_span = " ".join(hyp_words[j1:j2])
+        confidence = _best_confidence(hyp_word_confidences, j1, j2)
+
+        if tag == "replace" and (i2 - i1) == (j2 - j1) and (i2 - i1) > 0:
+            for offset in range(i2 - i1):
+                token_conf = _best_confidence(
+                    hyp_word_confidences, j1 + offset, j1 + offset + 1
+                )
+                candidates.append(
+                    {
+                        "likely_bad_text": ref_words[i1 + offset],
+                        "likely_bad_model_text": hyp_words[j1 + offset],
+                        "likely_bad_operation": tag,
+                        "likely_bad_word_confidence": token_conf,
+                        "likely_bad_has_word_confidence": token_conf is not None,
+                        "_rank": (
+                            0 if token_conf is not None else 1,
+                            token_conf if token_conf is not None else 1.0,
+                            0,
+                            i1 + offset,
+                            j1 + offset,
+                        ),
+                    }
+                )
+            continue
+
+        if tag == "delete" and ref_span:
+            for offset, word in enumerate(ref_words[i1:i2]):
+                candidates.append(
+                    {
+                        "likely_bad_text": word,
+                        "likely_bad_model_text": "",
+                        "likely_bad_operation": tag,
+                        "likely_bad_word_confidence": None,
+                        "likely_bad_has_word_confidence": False,
+                        "_rank": (1, 1.0, 0, i1 + offset, j1),
+                    }
+                )
+            continue
+
+        if tag == "insert" and hyp_span:
+            for offset, word in enumerate(hyp_words[j1:j2]):
+                token_conf = _best_confidence(
+                    hyp_word_confidences, j1 + offset, j1 + offset + 1
+                )
+                candidates.append(
+                    {
+                        "likely_bad_text": "",
+                        "likely_bad_model_text": word,
+                        "likely_bad_operation": tag,
+                        "likely_bad_word_confidence": token_conf,
+                        "likely_bad_has_word_confidence": token_conf is not None,
+                        "_rank": (
+                            0 if token_conf is not None else 1,
+                            token_conf if token_conf is not None else 1.0,
+                            1,
+                            i1,
+                            j1 + offset,
+                        ),
+                    }
+                )
+            continue
+
+        candidates.append(
+            {
+                "likely_bad_text": ref_span,
+                "likely_bad_model_text": hyp_span,
+                "likely_bad_operation": tag,
+                "likely_bad_word_confidence": confidence,
+                "likely_bad_has_word_confidence": confidence is not None,
+                "_rank": (
+                    0 if confidence is not None else 1,
+                    confidence if confidence is not None else 1.0,
+                    0 if tag in {"replace", "delete"} else 1,
+                    i1,
+                    j1,
+                ),
+            }
+        )
+
+    if not candidates:
+        return default_result
+
+    best = min(candidates, key=lambda item: item["_rank"])
+    best.pop("_rank", None)
+    return best
 
 
 def compute_row_scores(
@@ -177,7 +468,8 @@ def compute_row_scores(
     duration: float,
     lowercase: bool,
     remove_punctuation: bool,
-) -> Dict[str, float]:
+    hyp_word_confidences: Optional[List[Optional[float]]] = None,
+) -> Dict[str, Any]:
     ref = normalize_text(
         ref_raw, lowercase=lowercase, remove_punctuation=remove_punctuation
     )
@@ -238,7 +530,7 @@ def compute_row_scores(
     else:
         bucket = "low"
 
-    return {
+    metrics = {
         "wer": row_wer,
         "cer": row_cer,
         "ref_words": len(ref_words),
@@ -252,6 +544,16 @@ def compute_row_scores(
         "suspicion_score": suspicion,
         "bucket": bucket,
     }
+    metrics.update(
+        identify_likely_bad_span(
+            ref_raw=ref_raw,
+            hyp_raw=hyp_raw,
+            hyp_word_confidences=hyp_word_confidences,
+            lowercase=lowercase,
+            remove_punctuation=remove_punctuation,
+        )
+    )
+    return metrics
 
 
 def estimate_max_workers(model_size_gb: float = 1.5, headroom_gb: float = 2.0) -> int:
@@ -299,6 +601,19 @@ def _load_asr_model(model_name: str, model_filename: str = None, device: str = "
         model = nemo_asr.models.ASRModel.restore_from(path, map_location=device)
     else:
         model = nemo_asr.models.ASRModel.from_pretrained(model_name=path)
+    try:
+        decoding_cfg = copy.deepcopy(model.cfg.decoding)
+        if hasattr(decoding_cfg, "confidence_cfg"):
+            confidence_cfg = decoding_cfg.confidence_cfg
+            if hasattr(confidence_cfg, "preserve_frame_confidence"):
+                confidence_cfg.preserve_frame_confidence = True
+            if hasattr(confidence_cfg, "preserve_token_confidence"):
+                confidence_cfg.preserve_token_confidence = True
+            if hasattr(confidence_cfg, "preserve_word_confidence"):
+                confidence_cfg.preserve_word_confidence = True
+        model.change_decoding_strategy(decoding_cfg=decoding_cfg)
+    except Exception as exc:
+        LOGGER.debug("Could not enable NeMo confidence outputs: %s", exc)
     if device == "cuda":
         model = model.cuda()
     model.eval()
@@ -352,15 +667,22 @@ def _worker_transcribe(
             batch_rows = chunk[i : i + batch_size]
 
             audio_paths = [r["audio_filepath"] for r in batch_rows]
-            hyps = transcribe_batch(model, audio_paths)
+            hyps = transcribe_batch(
+                model,
+                audio_paths,
+                lowercase=lowercase,
+                remove_punctuation=remove_punctuation,
+            )
 
-            for row, hyp in zip(batch_rows, hyps):
+            for row, hyp_info in zip(batch_rows, hyps):
+                hyp = hyp_info["text"]
                 metrics = compute_row_scores(
                     ref_raw=row["text"],
                     hyp_raw=hyp,
                     duration=row.get("duration", float("nan")),
                     lowercase=lowercase,
                     remove_punctuation=remove_punctuation,
+                    hyp_word_confidences=hyp_info.get("word_confidences"),
                 )
                 out = dict(row)
                 out["model_hypothesis"] = hyp
@@ -382,6 +704,101 @@ def prepare_row(row: Dict[str, Any], manifest_dir: str, resolve_relative: bool) 
             row["duration"] = get_duration_seconds(row["audio_filepath"])
         except Exception:
             row["duration"] = float("nan")
+
+
+def _clean_text_cell(value: Any) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    return str(value).strip()
+
+
+def _most_common_value(values: pd.Series, default: str = "") -> str:
+    counts = Counter()
+    for value in values:
+        cleaned = _clean_text_cell(value)
+        if cleaned:
+            counts[cleaned] += 1
+    if not counts:
+        return default
+    return counts.most_common(1)[0][0]
+
+
+def _mean_or_none(values: pd.Series) -> Optional[float]:
+    numeric = pd.to_numeric(values, errors="coerce").dropna()
+    if numeric.empty:
+        return None
+    return float(numeric.mean())
+
+
+def build_bad_word_report(df: pd.DataFrame) -> pd.DataFrame:
+    report_columns = [
+        "bad_text",
+        "count",
+        "top_model_text",
+        "top_operation",
+        "avg_suspicion_score",
+        "avg_wer",
+        "avg_bad_word_confidence",
+        "example_text",
+        "example_model_hypothesis",
+    ]
+    if df.empty:
+        return pd.DataFrame(columns=report_columns)
+
+    work_df = df.copy()
+    work_df["bad_text"] = work_df["likely_bad_text"].map(_clean_text_cell)
+    work_df["top_model_text"] = work_df["likely_bad_model_text"].map(_clean_text_cell)
+    work_df["top_operation"] = work_df["likely_bad_operation"].map(_clean_text_cell)
+
+    work_df = work_df[
+        (work_df["bad_text"] != "") | (work_df["top_model_text"] != "")
+    ].copy()
+    if work_df.empty:
+        return pd.DataFrame(columns=report_columns)
+
+    work_df.loc[work_df["bad_text"] == "", "bad_text"] = "<missing_in_text>"
+    work_df.loc[work_df["top_model_text"] == "", "top_model_text"] = (
+        "<missing_in_model>"
+    )
+    work_df.loc[work_df["top_operation"] == "", "top_operation"] = "unknown"
+
+    rows = []
+    grouped = work_df.groupby("bad_text", sort=False, dropna=False)
+    for bad_text, group in grouped:
+        ranked_group = group.sort_values(
+            ["suspicion_score", "wer", "cer"], ascending=False
+        )
+        top_row = ranked_group.iloc[0]
+        rows.append(
+            {
+                "bad_text": bad_text,
+                "count": int(len(group)),
+                "top_model_text": _most_common_value(
+                    group["top_model_text"], default="<missing_in_model>"
+                ),
+                "top_operation": _most_common_value(
+                    group["top_operation"], default="unknown"
+                ),
+                "avg_suspicion_score": float(group["suspicion_score"].mean()),
+                "avg_wer": float(group["wer"].mean()),
+                "avg_bad_word_confidence": _mean_or_none(
+                    group["likely_bad_word_confidence"]
+                ),
+                "example_text": _clean_text_cell(top_row.get("text", "")),
+                "example_model_hypothesis": _clean_text_cell(
+                    top_row.get("model_hypothesis", "")
+                ),
+            }
+        )
+
+    report = pd.DataFrame(rows, columns=report_columns)
+    if report.empty:
+        return report
+
+    return report.sort_values(
+        ["count", "avg_suspicion_score", "avg_wer"],
+        ascending=False,
+    ).reset_index(drop=True)
 
 
 def main():
@@ -562,15 +979,22 @@ def main():
                     prepare_row(row, manifest_dir, args.resolve_relative_to_manifest)
 
                 audio_paths = [r["audio_filepath"] for r in batch_rows]
-                hyps = transcribe_batch(model, audio_paths)
+                hyps = transcribe_batch(
+                    model,
+                    audio_paths,
+                    lowercase=args.lowercase,
+                    remove_punctuation=args.remove_punctuation,
+                )
 
-                for row, hyp in zip(batch_rows, hyps):
+                for row, hyp_info in zip(batch_rows, hyps):
+                    hyp = hyp_info["text"]
                     metrics = compute_row_scores(
                         ref_raw=row["text"],
                         hyp_raw=hyp,
                         duration=row.get("duration", float("nan")),
                         lowercase=args.lowercase,
                         remove_punctuation=args.remove_punctuation,
+                        hyp_word_confidences=hyp_info.get("word_confidences"),
                     )
                     out = dict(row)
                     out["model_hypothesis"] = hyp
@@ -608,6 +1032,7 @@ def main():
     csv_path = f"{args.output_prefix}.csv"
     jsonl_path = f"{args.output_prefix}.jsonl"
     top500_path = f"{args.output_prefix}.top500.csv"
+    bad_words_path = f"{args.output_prefix}.bad_words.csv"
 
     LOGGER.info("Writing outputs with prefix: %s", args.output_prefix)
     df.to_csv(csv_path, index=False)
@@ -620,10 +1045,13 @@ def main():
     top_k_sorted = sorted(top_k_heap, key=lambda x: x[0], reverse=True)
     top_k_rows = [entry[2] for entry in top_k_sorted]
     pd.DataFrame(top_k_rows).to_csv(top500_path, index=False)
+    bad_words_df = build_bad_word_report(df)
+    bad_words_df.to_csv(bad_words_path, index=False)
 
     LOGGER.info("Saved: %s", csv_path)
     LOGGER.info("Saved: %s", jsonl_path)
     LOGGER.info("Saved: %s", top500_path)
+    LOGGER.info("Saved: %s", bad_words_path)
 
     # Clean up temp files
     try:
@@ -651,11 +1079,29 @@ def main():
         "suspicion_score",
         "wer",
         "cer",
+        "likely_bad_text",
+        "likely_bad_model_text",
+        "likely_bad_word_confidence",
         "text",
         "model_hypothesis",
     ]
     top10 = [entry[2] for entry in top_k_sorted[:10]]
     print(pd.DataFrame(top10)[cols].to_string(index=False))
+
+    print()
+    print("Top 20 likely bad words:")
+    word_cols = [
+        "bad_text",
+        "count",
+        "top_model_text",
+        "top_operation",
+        "avg_suspicion_score",
+        "avg_bad_word_confidence",
+    ]
+    if bad_words_df.empty:
+        print("  (none)")
+    else:
+        print(bad_words_df.head(20)[word_cols].to_string(index=False))
 
 
 if __name__ == "__main__":
