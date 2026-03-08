@@ -1,0 +1,2 @@
+[console_scripts]
+youtube-hf-dataset = youtube_hf_dataset.cli:main
