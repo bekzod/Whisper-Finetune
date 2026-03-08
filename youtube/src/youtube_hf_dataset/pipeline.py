@@ -25,7 +25,6 @@ class BuildConfig:
     ids_txt: Path
     work_dir: Path
     output_dir: Path
-    max_seconds: float = 28.0
     min_seconds: float = 0.4
     sub_langs: str = "uz-orig,uz,uz-Latn,uz-Cyrl"
     prefer_manual_subs: bool = True
@@ -96,7 +95,6 @@ def build_hf_audio_dataset(config: BuildConfig) -> Path:
 
             segments = cues_as_segments(
                 cues=cues,
-                max_seconds=config.max_seconds,
                 min_seconds=config.min_seconds,
             )
             if not segments:

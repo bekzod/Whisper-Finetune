@@ -1,13 +1,13 @@
 # YouTube -> Hugging Face Audio Dataset
 
-This project downloads YouTube videos from `ids.txt`, fetches captions, cuts audio into chunks using caption timing (max 28 seconds), and saves a Hugging Face `audiofolder` dataset layout.
+This project downloads YouTube videos from `ids.txt`, fetches captions, cuts audio into VTT-aligned chunks, and saves a Hugging Face `audiofolder` dataset layout.
 
 ## What it does
 
 1. Reads IDs/URLs from `ids.txt`.
 2. Downloads Uzbek captions (manual first, auto fallback by default).
 3. Downloads best audio stream and converts it to 16kHz mono WAV.
-4. Uses each VTT cue block as one segment and only splits if a single cue exceeds **28 seconds**.
+4. Uses each VTT cue block as one segment.
 5. Cuts audio chunks with `ffmpeg`.
 6. Writes a Hugging Face `audiofolder` layout (`audio/` + `metadata.csv`).
 
@@ -42,8 +42,7 @@ https://www.youtube.com/watch?v=aqz-KE-bpKQ
 PYTHONPATH=src python3 -m youtube_hf_dataset \
   --ids-txt ids.txt \
   --work-dir data \
-  --output-dir data/hf_audio_dataset \
-  --max-seconds 28
+  --output-dir data/hf_audio_dataset
 ```
 
 Useful flags:

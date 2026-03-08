@@ -10,7 +10,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Download YouTube audio+captions from ids.txt, split with caption timing "
-            "into <= 28-second chunks, and save a Hugging Face audio dataset."
+            "into VTT-aligned chunks, and save a Hugging Face audio dataset."
         )
     )
     parser.add_argument(
@@ -30,12 +30,6 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path("data/hf_audio_dataset"),
         help="Where to save the Hugging Face dataset (save_to_disk format)",
-    )
-    parser.add_argument(
-        "--max-seconds",
-        type=float,
-        default=28.0,
-        help="Maximum segment duration in seconds",
     )
     parser.add_argument(
         "--min-seconds",
@@ -75,7 +69,6 @@ def main() -> None:
         ids_txt=args.ids_txt,
         work_dir=args.work_dir,
         output_dir=args.output_dir,
-        max_seconds=args.max_seconds,
         min_seconds=args.min_seconds,
         sub_langs=args.sub_langs,
         prefer_manual_subs=not args.prefer_auto_subs,
