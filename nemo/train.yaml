@@ -63,19 +63,24 @@ model:
         prob: 0.2
         sr: ${model.sample_rate}
         resample_type: kaiser_fast
-        min_speed_rate: 0.90
-        max_speed_rate: 1.10
+        min_speed_rate: 0.80
+        max_speed_rate: 1.20
         num_rates: 5
 
         #   # Codec/telephone-style distortion (requires sox available in environment)
       transcode_aug:
-        prob: 0.1
+        prob: 0.15
 
       # Random gain (loudness)
       gain:
         prob: 0.2
         min_gain_dbfs: -10
         max_gain_dbfs: 10
+
+      white_noise:
+        prob: 0.05
+        min_level: -50
+        max_level: -10
 
     #   # Small time shift
     #   shift:
