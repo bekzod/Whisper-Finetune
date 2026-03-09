@@ -80,6 +80,7 @@ def build_hf_audio_dataset(config: BuildConfig) -> Path:
                 output_dir=subtitles_dir,
                 sub_langs=config.sub_langs,
                 prefer_manual=config.prefer_manual_subs,
+                cookies=config.cookies,
             )
             if not subtitle_files:
                 print(f"  - no captions found for {video_id}; skipping")
@@ -104,7 +105,8 @@ def build_hf_audio_dataset(config: BuildConfig) -> Path:
 
             try:
                 audio_file = download_audio(
-                    video_url=video_url, output_dir=downloads_dir, video_id=video_id
+                    video_url=video_url, output_dir=downloads_dir, video_id=video_id,
+                    cookies=config.cookies,
                 )
                 full_wav = convert_audio_to_wav16k(
                     audio_file=audio_file, wav_dir=full_wav_dir
