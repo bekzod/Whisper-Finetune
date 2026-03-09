@@ -10,6 +10,8 @@ def resolve_video_id(video_url: str) -> str:
     process = run_command(
         [
             "yt-dlp",
+            "--js-runtimes", "deno:/root/.deno/bin/deno",
+            "--remote-components", "ejs:github",
             "--skip-download",
             "--no-playlist",
             "--print",
@@ -30,6 +32,8 @@ def download_audio(
     run_command(
         [
             "yt-dlp",
+            "--js-runtimes", "deno:/root/.deno/bin/deno",
+            "--remote-components", "ejs:github",
             "-f",
             "bestaudio/best",
             "--no-playlist",
@@ -76,6 +80,8 @@ def download_subtitle_candidates(
         process = subprocess.run(
             [
                 "yt-dlp",
+                "--js-runtimes", "deno:/root/.deno/bin/deno",
+                "--remote-components", "ejs:github",
                 "--skip-download",
                 caption_flag,
                 "--sub-langs",
