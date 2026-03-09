@@ -27,6 +27,7 @@ class BuildConfig:
     output_dir: Path
     min_seconds: float = 0.4
     sub_langs: str = "uz-orig,uz,uz-Latn,uz-Cyrl"
+    cookies: Path | None = None
     prefer_manual_subs: bool = True
     keep_intermediate: bool = False
     overwrite_output: bool = False
@@ -68,7 +69,7 @@ def build_hf_audio_dataset(config: BuildConfig) -> Path:
         for raw_video in ids:
             video_url = to_video_url(raw_video)
             try:
-                video_id = resolve_video_id(video_url)
+                video_id = resolve_video_id(video_url, cookies=config.cookies)
             except Exception as exc:  # noqa: BLE001
                 print(f"[skip] Could not resolve ID for {raw_video}: {exc}")
                 continue
