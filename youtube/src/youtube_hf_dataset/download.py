@@ -29,22 +29,26 @@ def resolve_video_id(video_url: str, cookies: Path | None = None) -> str:
 
 
 def download_audio(
-    video_url: str, output_dir: Path, video_id: str | None = None
+    video_url: str, output_dir: Path, video_id: str | None = None,
+    cookies: Path | None = None,
 ) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
-    run_command(
-        [
-            "yt-dlp",
-            "--js-runtimes", "deno:/root/.deno/bin/deno",
-            "--remote-components", "ejs:github",
-            "-f",
-            "bestaudio/best",
-            "--no-playlist",
-            "-o",
-            str(output_dir / "%(id)s.%(ext)s"),
-            video_url,
-        ]
-    )
+    cmd = [
+        "yt-dlp",
+        "--js-runtimes", "deno:/root/.deno/bin/deno",
+        "--remote-components", "ejs:github",
+    ]
+    if cookies:
+        cmd += ["--cookies", str(cookies)]
+    cmd += [
+        "-f",
+        "bestaudio/best",
+        "--no-playlist",
+        "-o",
+        str(output_dir / "%(id)s.%(ext)s"),
+        video_url,
+    ]
+    run_command(cmd)
 
     resolved_id = video_id or resolve_video_id(video_url)
     candidates = [
@@ -69,9 +73,10 @@ def download_subtitle_candidates(
     output_dir: Path,
     sub_langs: str,
     prefer_manual: bool,
+    cookies: Path | None = None,
 ) -> tuple[list[Path], str]:
     output_dir.mkdir(parents=True, exist_ok=True)
-    video_id = resolve_video_id(video_url)
+    video_id = resolve_video_id(video_url, cookies=cookies)
 
     def _clear_existing() -> None:
         for existing in output_dir.glob(f"{video_id}*.vtt"):
@@ -80,22 +85,27 @@ def download_subtitle_candidates(
     def _attempt(use_auto: bool) -> list[Path]:
         _clear_existing()
         caption_flag = "--write-auto-subs" if use_auto else "--write-subs"
+        cmd = [
+            "yt-dlp",
+            "--js-runtimes", "deno:/root/.deno/bin/deno",
+            "--remote-components", "ejs:github",
+        ]
+        if cookies:
+            cmd += ["--cookies", str(cookies)]
+        cmd += [
+            "--skip-download",
+            caption_flag,
+            "--sub-langs",
+            sub_langs,
+            "--sub-format",
+            "vtt",
+            "--no-playlist",
+            "-o",
+            str(output_dir / "%(id)s.%(ext)s"),
+            video_url,
+        ]
         process = subprocess.run(
-            [
-                "yt-dlp",
-                "--js-runtimes", "deno:/root/.deno/bin/deno",
-                "--remote-components", "ejs:github",
-                "--skip-download",
-                caption_flag,
-                "--sub-langs",
-                sub_langs,
-                "--sub-format",
-                "vtt",
-                "--no-playlist",
-                "-o",
-                str(output_dir / "%(id)s.%(ext)s"),
-                video_url,
-            ],
+            cmd,
             capture_output=True,
             text=True,
         )
