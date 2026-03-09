@@ -64,17 +64,20 @@ def build_hf_audio_dataset(config: BuildConfig) -> Path:
     ):
         directory.mkdir(parents=True, exist_ok=True)
 
+    total_videos = len(ids)
     all_records: list[dict[str, str | float]] = []
     with manifest_path.open("w", encoding="utf-8") as manifest:
-        for raw_video in ids:
+        for vid_index, raw_video in enumerate(ids, 1):
             video_url = to_video_url(raw_video)
+            print(f"\n[{vid_index}/{total_videos}] Resolving {raw_video} ...")
             try:
                 video_id = resolve_video_id(video_url, cookies=config.cookies)
             except Exception as exc:  # noqa: BLE001
-                print(f"[skip] Could not resolve ID for {raw_video}: {exc}")
+                print(f"  [skip] Could not resolve ID for {raw_video}: {exc}")
                 continue
 
-            print(f"[video] {video_id}")
+            print(f"  [id] {video_id}")
+            print(f"  [captions] Downloading subtitles ...")
             subtitle_files, subtitle_source = download_subtitle_candidates(
                 video_url=video_url,
                 output_dir=subtitles_dir,
@@ -83,39 +86,45 @@ def build_hf_audio_dataset(config: BuildConfig) -> Path:
                 cookies=config.cookies,
             )
             if not subtitle_files:
-                print(f"  - no captions found for {video_id}; skipping")
+                print(f"  [captions] No captions found; skipping")
                 continue
+            print(f"  [captions] Found {len(subtitle_files)} file(s), source={subtitle_source}")
 
             chosen_vtt, cues = pick_best_vtt(
                 subtitle_files, parser=parse_vtt_aligned_cues
             )
             if chosen_vtt is None or not cues:
-                print(
-                    f"  - caption files exist but no usable cues for {video_id}; skipping"
-                )
+                print(f"  [captions] No usable cues; skipping")
                 continue
+            print(f"  [captions] Using {chosen_vtt.name} ({len(cues)} cues)")
 
             segments = cues_as_segments(
                 cues=cues,
                 min_seconds=config.min_seconds,
             )
             if not segments:
-                print(f"  - no segments produced for {video_id}; skipping")
+                print(f"  [segments] No segments produced; skipping")
                 continue
+            print(f"  [segments] {len(segments)} segments from cues")
 
+            print(f"  [audio] Downloading audio ...")
             try:
                 audio_file = download_audio(
                     video_url=video_url, output_dir=downloads_dir, video_id=video_id,
                     cookies=config.cookies,
                 )
+                print(f"  [audio] Downloaded {audio_file.name}")
+                print(f"  [audio] Converting to 16kHz WAV ...")
                 full_wav = convert_audio_to_wav16k(
                     audio_file=audio_file, wav_dir=full_wav_dir
                 )
                 full_duration = probe_duration(full_wav)
+                print(f"  [audio] Duration: {full_duration:.1f}s")
             except Exception as exc:  # noqa: BLE001
-                print(f"  - audio download/convert failed for {video_id}: {exc}")
+                print(f"  [audio] Download/convert failed: {exc}")
                 continue
 
+            print(f"  [chunks] Cutting {len(segments)} segments ...")
             written = 0
             for index, segment in enumerate(segments):
                 start = max(0.0, segment.start)
@@ -128,7 +137,7 @@ def build_hf_audio_dataset(config: BuildConfig) -> Path:
                     cut_audio_segment(full_wav, chunk_path, start=start, end=end)
                     duration = probe_duration(chunk_path)
                 except Exception as exc:  # noqa: BLE001
-                    print(f"  - failed to cut segment {video_id}:{index}: {exc}")
+                    print(f"  [chunks] Failed segment {index}: {exc}")
                     continue
 
                 if duration < config.min_seconds:
@@ -150,7 +159,7 @@ def build_hf_audio_dataset(config: BuildConfig) -> Path:
                 all_records.append(record)
                 written += 1
 
-            print(f"  - kept {written} chunks")
+            print(f"  [chunks] Kept {written}/{len(segments)} chunks (total so far: {len(all_records)})")
 
     if not all_records:
         raise RuntimeError(
