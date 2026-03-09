@@ -6,19 +6,22 @@ from pathlib import Path
 from youtube_hf_dataset.utils import run_command
 
 
-def resolve_video_id(video_url: str) -> str:
-    process = run_command(
-        [
-            "yt-dlp",
-            "--js-runtimes", "deno:/root/.deno/bin/deno",
-            "--remote-components", "ejs:github",
-            "--skip-download",
-            "--no-playlist",
-            "--print",
-            "%(id)s",
-            video_url,
-        ]
-    )
+def resolve_video_id(video_url: str, cookies: Path | None = None) -> str:
+    cmd = [
+        "yt-dlp",
+        "--js-runtimes", "deno:/root/.deno/bin/deno",
+        "--remote-components", "ejs:github",
+    ]
+    if cookies:
+        cmd += ["--cookies", str(cookies)]
+    cmd += [
+        "--skip-download",
+        "--no-playlist",
+        "--print",
+        "%(id)s",
+        video_url,
+    ]
+    process = run_command(cmd)
     lines = [line.strip() for line in process.stdout.splitlines() if line.strip()]
     if not lines:
         raise RuntimeError(f"Could not resolve video ID for URL: {video_url}")
