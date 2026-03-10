@@ -52,7 +52,6 @@ import math
 import os
 import re
 from collections import Counter
-from contextlib import contextmanager, nullcontext
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
@@ -69,7 +68,7 @@ except ImportError:
 
 # NeMo
 import nemo.collections.asr as nemo_asr
-from huggingface_hub import hf_hub_download, list_repo_files
+from huggingface_hub import hf_hub_download
 from jiwer import cer, wer
 
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -77,77 +76,6 @@ _PUNCT_RE = re.compile(r"[^\w\s]", flags=re.UNICODE)
 LOGGER = logging.getLogger(__name__)
 
 TOP_K = 500
-
-
-def resolve_device(device: str, log: Optional[logging.Logger] = None) -> str:
-    """Downgrade to CPU when CUDA is requested but not actually usable."""
-    if device != "cuda":
-        return "cpu"
-
-    if not torch.cuda.is_available():
-        (log or LOGGER).warning(
-            "CUDA requested, but torch.cuda.is_available() is False"
-        )
-        return "cpu"
-
-    try:
-        torch.cuda.current_device()
-    except Exception as exc:
-        (log or LOGGER).warning(
-            "CUDA requested, but the runtime is not usable (%s). Falling back to CPU.",
-            exc,
-        )
-        return "cpu"
-
-    return "cuda"
-
-
-@contextmanager
-def _force_torch_cpu_mode():
-    """Hide CUDA from NeMo model init when the runtime is broken or CPU is requested."""
-    original_is_available = torch.cuda.is_available
-    try:
-        torch.cuda.is_available = lambda: False
-        yield
-    finally:
-        torch.cuda.is_available = original_is_available
-
-
-def _select_hf_model_filename(model_name: str) -> Optional[str]:
-    """Pick a likely .nemo artifact from a Hugging Face repo when possible."""
-    try:
-        repo_files = list_repo_files(repo_id=model_name, repo_type="model")
-    except Exception as exc:
-        LOGGER.debug("Could not inspect Hugging Face repo %s: %s", model_name, exc)
-        return None
-
-    nemo_files = [path for path in repo_files if path.lower().endswith(".nemo")]
-    if not nemo_files:
-        return None
-
-    repo_basename = model_name.rsplit("/", 1)[-1].lower()
-
-    def score(path: str) -> Tuple[int, int, int, int, int, str]:
-        base = Path(path).name.lower()
-        stem = Path(base).stem
-        return (
-            0 if base == f"{repo_basename}.nemo" else 1,
-            0 if stem == repo_basename else 1,
-            0 if stem.startswith(repo_basename) else 1,
-            path.count("/"),
-            len(base),
-            base,
-        )
-
-    selected = min(nemo_files, key=score)
-    if len(nemo_files) > 1:
-        LOGGER.info(
-            "Auto-selected %s from %d .nemo artifacts in %s",
-            selected,
-            len(nemo_files),
-            model_name,
-        )
-    return selected
 
 
 def normalize_text(
@@ -659,18 +587,6 @@ def _collect_done_audio_paths(worker_paths: List[str]) -> set:
 
 def _resolve_model_path(model_name: str, model_filename: str = None) -> str:
     """Return a local .nemo path, downloading from HF if model_filename is set."""
-    if os.path.exists(model_name):
-        return model_name
-
-    if (
-        model_filename is None
-        and "/" in model_name
-        and not model_name.endswith(".nemo")
-    ):
-        inferred_filename = _select_hf_model_filename(model_name)
-        if inferred_filename:
-            model_filename = inferred_filename
-
     if model_filename:
         return hf_hub_download(
             repo_id=model_name, filename=model_filename, repo_type="model"
@@ -681,36 +597,10 @@ def _resolve_model_path(model_name: str, model_filename: str = None) -> str:
 def _load_asr_model(model_name: str, model_filename: str = None, device: str = "cuda"):
     """Load a NeMo ASR model from a local path, HF repo file, or pretrained name."""
     path = _resolve_model_path(model_name, model_filename)
-    attempt_devices = [device]
-    if device == "cuda":
-        attempt_devices.append("cpu")
-
-    last_exc = None
-    model = None
-    active_device = device
-    for attempt_device in attempt_devices:
-        try:
-            load_context = (
-                nullcontext() if attempt_device == "cuda" else _force_torch_cpu_mode()
-            )
-            with load_context:
-                if path.endswith(".nemo") and os.path.exists(path):
-                    model = nemo_asr.models.ASRModel.restore_from(
-                        path, map_location=attempt_device
-                    )
-                else:
-                    model = nemo_asr.models.ASRModel.from_pretrained(model_name=path)
-            active_device = attempt_device
-            break
-        except Exception as exc:
-            last_exc = exc
-            if attempt_device != "cuda":
-                raise
-            LOGGER.warning("Failed to load model on CUDA, retrying on CPU: %s", exc)
-
-    if model is None:
-        raise last_exc
-
+    if path.endswith(".nemo") and os.path.exists(path):
+        model = nemo_asr.models.ASRModel.restore_from(path, map_location=device)
+    else:
+        model = nemo_asr.models.ASRModel.from_pretrained(model_name=path)
     try:
         decoding_cfg = copy.deepcopy(model.cfg.decoding)
         if hasattr(decoding_cfg, "confidence_cfg"):
@@ -724,10 +614,8 @@ def _load_asr_model(model_name: str, model_filename: str = None, device: str = "
         model.change_decoding_strategy(decoding_cfg=decoding_cfg)
     except Exception as exc:
         LOGGER.debug("Could not enable NeMo confidence outputs: %s", exc)
-    if active_device == "cuda":
+    if device == "cuda":
         model = model.cuda()
-    else:
-        model = model.cpu()
     model.eval()
     return model
 
@@ -959,15 +847,6 @@ def main():
 
     manifest_dir = str(Path(args.manifest).resolve().parent)
     unsorted_path = f"{args.output_prefix}._unsorted.jsonl"
-    effective_device = resolve_device(args.device, LOGGER)
-
-    if effective_device == "cpu":
-        # Child processes inherit this env var before importing torch.
-        os.environ["CUDA_VISIBLE_DEVICES"] = ""
-    if effective_device != args.device:
-        LOGGER.warning(
-            "Using %s instead of requested %s", effective_device, args.device
-        )
 
     # Clean stale worker/unsorted files when NOT resuming
     if not args.resume:
@@ -986,7 +865,7 @@ def main():
     # Determine number of workers
     num_workers = args.num_workers
     if num_workers <= 0:
-        if effective_device == "cuda" and torch.cuda.is_available():
+        if args.device == "cuda" and torch.cuda.is_available():
             num_workers = estimate_max_workers(model_size_gb=1.5, headroom_gb=2.0)
         else:
             num_workers = 1
@@ -1049,7 +928,7 @@ def main():
                     i,
                     args.model,
                     args.model_filename,
-                    effective_device,
+                    args.device,
                     chunk,
                     args.batch_size,
                     manifest_dir,
@@ -1082,8 +961,8 @@ def main():
     elif remaining > 0:
         # --- Single-worker path (original logic) ---
         LOGGER.info("Loading model: %s (filename=%s)", args.model, args.model_filename)
-        model = _load_asr_model(args.model, args.model_filename, effective_device)
-        LOGGER.info("Model ready on device: %s", effective_device)
+        model = _load_asr_model(args.model, args.model_filename, args.device)
+        LOGGER.info("Model ready on device: %s", args.device)
 
         total_batches = math.ceil(remaining / max(1, args.batch_size))
         open_mode = "a" if (args.resume and skip_rows > 0) else "w"
@@ -1143,29 +1022,9 @@ def main():
                     heapq.heapreplace(top_k_heap, entry)
                 rows_processed += 1
 
-    if total_rows > 0 and rows_processed == 0:
-        raise RuntimeError(
-            "No scored rows were produced. Model loading likely failed for every worker. "
-            "Try rerunning with `--device cpu` or `--num-workers 1` after verifying the model artifact."
-        )
-
-    if rows_processed < total_rows:
-        raise RuntimeError(
-            f"Only {rows_processed} of {total_rows} manifest rows were scored. "
-            "The run is incomplete; inspect the worker errors above and rerun with `--resume`."
-        )
-
     # Sort and write final outputs
     LOGGER.info("Reading unsorted results for final sort")
     df = pd.read_json(unsorted_path, lines=True)
-    required_columns = {"suspicion_score", "wer", "cer"}
-    missing_columns = sorted(required_columns - set(df.columns))
-    if missing_columns:
-        raise RuntimeError(
-            "Scored output is missing required columns: "
-            + ", ".join(missing_columns)
-            + ". Check whether an older partial output file was reused."
-        )
     df = df.sort_values(["suspicion_score", "wer", "cer"], ascending=False).reset_index(
         drop=True
     )
