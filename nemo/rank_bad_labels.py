@@ -577,8 +577,10 @@ def compute_row_scores(
         bucket = "high"
     elif suspicion >= 0.40:
         bucket = "medium"
-    else:
+    elif suspicion >= 0.25:
         bucket = "low"
+    else:
+        bucket = "lowest"
 
     metrics = {
         "wer": row_wer,
