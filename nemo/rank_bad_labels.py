@@ -51,10 +51,11 @@ import logging
 import math
 import os
 import re
-from collections import Counter
+from collections import Counter, deque
+from concurrent.futures import Future, ThreadPoolExecutor
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Deque, Dict, Iterator, List, Optional, TextIO, Tuple
 
 import pandas as pd
 import torch
@@ -66,8 +67,10 @@ try:
 except ImportError:
     sf = None
 
-# NeMo
-import nemo.collections.asr as nemo_asr
+try:
+    import nemo.collections.asr as nemo_asr
+except ImportError:
+    nemo_asr = None
 from huggingface_hub import hf_hub_download
 from jiwer import cer, wer
 
@@ -104,6 +107,22 @@ def safe_div(a: float, b: float, default: float = 0.0) -> float:
 
 def clamp01(x: float) -> float:
     return max(0.0, min(1.0, x))
+
+
+def coerce_duration_seconds(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, torch.Tensor):
+        if value.numel() != 1:
+            return None
+        value = value.item()
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(value) or value <= 0:
+        return None
+    return value
 
 
 def get_duration_seconds(audio_path: str) -> float:
@@ -303,14 +322,15 @@ def transcribe_batch(
       - list[str]
       - list[Hypothesis/text-like objects]
     """
-    try:
-        outputs = model.transcribe(
-            audio_paths,
-            batch_size=len(audio_paths),
-            return_hypotheses=True,
-        )
-    except TypeError:
-        outputs = model.transcribe(audio_paths, batch_size=len(audio_paths))
+    with torch.inference_mode():
+        try:
+            outputs = model.transcribe(
+                audio_paths,
+                batch_size=len(audio_paths),
+                return_hypotheses=True,
+            )
+        except TypeError:
+            outputs = model.transcribe(audio_paths, batch_size=len(audio_paths))
 
     if isinstance(outputs, tuple) and outputs:
         outputs = outputs[0]
@@ -569,12 +589,27 @@ def estimate_max_workers(model_size_gb: float = 1.5, headroom_gb: float = 2.0) -
     return n
 
 
-def _collect_done_audio_paths(worker_paths: List[str]) -> set:
-    """Read all existing worker files and collect audio_filepath values already processed."""
+def configure_torch_runtime(device: str) -> None:
+    if device != "cuda" or not torch.cuda.is_available():
+        return
+    if hasattr(torch.backends, "cuda") and hasattr(torch.backends.cuda, "matmul"):
+        torch.backends.cuda.matmul.allow_tf32 = True
+    if hasattr(torch.backends, "cudnn"):
+        torch.backends.cudnn.allow_tf32 = True
+        torch.backends.cudnn.benchmark = True
+    if hasattr(torch, "set_float32_matmul_precision"):
+        try:
+            torch.set_float32_matmul_precision("high")
+        except RuntimeError:
+            LOGGER.debug("Could not set float32 matmul precision to 'high'")
+
+
+def _collect_done_audio_paths(paths: List[str]) -> set:
+    """Read existing result files and collect audio_filepath values already processed."""
     done = set()
-    for wpath in worker_paths:
-        if os.path.exists(wpath):
-            with open(wpath, "r", encoding="utf-8") as f:
+    for path in paths:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
                     if not line:
@@ -585,6 +620,38 @@ def _collect_done_audio_paths(worker_paths: List[str]) -> set:
                     except (json.JSONDecodeError, KeyError):
                         continue
     return done
+
+
+def _resolve_audio_path(
+    audio_path: str, manifest_dir: str, resolve_relative: bool
+) -> str:
+    if resolve_relative and not os.path.isabs(audio_path):
+        return str(Path(manifest_dir) / audio_path)
+    return audio_path
+
+
+def _duration_sort_key(row: Dict[str, Any]) -> Tuple[int, float, str]:
+    duration = coerce_duration_seconds(row.get("duration"))
+    if duration is None:
+        return 1, float("inf"), str(row.get("audio_filepath", ""))
+    return 0, duration, str(row.get("audio_filepath", ""))
+
+
+def arrange_rows_for_better_batching(
+    rows: List[Dict[str, Any]], preserve_manifest_order: bool
+) -> List[Dict[str, Any]]:
+    if preserve_manifest_order:
+        return rows
+    return sorted(rows, key=_duration_sort_key)
+
+
+def make_worker_chunks(
+    rows: List[Dict[str, Any]], batch_size: int, num_workers: int
+) -> List[List[Dict[str, Any]]]:
+    workers: List[List[Dict[str, Any]]] = [[] for _ in range(max(1, num_workers))]
+    for batch_index, batch in enumerate(batchify_iter(iter(rows), batch_size)):
+        workers[batch_index % len(workers)].extend(batch)
+    return [chunk for chunk in workers if chunk]
 
 
 def _resolve_model_path(model_name: str, model_filename: str = None) -> str:
