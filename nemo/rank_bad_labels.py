@@ -46,7 +46,6 @@ import argparse
 import copy
 import glob as _glob
 import heapq
-import itertools
 import json
 import logging
 import math
@@ -293,74 +292,25 @@ def _extract_word_confidences(
     return None
 
 
-def _call_model_transcribe(
-    model,
-    audio_paths: List[str],
-    batch_size: int,
-    return_hypotheses: bool,
-    audio_loader_workers: int,
-):
-    signature_error_markers = (
-        "unexpected keyword argument",
-        "required positional argument",
-        "positional arguments but",
-        "got multiple values for argument",
-        "takes ",
-    )
-    optional_items = [("verbose", False)]
-    if audio_loader_workers > 0:
-        optional_items.append(("num_workers", audio_loader_workers))
-    if return_hypotheses:
-        optional_items.append(("return_hypotheses", True))
-
-    attempts = []
-    audio_list = list(audio_paths)
-    for audio_key in ("audio", "paths2audio_files", None):
-        for remove_count in range(len(optional_items) + 1):
-            for removed in itertools.combinations(optional_items, remove_count):
-                removed_keys = {key for key, _ in removed}
-                kwargs = {"batch_size": batch_size}
-                for key, value in optional_items:
-                    if key not in removed_keys:
-                        kwargs[key] = value
-                attempts.append((audio_key, kwargs))
-
-    last_error = None
-    for audio_key, kwargs in attempts:
-        try:
-            if audio_key is None:
-                return model.transcribe(audio_list, **kwargs)
-            return model.transcribe(**{audio_key: audio_list, **kwargs})
-        except TypeError as exc:
-            if not any(marker in str(exc) for marker in signature_error_markers):
-                raise
-            last_error = exc
-            continue
-
-    if last_error is not None:
-        raise last_error
-    raise RuntimeError("No valid NeMo transcribe() signature matched")
-
-
 def transcribe_batch(
     model,
     audio_paths: List[str],
     lowercase: bool,
     remove_punctuation: bool,
-    audio_loader_workers: int = 0,
 ) -> List[Dict[str, Any]]:
     """
     Works with NeMo ASR models whose transcribe() may return:
       - list[str]
       - list[Hypothesis/text-like objects]
     """
-    outputs = _call_model_transcribe(
-        model=model,
-        audio_paths=audio_paths,
-        batch_size=len(audio_paths),
-        return_hypotheses=True,
-        audio_loader_workers=audio_loader_workers,
-    )
+    try:
+        outputs = model.transcribe(
+            audio_paths,
+            batch_size=len(audio_paths),
+            return_hypotheses=True,
+        )
+    except TypeError:
+        outputs = model.transcribe(audio_paths, batch_size=len(audio_paths))
 
     if isinstance(outputs, tuple) and outputs:
         outputs = outputs[0]
@@ -619,46 +569,6 @@ def estimate_max_workers(model_size_gb: float = 1.5, headroom_gb: float = 2.0) -
     return n
 
 
-def resolve_worker_devices(
-    requested_workers: int,
-    device: str,
-    allow_shared_cuda_devices: bool = False,
-) -> List[str]:
-    """Map worker processes to devices without duplicating replicas on one GPU by default."""
-    requested_workers = max(1, requested_workers)
-    if device == "cpu" or not device.startswith("cuda"):
-        return [device] * requested_workers
-
-    if not torch.cuda.is_available():
-        return [device]
-
-    if device == "cuda":
-        device_count = torch.cuda.device_count()
-        if allow_shared_cuda_devices:
-            return [f"cuda:{idx % device_count}" for idx in range(requested_workers)]
-
-        actual_workers = min(requested_workers, device_count)
-        if actual_workers < requested_workers:
-            LOGGER.warning(
-                "Requested %d CUDA workers but only %d visible GPU(s); "
-                "capping to one model replica per GPU. "
-                "Use --allow-shared-gpu-replicas to override.",
-                requested_workers,
-                device_count,
-            )
-        return [f"cuda:{idx}" for idx in range(actual_workers)]
-
-    if requested_workers > 1 and not allow_shared_cuda_devices:
-        LOGGER.warning(
-            "Device %s pins execution to a single GPU; capping model replicas to 1. "
-            "Use --allow-shared-gpu-replicas to override.",
-            device,
-        )
-        return [device]
-
-    return [device] * requested_workers
-
-
 def _collect_done_audio_paths(worker_paths: List[str]) -> set:
     """Read all existing worker files and collect audio_filepath values already processed."""
     done = set()
@@ -706,8 +616,8 @@ def _load_asr_model(model_name: str, model_filename: str = None, device: str = "
         model.change_decoding_strategy(decoding_cfg=decoding_cfg)
     except Exception as exc:
         LOGGER.debug("Could not enable NeMo confidence outputs: %s", exc)
-    if device != "cpu":
-        model = model.to(device)
+    if device == "cuda":
+        model = model.cuda()
     model.eval()
     return model
 
@@ -723,11 +633,12 @@ def _worker_transcribe(
     resolve_relative: bool,
     lowercase: bool,
     remove_punctuation: bool,
-    audio_loader_workers: int,
     output_path: str,
     done_audio_paths: set,
 ):
     """Worker process: loads its own model replica, transcribes its chunk, writes results."""
+    import nemo.collections.asr as nemo_asr  # re-import in subprocess
+
     logging.basicConfig(
         level=logging.INFO,
         format=f"%(asctime)s | worker-{worker_id} | %(levelname)s | %(message)s",
@@ -763,7 +674,6 @@ def _worker_transcribe(
                 audio_paths,
                 lowercase=lowercase,
                 remove_punctuation=remove_punctuation,
-                audio_loader_workers=audio_loader_workers,
             )
 
             for row, hyp_info in zip(batch_rows, hyps):
@@ -909,11 +819,7 @@ def main():
     )
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--output-prefix", default="ranked_manifest")
-    parser.add_argument(
-        "--device",
-        default="cuda",
-        help="Inference device, for example 'cpu', 'cuda', or 'cuda:1'",
-    )
+    parser.add_argument("--device", default="cuda", choices=["cuda", "cpu"])
     parser.add_argument("--lowercase", action="store_true", default=False)
     parser.add_argument("--remove-punctuation", action="store_true", default=False)
     parser.add_argument(
@@ -931,21 +837,8 @@ def main():
     parser.add_argument(
         "--num-workers",
         type=int,
-        default=0,
-        help="Number of parallel model replicas/processes "
-        "(0 = auto; CUDA defaults to one replica per visible GPU)",
-    )
-    parser.add_argument(
-        "--audio-loader-workers",
-        type=int,
         default=4,
-        help="Number of NeMo dataloader workers inside each transcribe() call",
-    )
-    parser.add_argument(
-        "--allow-shared-gpu-replicas",
-        action="store_true",
-        default=False,
-        help="Allow multiple model replicas on the same CUDA device. Usually slower.",
+        help="Number of parallel model replicas (0 = auto-detect from free VRAM)",
     )
     args = parser.parse_args()
 
@@ -971,29 +864,14 @@ def main():
     total_rows = count_manifest_lines(args.manifest)
     LOGGER.info("Total rows: %d", total_rows)
 
-    # Determine model-replica workers and map them to devices.
-    requested_workers = args.num_workers
-    if requested_workers <= 0:
+    # Determine number of workers
+    num_workers = args.num_workers
+    if num_workers <= 0:
         if args.device == "cuda" and torch.cuda.is_available():
-            requested_workers = torch.cuda.device_count()
+            num_workers = estimate_max_workers(model_size_gb=1.5, headroom_gb=2.0)
         else:
-            requested_workers = 1
-
-    worker_devices = resolve_worker_devices(
-        requested_workers=requested_workers,
-        device=args.device,
-        allow_shared_cuda_devices=args.allow_shared_gpu_replicas,
-    )
-    num_workers = len(worker_devices)
-    LOGGER.info(
-        "Using %d model replica worker(s) on device(s): %s",
-        num_workers,
-        ", ".join(worker_devices),
-    )
-    LOGGER.info(
-        "Using %d NeMo audio loader worker(s) per transcribe() call",
-        max(0, args.audio_loader_workers),
-    )
+            num_workers = 1
+    LOGGER.info("Using %d parallel worker(s)", num_workers)
 
     # Resume support: count already-processed lines
     skip_rows = 0
@@ -1052,14 +930,13 @@ def main():
                     i,
                     args.model,
                     args.model_filename,
-                    worker_devices[i],
+                    args.device,
                     chunk,
                     args.batch_size,
                     manifest_dir,
                     args.resolve_relative_to_manifest,
                     args.lowercase,
                     args.remove_punctuation,
-                    max(0, args.audio_loader_workers),
                     wpath,
                     done_audio_paths,
                 ),
@@ -1086,9 +963,8 @@ def main():
     elif remaining > 0:
         # --- Single-worker path (original logic) ---
         LOGGER.info("Loading model: %s (filename=%s)", args.model, args.model_filename)
-        single_device = worker_devices[0]
-        model = _load_asr_model(args.model, args.model_filename, single_device)
-        LOGGER.info("Model ready on device: %s", single_device)
+        model = _load_asr_model(args.model, args.model_filename, args.device)
+        LOGGER.info("Model ready on device: %s", args.device)
 
         total_batches = math.ceil(remaining / max(1, args.batch_size))
         open_mode = "a" if (args.resume and skip_rows > 0) else "w"
@@ -1110,7 +986,6 @@ def main():
                     audio_paths,
                     lowercase=args.lowercase,
                     remove_punctuation=args.remove_punctuation,
-                    audio_loader_workers=max(0, args.audio_loader_workers),
                 )
 
                 for row, hyp_info in zip(batch_rows, hyps):
