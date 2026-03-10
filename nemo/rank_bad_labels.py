@@ -1103,10 +1103,8 @@ def main():
         postprocess_workers = 2 if args.device == "cuda" else 0
     LOGGER.info("Using %d post-processing worker thread(s)", postprocess_workers)
 
-    worker_paths = [
-        f"{args.output_prefix}._worker_{i}.jsonl" for i in range(num_workers)
-    ]
-    resume_paths = [unsorted_path] + worker_paths
+    existing_worker_paths = sorted(_glob.glob(f"{args.output_prefix}._worker_*.jsonl"))
+    resume_paths = [unsorted_path] + existing_worker_paths
     done_audio_paths: set = set()
     if args.resume:
         done_audio_paths = _collect_done_audio_paths(resume_paths)
@@ -1141,7 +1139,9 @@ def main():
         actual_workers = len(chunks)
 
         # Stable worker output files (survive interrupts for resume)
-        worker_paths = [worker_paths[i] for i in range(actual_workers)]
+        worker_paths = [
+            f"{args.output_prefix}._worker_{i}.jsonl" for i in range(actual_workers)
+        ]
 
         LOGGER.info(
             "Spawning %d workers (%d batch-sized chunks distributed round-robin)",
@@ -1179,14 +1179,6 @@ def main():
             if p.exitcode != 0:
                 LOGGER.error("Worker %d exited with code %d", i, p.exitcode)
 
-        # Merge worker outputs into unsorted file
-        with open(unsorted_path, "w", encoding="utf-8") as out_f:
-            for wpath in worker_paths:
-                if os.path.exists(wpath):
-                    with open(wpath, "r", encoding="utf-8") as wf:
-                        for line in wf:
-                            out_f.write(line)
-
     elif remaining > 0:
         # --- Single-worker path (original logic) ---
         LOGGER.info("Loading model: %s (filename=%s)", args.model, args.model_filename)
@@ -1208,6 +1200,16 @@ def main():
                 postprocess_workers=postprocess_workers,
                 progress_desc="Transcribing & scoring",
             )
+
+    merged_rows = merge_result_files(
+        unsorted_path,
+        sorted(
+            set(existing_worker_paths)
+            | set(_glob.glob(f"{args.output_prefix}._worker_*.jsonl"))
+        ),
+    )
+    if merged_rows:
+        LOGGER.info("Merged %d worker-shard rows into %s", merged_rows, unsorted_path)
 
     LOGGER.info(
         "Transcription pass complete: %d rows processed",
