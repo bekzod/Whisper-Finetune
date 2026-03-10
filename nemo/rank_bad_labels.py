@@ -1048,7 +1048,7 @@ def main():
         type=int,
         default=None,
         help="CPU worker threads for duration probing + scoring. "
-        "Default: 2 when using CUDA, otherwise 0.",
+        "Default: 2 for single-replica CUDA runs, otherwise 0.",
     )
     parser.add_argument(
         "--preserve-manifest-order",
@@ -1100,7 +1100,7 @@ def main():
 
     postprocess_workers = args.postprocess_workers
     if postprocess_workers is None:
-        postprocess_workers = 2 if args.device == "cuda" else 0
+        postprocess_workers = 2 if args.device == "cuda" and num_workers == 1 else 0
     LOGGER.info("Using %d post-processing worker thread(s)", postprocess_workers)
 
     existing_worker_paths = sorted(_glob.glob(f"{args.output_prefix}._worker_*.jsonl"))
