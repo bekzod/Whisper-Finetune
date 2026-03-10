@@ -665,6 +665,11 @@ def _resolve_model_path(model_name: str, model_filename: str = None) -> str:
 
 def _load_asr_model(model_name: str, model_filename: str = None, device: str = "cuda"):
     """Load a NeMo ASR model from a local path, HF repo file, or pretrained name."""
+    if nemo_asr is None:
+        raise ImportError(
+            "nemo_toolkit[asr] is required to run rank_bad_labels.py. "
+            "Install it with `pip install nemo_toolkit[asr]`."
+        )
     path = _resolve_model_path(model_name, model_filename)
     if path.endswith(".nemo") and os.path.exists(path):
         model = nemo_asr.models.ASRModel.restore_from(path, map_location=device)
@@ -689,6 +694,139 @@ def _load_asr_model(model_name: str, model_filename: str = None, device: str = "
     return model
 
 
+def resolve_row_audio_path(
+    row: Dict[str, Any], manifest_dir: str, resolve_relative: bool
+) -> None:
+    row["audio_filepath"] = _resolve_audio_path(
+        row["audio_filepath"], manifest_dir, resolve_relative
+    )
+
+
+def ensure_row_duration(row: Dict[str, Any]) -> None:
+    duration = coerce_duration_seconds(row.get("duration"))
+    if duration is not None:
+        row["duration"] = duration
+        return
+    try:
+        row["duration"] = get_duration_seconds(row["audio_filepath"])
+    except Exception:
+        row["duration"] = float("nan")
+
+
+def _score_batch_outputs(
+    batch_rows: List[Dict[str, Any]],
+    hyps: List[Dict[str, Any]],
+    lowercase: bool,
+    remove_punctuation: bool,
+) -> List[str]:
+    if len(batch_rows) != len(hyps):
+        raise RuntimeError(
+            f"Expected {len(batch_rows)} hypotheses, received {len(hyps)}"
+        )
+
+    scored_lines = []
+    for row, hyp_info in zip(batch_rows, hyps):
+        ensure_row_duration(row)
+        hyp = hyp_info["text"]
+        metrics = compute_row_scores(
+            ref_raw=row["text"],
+            hyp_raw=hyp,
+            duration=row.get("duration", float("nan")),
+            lowercase=lowercase,
+            remove_punctuation=remove_punctuation,
+            hyp_word_confidences=hyp_info.get("word_confidences"),
+        )
+        out = dict(row)
+        out["model_hypothesis"] = hyp
+        out.update(metrics)
+        scored_lines.append(json.dumps(out, ensure_ascii=False))
+    return scored_lines
+
+
+def _write_scored_lines(out_f: TextIO, scored_lines: List[str]) -> int:
+    for line in scored_lines:
+        out_f.write(line + "\n")
+    out_f.flush()
+    return len(scored_lines)
+
+
+def process_rows(
+    model,
+    rows: List[Dict[str, Any]],
+    batch_size: int,
+    manifest_dir: str,
+    resolve_relative: bool,
+    lowercase: bool,
+    remove_punctuation: bool,
+    out_f: TextIO,
+    postprocess_workers: int,
+    progress_desc: Optional[str] = None,
+) -> int:
+    total_batches = math.ceil(len(rows) / max(1, batch_size))
+    batch_indices = range(0, len(rows), batch_size)
+    if progress_desc is not None:
+        batch_indices = tqdm(
+            batch_indices,
+            total=total_batches,
+            desc=progress_desc,
+        )
+
+    executor = (
+        ThreadPoolExecutor(max_workers=postprocess_workers)
+        if postprocess_workers > 0
+        else None
+    )
+    pending: Deque[Future[List[str]]] = deque()
+    max_pending_batches = max(1, postprocess_workers * 2)
+    rows_written = 0
+
+    try:
+        for i in batch_indices:
+            batch_rows = rows[i : i + batch_size]
+            for row in batch_rows:
+                resolve_row_audio_path(row, manifest_dir, resolve_relative)
+
+            audio_paths = [r["audio_filepath"] for r in batch_rows]
+            hyps = transcribe_batch(
+                model,
+                audio_paths,
+                lowercase=lowercase,
+                remove_punctuation=remove_punctuation,
+            )
+
+            if executor is None:
+                rows_written += _write_scored_lines(
+                    out_f,
+                    _score_batch_outputs(
+                        batch_rows,
+                        hyps,
+                        lowercase=lowercase,
+                        remove_punctuation=remove_punctuation,
+                    ),
+                )
+                continue
+
+            pending.append(
+                executor.submit(
+                    _score_batch_outputs,
+                    batch_rows,
+                    hyps,
+                    lowercase,
+                    remove_punctuation,
+                )
+            )
+            if len(pending) >= max_pending_batches:
+                rows_written += _write_scored_lines(out_f, pending.popleft().result())
+
+        while pending:
+            rows_written += _write_scored_lines(out_f, pending.popleft().result())
+    finally:
+        if executor is not None:
+            executor.shutdown(wait=True)
+
+    return rows_written
+
+
 def _worker_transcribe(
     worker_id: int,
     model_name: str,
@@ -701,78 +839,44 @@ def _worker_transcribe(
     lowercase: bool,
     remove_punctuation: bool,
     output_path: str,
-    done_audio_paths: set,
+    postprocess_workers: int,
 ):
     """Worker process: loads its own model replica, transcribes its chunk, writes results."""
-    import nemo.collections.asr as nemo_asr  # re-import in subprocess
-
     logging.basicConfig(
         level=logging.INFO,
         format=f"%(asctime)s | worker-{worker_id} | %(levelname)s | %(message)s",
     )
     log = logging.getLogger(f"worker-{worker_id}")
 
-    # Resolve paths first so we can filter already-done rows
-    for row in chunk:
-        prepare_row(row, manifest_dir, resolve_relative)
-
-    if done_audio_paths:
-        before = len(chunk)
-        chunk = [r for r in chunk if r["audio_filepath"] not in done_audio_paths]
-        skipped = before - len(chunk)
-        if skipped:
-            log.info("Resuming: skipping %d already-processed rows", skipped)
-
     if not chunk:
         log.info("Nothing to do, all rows already processed")
         return
 
+    configure_torch_runtime(device)
     log.info("Loading model: %s (filename=%s)", model_name, model_filename)
     model = _load_asr_model(model_name, model_filename, device)
     log.info("Model ready, processing %d rows", len(chunk))
 
     with open(output_path, "a", encoding="utf-8") as out_f:
-        for i in range(0, len(chunk), batch_size):
-            batch_rows = chunk[i : i + batch_size]
+        written = process_rows(
+            model=model,
+            rows=chunk,
+            batch_size=batch_size,
+            manifest_dir=manifest_dir,
+            resolve_relative=resolve_relative,
+            lowercase=lowercase,
+            remove_punctuation=remove_punctuation,
+            out_f=out_f,
+            postprocess_workers=postprocess_workers,
+        )
 
-            audio_paths = [r["audio_filepath"] for r in batch_rows]
-            hyps = transcribe_batch(
-                model,
-                audio_paths,
-                lowercase=lowercase,
-                remove_punctuation=remove_punctuation,
-            )
-
-            for row, hyp_info in zip(batch_rows, hyps):
-                hyp = hyp_info["text"]
-                metrics = compute_row_scores(
-                    ref_raw=row["text"],
-                    hyp_raw=hyp,
-                    duration=row.get("duration", float("nan")),
-                    lowercase=lowercase,
-                    remove_punctuation=remove_punctuation,
-                    hyp_word_confidences=hyp_info.get("word_confidences"),
-                )
-                out = dict(row)
-                out["model_hypothesis"] = hyp
-                out.update(metrics)
-                out_f.write(json.dumps(out, ensure_ascii=False) + "\n")
-
-            out_f.flush()
-
-    log.info("Done: wrote %d rows to %s", len(chunk), output_path)
+    log.info("Done: wrote %d rows to %s", written, output_path)
 
 
 def prepare_row(row: Dict[str, Any], manifest_dir: str, resolve_relative: bool) -> None:
     """Resolve paths and fill missing durations in-place."""
-    if resolve_relative and not os.path.isabs(row["audio_filepath"]):
-        row["audio_filepath"] = str(Path(manifest_dir) / row["audio_filepath"])
-
-    if "duration" not in row or row["duration"] in (None, ""):
-        try:
-            row["duration"] = get_duration_seconds(row["audio_filepath"])
-        except Exception:
-            row["duration"] = float("nan")
+    resolve_row_audio_path(row, manifest_dir, resolve_relative)
+    ensure_row_duration(row)
 
 
 def _clean_text_cell(value: Any) -> str:
@@ -907,12 +1011,34 @@ def main():
         default=4,
         help="Number of parallel model replicas (0 = auto-detect from free VRAM)",
     )
+    parser.add_argument(
+        "--postprocess-workers",
+        type=int,
+        default=None,
+        help="CPU worker threads for duration probing + scoring. "
+        "Default: 2 when using CUDA, otherwise 0.",
+    )
+    parser.add_argument(
+        "--preserve-manifest-order",
+        action="store_true",
+        default=False,
+        help="Disable duration-based reordering and keep the original manifest order.",
+    )
     args = parser.parse_args()
+
+    if args.batch_size < 1:
+        parser.error("--batch-size must be >= 1")
+    if args.num_workers < 0:
+        parser.error("--num-workers must be >= 0")
+    if args.postprocess_workers is not None and args.postprocess_workers < 0:
+        parser.error("--postprocess-workers must be >= 0")
 
     logging.basicConfig(
         level=getattr(logging, args.log_level.upper()),
         format="%(asctime)s | %(levelname)s | %(message)s",
     )
+
+    configure_torch_runtime(args.device)
 
     manifest_dir = str(Path(args.manifest).resolve().parent)
     unsorted_path = f"{args.output_prefix}._unsorted.jsonl"
@@ -940,53 +1066,55 @@ def main():
             num_workers = 1
     LOGGER.info("Using %d parallel worker(s)", num_workers)
 
-    # Resume support: count already-processed lines
-    skip_rows = 0
-    if args.resume and os.path.exists(unsorted_path):
-        with open(unsorted_path, "r", encoding="utf-8") as f:
-            for _ in f:
-                skip_rows += 1
-        LOGGER.info("Resuming: skipping %d already-processed rows", skip_rows)
+    postprocess_workers = args.postprocess_workers
+    if postprocess_workers is None:
+        postprocess_workers = 2 if args.device == "cuda" else 0
+    LOGGER.info("Using %d post-processing worker thread(s)", postprocess_workers)
+
+    worker_paths = [
+        f"{args.output_prefix}._worker_{i}.jsonl" for i in range(num_workers)
+    ]
+    resume_paths = [unsorted_path] + worker_paths
+    done_audio_paths: set = set()
+    if args.resume:
+        done_audio_paths = _collect_done_audio_paths(resume_paths)
+        if done_audio_paths:
+            LOGGER.info(
+                "Resume: found %d already-processed rows in prior outputs",
+                len(done_audio_paths),
+            )
 
     # Read all remaining rows into memory for chunking
-    manifest_iter = iter_manifest(args.manifest)
-    if skip_rows > 0:
-        for _ in zip(range(skip_rows), manifest_iter):
-            pass
-    remaining_rows = list(manifest_iter)
+    remaining_rows = []
+    skipped_rows = 0
+    for row in iter_manifest(args.manifest):
+        resolve_row_audio_path(row, manifest_dir, args.resolve_relative_to_manifest)
+        if done_audio_paths and row["audio_filepath"] in done_audio_paths:
+            skipped_rows += 1
+            continue
+        remaining_rows.append(row)
+
+    remaining_rows = arrange_rows_for_better_batching(
+        remaining_rows,
+        preserve_manifest_order=args.preserve_manifest_order,
+    )
     remaining = len(remaining_rows)
-    LOGGER.info("Rows to process: %d (skipped %d)", remaining, skip_rows)
+    LOGGER.info("Rows to process: %d (skipped %d)", remaining, skipped_rows)
 
     if num_workers > 1 and remaining > 0:
         # --- Multi-worker parallel path ---
         mp.set_start_method("spawn", force=True)
 
-        # Split rows into roughly equal chunks
-        chunk_size = math.ceil(remaining / num_workers)
-        chunks = [
-            remaining_rows[i : i + chunk_size] for i in range(0, remaining, chunk_size)
-        ]
+        chunks = make_worker_chunks(remaining_rows, args.batch_size, num_workers)
         actual_workers = len(chunks)
 
         # Stable worker output files (survive interrupts for resume)
-        worker_paths = [
-            f"{args.output_prefix}._worker_{i}.jsonl" for i in range(actual_workers)
-        ]
-
-        # On resume, collect already-processed audio paths from worker files
-        done_audio_paths: set = set()
-        if args.resume:
-            done_audio_paths = _collect_done_audio_paths(worker_paths)
-            if done_audio_paths:
-                LOGGER.info(
-                    "Resume: found %d already-processed rows across worker files",
-                    len(done_audio_paths),
-                )
+        worker_paths = [worker_paths[i] for i in range(actual_workers)]
 
         LOGGER.info(
-            "Spawning %d workers (chunks of ~%d rows each)",
+            "Spawning %d workers (%d batch-sized chunks distributed round-robin)",
             actual_workers,
-            chunk_size,
+            math.ceil(remaining / max(1, args.batch_size)),
         )
 
         processes = []
@@ -1005,7 +1133,7 @@ def main():
                     args.lowercase,
                     args.remove_punctuation,
                     wpath,
-                    done_audio_paths,
+                    postprocess_workers,
                 ),
             )
             p.start()
@@ -1033,46 +1161,26 @@ def main():
         model = _load_asr_model(args.model, args.model_filename, args.device)
         LOGGER.info("Model ready on device: %s", args.device)
 
-        total_batches = math.ceil(remaining / max(1, args.batch_size))
-        open_mode = "a" if (args.resume and skip_rows > 0) else "w"
+        open_mode = "a" if (args.resume and done_audio_paths) else "w"
 
         with open(unsorted_path, open_mode, encoding="utf-8") as out_f:
-            for i in tqdm(
-                range(0, remaining, args.batch_size),
-                total=total_batches,
-                desc="Transcribing & scoring",
-            ):
-                batch_rows = remaining_rows[i : i + args.batch_size]
+            process_rows(
+                model=model,
+                rows=remaining_rows,
+                batch_size=args.batch_size,
+                manifest_dir=manifest_dir,
+                resolve_relative=args.resolve_relative_to_manifest,
+                lowercase=args.lowercase,
+                remove_punctuation=args.remove_punctuation,
+                out_f=out_f,
+                postprocess_workers=postprocess_workers,
+                progress_desc="Transcribing & scoring",
+            )
 
-                for row in batch_rows:
-                    prepare_row(row, manifest_dir, args.resolve_relative_to_manifest)
-
-                audio_paths = [r["audio_filepath"] for r in batch_rows]
-                hyps = transcribe_batch(
-                    model,
-                    audio_paths,
-                    lowercase=args.lowercase,
-                    remove_punctuation=args.remove_punctuation,
-                )
-
-                for row, hyp_info in zip(batch_rows, hyps):
-                    hyp = hyp_info["text"]
-                    metrics = compute_row_scores(
-                        ref_raw=row["text"],
-                        hyp_raw=hyp,
-                        duration=row.get("duration", float("nan")),
-                        lowercase=args.lowercase,
-                        remove_punctuation=args.remove_punctuation,
-                        hyp_word_confidences=hyp_info.get("word_confidences"),
-                    )
-                    out = dict(row)
-                    out["model_hypothesis"] = hyp
-                    out.update(metrics)
-                    out_f.write(json.dumps(out, ensure_ascii=False) + "\n")
-
-                out_f.flush()
-
-    LOGGER.info("Transcription pass complete: %d rows processed", remaining + skip_rows)
+    LOGGER.info(
+        "Transcription pass complete: %d rows processed",
+        remaining + skipped_rows,
+    )
 
     # Build bucket_counts and top_k_heap from the full unsorted file
     top_k_heap: List[Tuple[float, int, Dict]] = []
