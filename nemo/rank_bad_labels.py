@@ -142,24 +142,35 @@ def count_manifest_lines(path: str) -> int:
     return count
 
 
-def iter_manifest(path: str) -> Iterator[Dict[str, Any]]:
-    """Yield one row at a time from a JSONL manifest."""
+def _iter_manifest_lines(path: str, reverse: bool = False) -> Iterator[Tuple[int, str]]:
+    """Yield manifest lines with their original 1-based line numbers."""
     with open(path, "r", encoding="utf-8") as f:
-        for lineno, line in enumerate(f, start=1):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                item = json.loads(line)
-            except json.JSONDecodeError as e:
-                raise ValueError(f"Bad JSON on line {lineno}: {e}") from e
+        if reverse:
+            line_iter = reversed(list(enumerate(f, start=1)))
+        else:
+            line_iter = enumerate(f, start=1)
 
-            if "audio_filepath" not in item:
-                raise ValueError(f"Line {lineno} missing 'audio_filepath'")
-            if "text" not in item:
-                raise ValueError(f"Line {lineno} missing 'text'")
+        for lineno, line in line_iter:
+            yield lineno, line
 
-            yield item
+
+def iter_manifest(path: str, reverse: bool = False) -> Iterator[Dict[str, Any]]:
+    """Yield one row at a time from a JSONL manifest."""
+    for lineno, line in _iter_manifest_lines(path, reverse=reverse):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Bad JSON on line {lineno}: {e}") from e
+
+        if "audio_filepath" not in item:
+            raise ValueError(f"Line {lineno} missing 'audio_filepath'")
+        if "text" not in item:
+            raise ValueError(f"Line {lineno} missing 'text'")
+
+        yield item
 
 
 def batchify_iter(it: Iterator[Any], batch_size: int) -> Iterator[List[Any]]:
@@ -670,9 +681,9 @@ def _duration_sort_key(row: Dict[str, Any]) -> Tuple[int, float, str]:
 
 
 def arrange_rows_for_better_batching(
-    rows: List[Dict[str, Any]], preserve_manifest_order: bool
+    rows: List[Dict[str, Any]], sort_by_duration: bool
 ) -> List[Dict[str, Any]]:
-    if preserve_manifest_order:
+    if not sort_by_duration:
         return rows
     return sorted(rows, key=_duration_sort_key)
 
@@ -1054,7 +1065,13 @@ def main():
         "--preserve-manifest-order",
         action="store_true",
         default=False,
-        help="Disable duration-based reordering and keep the original manifest order.",
+        help="Keep the manifest read order. This is now the default behavior.",
+    )
+    parser.add_argument(
+        "--sort-by-duration",
+        action="store_true",
+        default=False,
+        help="Re-enable duration-based reordering for more uniform batches.",
     )
     args = parser.parse_args()
 
@@ -1064,6 +1081,8 @@ def main():
         parser.error("--num-workers must be >= 0")
     if args.postprocess_workers is not None and args.postprocess_workers < 0:
         parser.error("--postprocess-workers must be >= 0")
+    if args.preserve_manifest_order and args.sort_by_duration:
+        parser.error("--preserve-manifest-order cannot be used with --sort-by-duration")
 
     logging.basicConfig(
         level=getattr(logging, args.log_level.upper()),
@@ -1117,7 +1136,8 @@ def main():
     # Read all remaining rows into memory for chunking
     remaining_rows = []
     skipped_rows = 0
-    for row in iter_manifest(args.manifest):
+    LOGGER.info("Reading manifest from bottom to top: %s", args.manifest)
+    for row in iter_manifest(args.manifest, reverse=True):
         resolve_row_audio_path(row, manifest_dir, args.resolve_relative_to_manifest)
         if done_audio_paths and row["audio_filepath"] in done_audio_paths:
             skipped_rows += 1
@@ -1126,7 +1146,7 @@ def main():
 
     remaining_rows = arrange_rows_for_better_batching(
         remaining_rows,
-        preserve_manifest_order=args.preserve_manifest_order,
+        sort_by_duration=args.sort_by_duration,
     )
     remaining = len(remaining_rows)
     LOGGER.info("Rows to process: %d (skipped %d)", remaining, skipped_rows)
