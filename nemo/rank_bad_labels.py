@@ -622,6 +622,38 @@ def _collect_done_audio_paths(paths: List[str]) -> set:
     return done
 
 
+def merge_result_files(target_path: str, source_paths: List[str]) -> int:
+    """Append unique rows from source files into the target JSONL."""
+    merged_lines = []
+    seen_audio_paths = _collect_done_audio_paths([target_path])
+    for source_path in source_paths:
+        if not os.path.exists(source_path):
+            continue
+        with open(source_path, "r", encoding="utf-8") as src_f:
+            for line in src_f:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    rec = json.loads(stripped)
+                    audio_path = rec["audio_filepath"]
+                except (json.JSONDecodeError, KeyError):
+                    continue
+                if audio_path in seen_audio_paths:
+                    continue
+                seen_audio_paths.add(audio_path)
+                merged_lines.append(stripped)
+
+    if not merged_lines:
+        return 0
+
+    open_mode = "a" if os.path.exists(target_path) else "w"
+    with open(target_path, open_mode, encoding="utf-8") as out_f:
+        for line in merged_lines:
+            out_f.write(line + "\n")
+    return len(merged_lines)
+
+
 def _resolve_audio_path(
     audio_path: str, manifest_dir: str, resolve_relative: bool
 ) -> str:
