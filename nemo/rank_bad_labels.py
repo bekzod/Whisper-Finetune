@@ -52,6 +52,7 @@ import math
 import os
 import re
 from collections import Counter
+from contextlib import contextmanager, nullcontext
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
@@ -78,20 +79,38 @@ LOGGER = logging.getLogger(__name__)
 TOP_K = 500
 
 
-def resolve_device(device: str) -> str:
-    """Require CUDA and fail fast when GPU runtime is not usable."""
+def resolve_device(device: str, log: Optional[logging.Logger] = None) -> str:
+    """Downgrade to CPU when CUDA is requested but not actually usable."""
     if device != "cuda":
-        raise ValueError("Only CUDA is supported for this script. Use --device cuda.")
+        return "cpu"
 
     if not torch.cuda.is_available():
-        raise RuntimeError("CUDA is required, but torch.cuda.is_available() is False.")
+        (log or LOGGER).warning(
+            "CUDA requested, but torch.cuda.is_available() is False"
+        )
+        return "cpu"
 
     try:
         torch.cuda.current_device()
     except Exception as exc:
-        raise RuntimeError(f"CUDA is required, but the runtime is not usable: {exc}")
+        (log or LOGGER).warning(
+            "CUDA requested, but the runtime is not usable (%s). Falling back to CPU.",
+            exc,
+        )
+        return "cpu"
 
     return "cuda"
+
+
+@contextmanager
+def _force_torch_cpu_mode():
+    """Hide CUDA from NeMo model init when the runtime is broken or CPU is requested."""
+    original_is_available = torch.cuda.is_available
+    try:
+        torch.cuda.is_available = lambda: False
+        yield
+    finally:
+        torch.cuda.is_available = original_is_available
 
 
 def _select_hf_model_filename(model_name: str) -> Optional[str]:
@@ -661,16 +680,36 @@ def _resolve_model_path(model_name: str, model_filename: str = None) -> str:
 
 def _load_asr_model(model_name: str, model_filename: str = None, device: str = "cuda"):
     """Load a NeMo ASR model from a local path, HF repo file, or pretrained name."""
-    if device != "cuda":
-        raise ValueError("Only CUDA is supported for model loading.")
-    if not torch.cuda.is_available():
-        raise RuntimeError("CUDA is required for model loading, but is unavailable.")
-
     path = _resolve_model_path(model_name, model_filename)
-    if path.endswith(".nemo") and os.path.exists(path):
-        model = nemo_asr.models.ASRModel.restore_from(path, map_location="cuda")
-    else:
-        model = nemo_asr.models.ASRModel.from_pretrained(model_name=path)
+    attempt_devices = [device]
+    if device == "cuda":
+        attempt_devices.append("cpu")
+
+    last_exc = None
+    model = None
+    active_device = device
+    for attempt_device in attempt_devices:
+        try:
+            load_context = (
+                nullcontext() if attempt_device == "cuda" else _force_torch_cpu_mode()
+            )
+            with load_context:
+                if path.endswith(".nemo") and os.path.exists(path):
+                    model = nemo_asr.models.ASRModel.restore_from(
+                        path, map_location=attempt_device
+                    )
+                else:
+                    model = nemo_asr.models.ASRModel.from_pretrained(model_name=path)
+            active_device = attempt_device
+            break
+        except Exception as exc:
+            last_exc = exc
+            if attempt_device != "cuda":
+                raise
+            LOGGER.warning("Failed to load model on CUDA, retrying on CPU: %s", exc)
+
+    if model is None:
+        raise last_exc
 
     try:
         decoding_cfg = copy.deepcopy(model.cfg.decoding)
@@ -685,7 +724,10 @@ def _load_asr_model(model_name: str, model_filename: str = None, device: str = "
         model.change_decoding_strategy(decoding_cfg=decoding_cfg)
     except Exception as exc:
         LOGGER.debug("Could not enable NeMo confidence outputs: %s", exc)
-    model = model.cuda()
+    if active_device == "cuda":
+        model = model.cuda()
+    else:
+        model = model.cpu()
     model.eval()
     return model
 
@@ -887,12 +929,7 @@ def main():
     )
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--output-prefix", default="ranked_manifest")
-    parser.add_argument(
-        "--device",
-        default="cuda",
-        choices=["cuda"],
-        help="Execution device (GPU-only).",
-    )
+    parser.add_argument("--device", default="cuda", choices=["cuda", "cpu"])
     parser.add_argument("--lowercase", action="store_true", default=False)
     parser.add_argument("--remove-punctuation", action="store_true", default=False)
     parser.add_argument(
@@ -922,7 +959,15 @@ def main():
 
     manifest_dir = str(Path(args.manifest).resolve().parent)
     unsorted_path = f"{args.output_prefix}._unsorted.jsonl"
-    effective_device = resolve_device(args.device)
+    effective_device = resolve_device(args.device, LOGGER)
+
+    if effective_device == "cpu":
+        # Child processes inherit this env var before importing torch.
+        os.environ["CUDA_VISIBLE_DEVICES"] = ""
+    if effective_device != args.device:
+        LOGGER.warning(
+            "Using %s instead of requested %s", effective_device, args.device
+        )
 
     # Clean stale worker/unsorted files when NOT resuming
     if not args.resume:
@@ -1101,7 +1146,7 @@ def main():
     if total_rows > 0 and rows_processed == 0:
         raise RuntimeError(
             "No scored rows were produced. Model loading likely failed for every worker. "
-            "Verify CUDA availability/model artifact and rerun with `--num-workers 1`."
+            "Try rerunning with `--device cpu` or `--num-workers 1` after verifying the model artifact."
         )
 
     if rows_processed < total_rows:
