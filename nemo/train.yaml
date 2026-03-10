@@ -295,16 +295,16 @@ model:
 
     # scheduler setup
     sched:
-      name: CosineAnnealing
-      # scheduler config
-      warmup_steps: 20000
+      name: NoamAnnealing
+      d_model: ${model.encoder.d_model}
+      warmup_steps: 15000
       warmup_ratio: null
       min_lr: 1e-6
 
 trainer:
   devices: -1 # Single GPU. Set to -1 to use all available GPUs.
   num_nodes: 1
-  max_epochs: 50
+  max_epochs: -1
   max_steps: -1
   val_check_interval: 0.5
   accelerator: gpu
