@@ -13,7 +13,7 @@ init_from_pretrained_model:
     name: "nvidia/parakeet-tdt-0.6b-v3"
     include: ["encoder"]
 
-freeze_encoder_steps: 8000
+freeze_encoder_steps: 5000
 
 model:
   sample_rate: 16000
@@ -297,7 +297,7 @@ model:
     sched:
       name: NoamAnnealing
       d_model: ${model.encoder.d_model}
-      warmup_steps: 15000
+      warmup_steps: 10000
       warmup_ratio: null
       min_lr: 1e-6
 
